@@ -1,0 +1,6 @@
+[env]
+# Use clang for C/C++ compilation
+CC = "clang"
+CXX = "clang++"
+# Help build RocksDB - include cstdint header that's missing
+CXXFLAGS = "-include cstdint -Wno-error=overloaded-virtual"
