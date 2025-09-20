@@ -1,14 +1,7 @@
 use std::sync::Arc;
+use std::path::Path;
 use anyhow::Result;
-use async_trait::async_trait;
-use async_channel::Receiver;
-use metadata_db::{
-    CatalogStoreTrait, CatalogStoreError, FileId, FileMetadata,
-    FileMetadataWithDetails, GcManifestRow, JobId, Location, LocationId, LocationNotifListener,
-    LocationWithDetails, TableId,
-};
 use rocksdb::{ColumnFamilyDescriptor, DB, Options};
-use url::Url;
 
 /// RocksDB-backed catalog implementation
 /// Stores only indexes pointing to Parquet files, not the data itself
@@ -18,7 +11,7 @@ pub struct RocksDbCatalog {
 }
 
 impl RocksDbCatalog {
-    pub fn new(path: &str) -> Result<Self> {
+    pub fn new(path: &Path) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);

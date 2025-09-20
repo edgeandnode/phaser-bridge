@@ -48,6 +48,20 @@ cargo build --release
 cargo run -- --data-dir /path/to/parquet/files --rocksdb-path /path/to/indexes
 ```
 
+### Connecting to Erigon
+
+To connect phaser-query to an Erigon node for streaming real-time data, Erigon must be running with the gRPC interface enabled:
+
+```bash
+# Start Erigon with the private API enabled
+erigon --private.api.addr=0.0.0.0:9090
+
+# Then run phaser-query with the Erigon endpoint
+cargo run -- --erigon-grpc localhost:9090
+```
+
+**Note**: The `--private.api.addr` flag is required on the Erigon side to enable the gRPC interface. Without this flag, phaser-query cannot connect to stream blockchain events.
+
 ## Configuration
 
 TODO: Add configuration details

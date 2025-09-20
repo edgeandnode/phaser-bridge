@@ -21,3 +21,9 @@ anyhow = "1.0"
 axum = "0.7"
 jsonrpsee = { version = "0.24", features = ["server"] }
 
+# gRPC dependencies
+tonic = "0.14.2"
+tonic-prost = "0.14"
+prost = "0.14"
+prost-types = "0.14"
+
