@@ -1,10 +1,16 @@
+pub mod buffer_manager;
 pub mod catalog;
 pub mod erigon_client;
 pub mod index;
 pub mod indexer;
+pub mod parquet_writer;
 pub mod proto;
 pub mod rpc;
 pub mod sql;
+pub mod streaming;
+pub mod streaming_service;
+pub mod streaming_with_writer;
+pub mod streaming_writer;
 
 use std::sync::Arc;
 use std::path::PathBuf;

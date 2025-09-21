@@ -1,0 +1,53 @@
+[package]
+name = "erigon-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "erigon-bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Local dependencies
+phaser-bridge = { path = "../../phaser-bridge" }
+
+# Arrow and Flight dependencies
+arrow = { workspace = true }
+arrow-flight = { workspace = true }
+arrow-array = "56.1"
+arrow-schema = "56.1"
+
+# Async and gRPC
+tokio = { workspace = true }
+tonic = { workspace = true }
+async-trait = { workspace = true }
+futures = "0.3"
+
+# Erigon gRPC
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+# Configuration and CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling and logging
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+chrono = "0.4"
+hex = "0.4"
+async-stream = "0.3"
+
+# Ethereum types and RLP
+alloy-consensus = "0.5"
+alloy-rlp = "0.3"
+alloy-primitives = "0.8"
+derive_more = { version = "1.0", features = ["display"] }
+
+[build-dependencies]
+tonic-build = "0.13"

@@ -139,34 +139,3 @@ RocksDB stores only indexes that point to locations within Parquet files. The ac
 2. Push down predicates to DataFusion
 3. Let DataFusion handle the query execution
 ```
-
-## Size Estimates
-
-Assuming Ethereum mainnet (~20M blocks, ~2B transactions):
-
-- **blocks index**: 20M × 10 bytes = 200 MB
-- **transactions index**: 2B × 20 bytes = 40 GB
-- **log_blooms index**: 20M × 256 bytes = 5 GB
-- **address_activity**: ~10B entries × 8 bytes = 80 GB (sparse)
-- **topics index**: ~5B entries × 10 bytes = 50 GB (common topics only)
-- **files registry**: ~10K files × 100 bytes = 1 MB
-
-**Total index size**: ~175 GB (vs ~10 TB of Parquet data)
-
-## Implementation Priority
-
-1. **Phase 1 (MVP)**:
-   - File registry
-   - Block index
-   - Transaction index
-   - Latest state tracking
-
-2. **Phase 2 (Performance)**:
-   - Bloom filters
-   - LRU cache
-   - Batch indexing
-
-3. **Phase 3 (Advanced)**:
-   - Address activity index
-   - Topic index for common events
-   - Range queries optimization

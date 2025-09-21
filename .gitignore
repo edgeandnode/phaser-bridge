@@ -1,1 +1,7 @@
 target
+**/*.parquet
+interfaces
+test-data/
+test-data/streaming
+test-data/rocksdb
+erigon-bridge.log

@@ -1,0 +1,29 @@
+[package]
+name = "phaser-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Arrow and Flight dependencies
+arrow = { workspace = true }
+arrow-flight = { workspace = true }
+arrow-array = "56.1"
+arrow-schema = "56.1"
+
+# Async and gRPC
+tokio = { workspace = true }
+tonic = { workspace = true }
+async-trait = { workspace = true }
+futures = "0.3"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+prost = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }

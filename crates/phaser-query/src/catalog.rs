@@ -2,12 +2,16 @@ use std::sync::Arc;
 use std::path::Path;
 use anyhow::Result;
 use rocksdb::{ColumnFamilyDescriptor, DB, Options};
+use crate::buffer_manager::{CfToParquetBuffer, QueryManager};
+use crate::index::cf;
 
 /// RocksDB-backed catalog implementation
 /// Stores only indexes pointing to Parquet files, not the data itself
 pub struct RocksDbCatalog {
     db: Arc<DB>,
     parquet_files: Vec<String>,
+    pub streaming_buffer: Option<Arc<CfToParquetBuffer>>,
+    pub query_manager: Option<Arc<QueryManager>>,
 }
 
 impl RocksDbCatalog {
@@ -18,13 +22,17 @@ impl RocksDbCatalog {
 
         let cf_descriptors = vec![
             // File registries
-            ColumnFamilyDescriptor::new(crate::index::cf::BLOCK_FILES, Options::default()),
-            ColumnFamilyDescriptor::new(crate::index::cf::TX_FILES, Options::default()),
-            ColumnFamilyDescriptor::new(crate::index::cf::LOG_FILES, Options::default()),
+            ColumnFamilyDescriptor::new(cf::BLOCK_FILES, Options::default()),
+            ColumnFamilyDescriptor::new(cf::TX_FILES, Options::default()),
+            ColumnFamilyDescriptor::new(cf::LOG_FILES, Options::default()),
             // Data indexes
-            ColumnFamilyDescriptor::new(crate::index::cf::BLOCKS, Options::default()),
-            ColumnFamilyDescriptor::new(crate::index::cf::TRANSACTIONS, Options::default()),
-            ColumnFamilyDescriptor::new(crate::index::cf::LOGS, Options::default()),
+            ColumnFamilyDescriptor::new(cf::BLOCKS, Options::default()),
+            ColumnFamilyDescriptor::new(cf::TRANSACTIONS, Options::default()),
+            ColumnFamilyDescriptor::new(cf::LOGS, Options::default()),
+            // New buffer and index column families
+            ColumnFamilyDescriptor::new(cf::STREAMING_BUFFER, Options::default()),
+            ColumnFamilyDescriptor::new(cf::STREAMING_INDEX, Options::default()),
+            ColumnFamilyDescriptor::new(cf::HISTORICAL_INDEX, Options::default()),
         ];
 
         let db = DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
@@ -32,7 +40,37 @@ impl RocksDbCatalog {
         Ok(Self {
             db: Arc::new(db),
             parquet_files: Vec::new(),
+            streaming_buffer: None,
+            query_manager: None,
         })
+    }
+
+    /// Initialize buffer manager and query manager
+    pub fn init_buffer_manager(
+        &mut self,
+        target_dir: std::path::PathBuf,
+        row_group_size: usize,
+        schema: Arc<arrow::datatypes::Schema>,
+    ) -> Result<()> {
+        let buffer = Arc::new(CfToParquetBuffer::new(
+            self.db.clone(),
+            cf::STREAMING_BUFFER,
+            cf::STREAMING_INDEX,
+            target_dir,
+            row_group_size,
+            schema,
+        )?);
+
+        let query_mgr = Arc::new(QueryManager::new(
+            self.db.clone(),
+            buffer.clone(),
+            cf::HISTORICAL_INDEX,
+        ));
+
+        self.streaming_buffer = Some(buffer);
+        self.query_manager = Some(query_mgr);
+
+        Ok(())
     }
 
     pub fn set_parquet_files(&mut self, files: Vec<String>) {

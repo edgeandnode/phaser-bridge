@@ -101,6 +101,11 @@ pub mod cf {
     pub const BLOCKS: &str = "blocks";
     pub const TRANSACTIONS: &str = "transactions";
     pub const LOGS: &str = "logs";
+
+    // Buffer and streaming indexes
+    pub const STREAMING_BUFFER: &str = "streaming_buffer";
+    pub const STREAMING_INDEX: &str = "streaming_index";
+    pub const HISTORICAL_INDEX: &str = "historical_index";
 }
 
 /// Index-related errors
