@@ -3,6 +3,10 @@ name = "erigon-bridge"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "erigon_bridge"
+path = "src/lib.rs"
+
 [[bin]]
 name = "erigon-bridge"
 path = "src/main.rs"
@@ -44,7 +48,7 @@ hex = "0.4"
 async-stream = "0.3"
 
 # Ethereum types and RLP
-alloy-consensus = "0.5"
+alloy-consensus = "1.0"
 alloy-rlp = "0.3"
 alloy-primitives = "0.8"
 derive_more = { version = "1.0", features = ["display"] }

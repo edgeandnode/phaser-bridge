@@ -1,11 +1,13 @@
 /// Generated protobuf code for Erigon gRPC interfaces
 
-// Generated modules as submodules
-#[path = "generated/types.rs"]
-pub mod types;
+// Include generated code directly
+pub mod types {
+    include!("generated/types.rs");
+}
 
-#[path = "generated/remote.rs"]
-pub mod remote;
+pub mod remote {
+    include!("generated/remote.rs");
+}
 
 // Re-export commonly used types
 pub use remote::ethbackend_client::EthbackendClient;

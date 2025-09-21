@@ -5,7 +5,7 @@ use futures::StreamExt;
 
 use crate::proto::{
     EthbackendClient, Event, SubscribeRequest,
-    BlockRequest,
+    BlockRequest, BlockReply,
 };
 use crate::proto::remote::SyncingReply;
 
@@ -67,6 +67,24 @@ impl ErigonClient {
     pub async fn get_latest_block(&mut self) -> Result<u64> {
         let sync_info = self.syncing_status().await?;
         Ok(sync_info.current_block)
+    }
+
+    /// Get a full block by number
+    pub async fn get_block(&mut self, block_number: u64) -> Result<BlockReply> {
+        debug!("Fetching full block #{}", block_number);
+
+        let request = tonic::Request::new(BlockRequest {
+            block_height: block_number,
+            block_hash: None,
+        });
+
+        let response = self.client.block(request).await?;
+        let block = response.into_inner();
+
+        debug!("Received block #{} - RLP size: {} bytes, senders: {} bytes",
+               block_number, block.block_rlp.len(), block.senders.len());
+
+        Ok(block)
     }
 
     /// Clone the client (for moving into async tasks)

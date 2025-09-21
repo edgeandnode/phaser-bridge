@@ -1,5 +1,14 @@
 # Phaser Query Development Guide
 
+## Development Guidelines
+
+### Solution Discussion
+When working on new features or changes:
+- First explain what currently exists in the codebase
+- Describe specifically what would need to be implemented
+- Clarify the technical approach before proceeding
+- Don't over-analyze alternatives - focus on understanding the specific requirement
+
 ## Testing Guidelines
 
 ### Test Data Directory
