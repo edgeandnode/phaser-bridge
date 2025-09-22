@@ -1,18 +1,18 @@
+use alloy_rlp::Decodable;
 use anyhow::Result;
 use arrow_array::RecordBatch;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tracing::{info, error, debug};
-use alloy_rlp::Decodable;
+use tracing::{debug, error, info};
 
 use crate::client::ErigonClient;
 use crate::converter::ErigonDataConverter;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum StreamDataType {
     Headers,      // Header batches only
     Transactions, // Transaction batches only
-    Both,        // Both header and transaction batches
+    Both,         // Both header and transaction batches
 }
 
 /// Stateless service that streams from Erigon
@@ -56,7 +56,8 @@ impl StreamingService {
         // Spawn background task that always streams
         tokio::spawn(async move {
             loop {
-                match Self::stream_blocks(client.clone(), sender.clone(), stream_type.clone()).await {
+                match Self::stream_blocks(client.clone(), sender.clone(), stream_type.clone()).await
+                {
                     Ok(_) => {
                         error!("Stream ended unexpectedly, restarting in 5 seconds");
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -84,7 +85,11 @@ impl StreamingService {
         info!("Subscription established, streaming blocks continuously");
 
         while let Some(msg) = stream.message().await? {
-            debug!("Received block event - type: {}, data_len: {}", msg.r#type, msg.data.len());
+            debug!(
+                "Received block event - type: {}, data_len: {}",
+                msg.r#type,
+                msg.data.len()
+            );
 
             // Skip non-header events or empty data
             if msg.r#type != 0 || msg.data.is_empty() {
@@ -102,6 +107,7 @@ impl StreamingService {
             };
 
             let block_num = header.number;
+            let block_hash = header.hash_slow();
 
             match stream_type {
                 StreamDataType::Headers => {
@@ -117,19 +123,40 @@ impl StreamingService {
                         }
                     };
                     let _ = sender.send(batch);
-                },
+                }
                 StreamDataType::Both | StreamDataType::Transactions => {
                     // Fetch the full block
+                    info!(
+                        "DEBUG: Fetching full block #{} with hash 0x{} for stream_type: {:?}",
+                        block_num,
+                        hex::encode(block_hash.as_slice()),
+                        stream_type
+                    );
                     let mut client_guard = client.lock().await;
-                    let block_reply = match client_guard.get_block(block_num).await {
-                        Ok(reply) => reply,
+                    let block_reply = match client_guard
+                        .get_block(block_num, Some(&block_hash.0))
+                        .await
+                    {
+                        Ok(reply) => {
+                            info!(
+                                "DEBUG: Successfully fetched block #{} - RLP: {} bytes, senders: {} bytes",
+                                block_num,
+                                reply.block_rlp.len(),
+                                reply.senders.len()
+                            );
+                            reply
+                        }
                         Err(e) => {
-                            error!("Failed to fetch full block #{}: {}. Falling back to header only.", block_num, e);
+                            error!(
+                                "Failed to fetch full block #{}: {}. Falling back to header only.",
+                                block_num, e
+                            );
                             drop(client_guard);
 
                             // Fall back to just sending the header if we're in Both mode
                             if matches!(stream_type, StreamDataType::Both) {
-                                let batch = match ErigonDataConverter::convert_subscribe_reply(&msg) {
+                                let batch = match ErigonDataConverter::convert_subscribe_reply(&msg)
+                                {
                                     Ok(batch) => batch,
                                     Err(e) => {
                                         error!("Failed to convert block header: {}", e);
@@ -144,8 +171,19 @@ impl StreamingService {
                     drop(client_guard);
 
                     // Convert the full block
-                    let (header_batch, tx_batch) = match ErigonDataConverter::convert_full_block(&block_reply) {
-                        Ok(batches) => batches,
+                    info!("DEBUG: Starting conversion of full block #{}", block_num);
+                    let (header_batch, tx_batch) = match ErigonDataConverter::convert_full_block(
+                        &block_reply,
+                    ) {
+                        Ok(batches) => {
+                            info!(
+                                    "DEBUG: Successfully converted block #{} - header batch: {} rows, tx batch: {} rows",
+                                    block_num,
+                                    batches.0.num_rows(),
+                                    batches.1.as_ref().map_or(0, |b| b.num_rows())
+                                );
+                            batches
+                        }
                         Err(e) => {
                             error!("Failed to convert full block #{}: {}", block_num, e);
                             continue;
@@ -159,16 +197,24 @@ impl StreamingService {
                             let _ = sender.send(header_batch);
 
                             if let Some(tx_batch) = tx_batch {
-                                info!("Block #{}: sending {} transactions", block_num, tx_batch.num_rows());
+                                info!(
+                                    "Block #{}: sending {} transactions",
+                                    block_num,
+                                    tx_batch.num_rows()
+                                );
                                 let _ = sender.send(tx_batch);
                             }
-                        },
+                        }
                         StreamDataType::Transactions => {
                             if let Some(tx_batch) = tx_batch {
-                                info!("Block #{}: sending {} transactions", block_num, tx_batch.num_rows());
+                                info!(
+                                    "Block #{}: sending {} transactions",
+                                    block_num,
+                                    tx_batch.num_rows()
+                                );
                                 let _ = sender.send(tx_batch);
                             }
-                        },
+                        }
                         _ => {}
                     }
                 }

@@ -1,5 +1,5 @@
+pub mod bridge;
 pub mod client;
 pub mod converter;
-pub mod streaming_service;
-pub mod bridge;
 pub mod proto;
+pub mod streaming_service;

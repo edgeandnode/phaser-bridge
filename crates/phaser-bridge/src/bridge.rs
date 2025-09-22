@@ -1,9 +1,9 @@
-use async_trait::async_trait;
 use arrow_array::RecordBatch;
 use arrow_flight::{
-    FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
-    SchemaResult, Ticket, Criteria,
+    Criteria, FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
+    SchemaResult, Ticket,
 };
+use async_trait::async_trait;
 use futures::Stream;
 use std::pin::Pin;
 use tonic::{Request, Response, Status, Streaming};
@@ -33,7 +33,10 @@ pub trait FlightBridge: Send + Sync + 'static {
     async fn handshake(
         &self,
         request: Request<Streaming<HandshakeRequest>>,
-    ) -> Result<Response<Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>>, Status>;
+    ) -> Result<
+        Response<Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>>,
+        Status,
+    >;
 
     /// Get flight information for a descriptor
     async fn get_flight_info(
@@ -76,7 +79,10 @@ pub trait DataConverter: Send + Sync {
     async fn blocks_to_batch(&self, blocks: Vec<impl Send>) -> Result<RecordBatch, anyhow::Error>;
 
     /// Convert transactions to Arrow RecordBatch
-    async fn transactions_to_batch(&self, txs: Vec<impl Send>) -> Result<RecordBatch, anyhow::Error>;
+    async fn transactions_to_batch(
+        &self,
+        txs: Vec<impl Send>,
+    ) -> Result<RecordBatch, anyhow::Error>;
 
     /// Convert logs to Arrow RecordBatch
     async fn logs_to_batch(&self, logs: Vec<impl Send>) -> Result<RecordBatch, anyhow::Error>;

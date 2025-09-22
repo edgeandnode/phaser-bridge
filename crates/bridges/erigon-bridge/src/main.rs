@@ -1,6 +1,6 @@
+mod bridge;
 mod client;
 mod converter;
-mod bridge;
 mod proto;
 mod streaming_service;
 
@@ -8,7 +8,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{info, error};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use bridge::ErigonFlightBridge;
@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("erigon_bridge=info"))
+                .unwrap_or_else(|_| EnvFilter::new("erigon_bridge=info")),
         )
         .init();
 
@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
             .map_err(|e| {
                 error!("Failed to create bridge: {}", e);
                 e
-            })?
+            })?,
     );
 
     // Create the Flight server

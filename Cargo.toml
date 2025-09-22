@@ -4,6 +4,7 @@ members = [
     "crates/phaser-query",
     "crates/phaser-bridge",
     "crates/bridges/erigon-bridge",
+    "crates/bridges/geth-bridge",
 ]
 
 [workspace.dependencies]

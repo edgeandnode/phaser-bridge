@@ -11,5 +11,5 @@ pub mod remote {
 
 // Re-export commonly used types
 pub use remote::ethbackend_client::EthbackendClient;
-pub use remote::{Event, SubscribeRequest, SubscribeReply, BlockRequest, BlockReply};
+pub use remote::{BlockReply, BlockRequest, Event, SubscribeReply, SubscribeRequest};
 pub use remote::{LogsFilterRequest, SubscribeLogsReply};

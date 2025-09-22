@@ -1,9 +1,6 @@
-use arrow_array::RecordBatch;
 use arrow::datatypes::Schema;
-use arrow_flight::{
-    decode::FlightRecordBatchStream,
-    FlightClient, FlightInfo,
-};
+use arrow_array::RecordBatch;
+use arrow_flight::{decode::FlightRecordBatchStream, FlightClient, FlightInfo};
 use futures::stream::StreamExt;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
@@ -22,9 +19,7 @@ impl FlightBridgeClient {
     pub async fn connect(endpoint: String) -> Result<Self, anyhow::Error> {
         info!("Connecting to bridge at {}", endpoint);
 
-        let channel = Channel::from_shared(endpoint.clone())?
-            .connect()
-            .await?;
+        let channel = Channel::from_shared(endpoint.clone())?.connect().await?;
 
         let client = FlightClient::new(channel);
 
@@ -107,7 +102,10 @@ impl FlightBridgeClient {
     }
 
     /// Get schema for a stream type
-    pub async fn get_schema(&mut self, descriptor: &BlockchainDescriptor) -> Result<Schema, anyhow::Error> {
+    pub async fn get_schema(
+        &mut self,
+        descriptor: &BlockchainDescriptor,
+    ) -> Result<Schema, anyhow::Error> {
         let flight_desc = descriptor.to_flight_descriptor();
         let schema = self.client.get_schema(flight_desc).await?;
         Ok(schema)
@@ -135,11 +133,8 @@ impl FlightBridgeClient {
     /// Check if the bridge is healthy
     pub async fn health_check(&mut self) -> Result<bool, anyhow::Error> {
         // Implement a simple health check by trying to get flight info
-        let descriptor = BlockchainDescriptor::historical(
-            crate::descriptors::StreamType::Blocks,
-            0,
-            0
-        );
+        let descriptor =
+            BlockchainDescriptor::historical(crate::descriptors::StreamType::Blocks, 0, 0);
 
         match self.get_flight_info(&descriptor).await {
             Ok(_) => Ok(true),

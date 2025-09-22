@@ -1,7 +1,7 @@
+use crate::subscription::{QueryMode, SubscriptionOptions};
+use anyhow;
 use arrow_flight::{FlightDescriptor, Ticket};
 use serde::{Deserialize, Serialize};
-use anyhow;
-use crate::subscription::{QueryMode, SubscriptionOptions};
 
 /// Types of blockchain data streams
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,7 +40,7 @@ impl BlockchainDescriptor {
             chain_id: None,
             query_mode: QueryMode::Live {
                 from_block,
-                buffer_size: 100
+                buffer_size: 100,
             },
             subscription_options: None,
             include_reorgs: false,

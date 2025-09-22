@@ -91,7 +91,9 @@ impl<B: FlightBridge> FlightService for FlightBridgeServer<B> {
         &self,
         _request: Request<Streaming<FlightData>>,
     ) -> Result<Response<Self::DoPutStream>, Status> {
-        Err(Status::unimplemented("do_put not implemented - bridges are read-only"))
+        Err(Status::unimplemented(
+            "do_put not implemented - bridges are read-only",
+        ))
     }
 
     async fn do_exchange(

@@ -1,13 +1,10 @@
 use anyhow::Result;
-use tonic::transport::Channel;
-use tracing::{info, debug, error};
 use futures::StreamExt;
+use tonic::transport::Channel;
+use tracing::{debug, error, info};
 
-use crate::proto::{
-    EthbackendClient, Event, SubscribeRequest,
-    BlockRequest, BlockReply,
-};
 use crate::proto::remote::SyncingReply;
+use crate::proto::{BlockReply, BlockRequest, EthbackendClient, Event, SubscribeRequest};
 
 /// Client for connecting to Erigon's gRPC interface
 pub struct ErigonClient {
@@ -19,7 +16,10 @@ impl ErigonClient {
     /// Create a new ErigonClient and connect to the given endpoint
     pub async fn connect(endpoint: String) -> Result<Self> {
         info!("Connecting to Erigon gRPC at {}", endpoint);
-        info!("Note: Erigon must be running with --private.api.addr={}", endpoint);
+        info!(
+            "Note: Erigon must be running with --private.api.addr={}",
+            endpoint
+        );
 
         let channel = Channel::from_shared(format!("http://{}", endpoint))?
             .connect()
@@ -35,7 +35,10 @@ impl ErigonClient {
         // Test the connection
         let request = tonic::Request::new(crate::proto::remote::ClientVersionRequest {});
         let response = client.client_version(request).await?;
-        info!("Connected to Erigon node: {}", response.into_inner().node_name);
+        info!(
+            "Connected to Erigon node: {}",
+            response.into_inner().node_name
+        );
 
         Ok(Self { client, endpoint })
     }
@@ -48,7 +51,9 @@ impl ErigonClient {
     }
 
     /// Subscribe to block headers
-    pub async fn subscribe_headers(&mut self) -> Result<tonic::Streaming<crate::proto::remote::SubscribeReply>> {
+    pub async fn subscribe_headers(
+        &mut self,
+    ) -> Result<tonic::Streaming<crate::proto::remote::SubscribeReply>> {
         info!("Subscribing to block headers...");
 
         let request = tonic::Request::new(SubscribeRequest {
@@ -69,20 +74,48 @@ impl ErigonClient {
         Ok(sync_info.current_block)
     }
 
-    /// Get a full block by number
-    pub async fn get_block(&mut self, block_number: u64) -> Result<BlockReply> {
+    /// Get a full block by number and optionally hash
+    pub async fn get_block(
+        &mut self,
+        block_number: u64,
+        block_hash: Option<&[u8; 32]>,
+    ) -> Result<BlockReply> {
         debug!("Fetching full block #{}", block_number);
 
+        // Convert the block hash bytes to the protobuf H256 format if provided
+        let block_hash_proto = block_hash.map(|hash_bytes| {
+            // Split the 32 bytes into two 16-byte halves for H256 format
+            let hi_bytes = &hash_bytes[0..16];
+            let lo_bytes = &hash_bytes[16..32];
+
+            crate::proto::types::H256 {
+                hi: Some(crate::proto::types::H128 {
+                    hi: u64::from_be_bytes(hi_bytes[0..8].try_into().unwrap()),
+                    lo: u64::from_be_bytes(hi_bytes[8..16].try_into().unwrap()),
+                }),
+                lo: Some(crate::proto::types::H128 {
+                    hi: u64::from_be_bytes(lo_bytes[0..8].try_into().unwrap()),
+                    lo: u64::from_be_bytes(lo_bytes[8..16].try_into().unwrap()),
+                }),
+            }
+        });
+
+        // While erigon's interfaces say: " it's ok to request block only by hash or only by number"
+        // in practice, requesting a new block by number only fails with a nil ptr error.
         let request = tonic::Request::new(BlockRequest {
             block_height: block_number,
-            block_hash: None,
+            block_hash: block_hash_proto,
         });
 
         let response = self.client.block(request).await?;
         let block = response.into_inner();
 
-        debug!("Received block #{} - RLP size: {} bytes, senders: {} bytes",
-               block_number, block.block_rlp.len(), block.senders.len());
+        debug!(
+            "Received block #{} - RLP size: {} bytes, senders: {} bytes",
+            block_number,
+            block.block_rlp.len(),
+            block.senders.len()
+        );
 
         Ok(block)
     }

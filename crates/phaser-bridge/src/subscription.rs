@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 use arrow_array::RecordBatch;
 use futures::Stream;
+use serde::{Deserialize, Serialize};
 use std::pin::Pin;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 /// How to handle backpressure when consumer is slow
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,19 +78,16 @@ pub enum ControlAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryMode {
     /// Query historical data between start and end blocks
-    Historical {
-        start: u64,
-        end: u64
-    },
+    Historical { start: u64, end: u64 },
     /// Subscribe to live data, optionally starting from a specific block
     Live {
         from_block: Option<u64>,
-        buffer_size: u32
+        buffer_size: u32,
     },
     /// Query historical then transition to live
     Hybrid {
         historical_start: u64,
-        then_follow: bool
+        then_follow: bool,
     },
 }
 
