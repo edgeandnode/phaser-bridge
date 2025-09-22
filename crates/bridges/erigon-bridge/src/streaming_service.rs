@@ -97,6 +97,13 @@ impl StreamingService {
                 continue;
             }
 
+            // Check if we have any subscribers
+            let subscriber_count = sender.receiver_count();
+            if subscriber_count == 0 {
+                debug!("No subscribers connected, skipping block processing");
+                continue;
+            }
+
             // First, decode the header to get block number
             let header = match alloy_consensus::Header::decode(&mut &msg.data[..]) {
                 Ok(h) => h,
@@ -108,6 +115,11 @@ impl StreamingService {
 
             let block_num = header.number;
             let block_hash = header.hash_slow();
+
+            debug!(
+                "Processing block #{} for {} subscriber(s)",
+                block_num, subscriber_count
+            );
 
             match stream_type {
                 StreamDataType::Headers => {
@@ -127,7 +139,7 @@ impl StreamingService {
                 StreamDataType::Both | StreamDataType::Transactions => {
                     // Fetch the full block
                     info!(
-                        "DEBUG: Fetching full block #{} with hash 0x{} for stream_type: {:?}",
+                        "Fetching full block #{} with hash 0x{} for stream_type: {:?}",
                         block_num,
                         hex::encode(block_hash.as_slice()),
                         stream_type
@@ -139,7 +151,7 @@ impl StreamingService {
                     {
                         Ok(reply) => {
                             info!(
-                                "DEBUG: Successfully fetched block #{} - RLP: {} bytes, senders: {} bytes",
+                                "Successfully fetched block #{} - RLP: {} bytes, senders: {} bytes",
                                 block_num,
                                 reply.block_rlp.len(),
                                 reply.senders.len()
@@ -177,7 +189,7 @@ impl StreamingService {
                     ) {
                         Ok(batches) => {
                             info!(
-                                    "DEBUG: Successfully converted block #{} - header batch: {} rows, tx batch: {} rows",
+                                    "Successfully converted block #{} - header batch: {} rows, tx batch: {} rows",
                                     block_num,
                                     batches.0.num_rows(),
                                     batches.1.as_ref().map_or(0, |b| b.num_rows())

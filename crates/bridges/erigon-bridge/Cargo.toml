@@ -14,6 +14,10 @@ path = "src/main.rs"
 [dependencies]
 # Local dependencies
 phaser-bridge = { path = "../../phaser-bridge" }
+evm-common = { path = "../../schemas/evm/common" }
+
+# Typed Arrow support
+typed-arrow = { workspace = true }
 
 # Arrow and Flight dependencies
 arrow = { workspace = true }
@@ -50,7 +54,7 @@ async-stream = "0.3"
 # Ethereum types and RLP
 alloy-consensus = "1.0"
 alloy-rlp = "0.3"
-alloy-primitives = "0.8"
+alloy-primitives = { workspace = true }
 derive_more = { version = "1.0", features = ["display"] }
 
 [build-dependencies]
