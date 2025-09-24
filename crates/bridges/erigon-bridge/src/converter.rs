@@ -1,16 +1,16 @@
-use crate::proto::remote::{BlockReply, SubscribeReply, SubscribeLogsReply};
+use crate::proto::remote::{BlockReply, SubscribeLogsReply, SubscribeReply};
 use alloy_consensus::{Block, Header, TxEnvelope};
 use anyhow::{anyhow, Result};
 use arrow::datatypes::Schema;
 use arrow_array::RecordBatch;
 type EthBlock = Block<TxEnvelope>;
 use alloy_rlp::Decodable;
+use evm_common::block::BlockRecord;
+use evm_common::log::{LogContext, LogRecord};
+use evm_common::transaction::{TransactionContext, TransactionRecord};
+use evm_common::types::{Address20, Hash32};
 use std::sync::Arc;
 use tracing::{debug, error};
-use evm_common::block::BlockRecord;
-use evm_common::transaction::{TransactionRecord, TransactionContext};
-use evm_common::log::{LogRecord, LogContext};
-use evm_common::types::{Hash32, Address20};
 use typed_arrow::prelude::BuildRows;
 
 /// Converter for Erigon data to Arrow format
@@ -118,10 +118,7 @@ impl ErigonDataConverter {
         };
 
         // Convert header to RecordBatch
-        debug!(
-            "Converting header for block #{}",
-            block.header.number
-        );
+        debug!("Converting header for block #{}", block.header.number);
         let header_batch = Self::convert_header_to_batch(&block.header)?;
         debug!(
             "Header batch created with {} rows, {} columns",
@@ -185,22 +182,26 @@ impl ErigonDataConverter {
 
         for log in logs {
             // Convert types using helper functions
-            let address = log.address.as_ref()
+            let address = log
+                .address
+                .as_ref()
                 .map(Self::h160_to_address20)
                 .ok_or_else(|| anyhow!("Log missing address"))?;
 
-            let block_hash = log.block_hash.as_ref()
+            let block_hash = log
+                .block_hash
+                .as_ref()
                 .map(Self::h256_to_hash32)
                 .ok_or_else(|| anyhow!("Log missing block_hash"))?;
 
-            let tx_hash = log.transaction_hash.as_ref()
+            let tx_hash = log
+                .transaction_hash
+                .as_ref()
                 .map(Self::h256_to_hash32)
                 .ok_or_else(|| anyhow!("Log missing transaction_hash"))?;
 
             // Convert topics
-            let topics: Vec<Hash32> = log.topics.iter()
-                .map(Self::h256_to_hash32)
-                .collect();
+            let topics: Vec<Hash32> = log.topics.iter().map(Self::h256_to_hash32).collect();
 
             let ctx = LogContext {
                 address,
@@ -254,7 +255,9 @@ impl ErigonDataConverter {
             let sender_bytes = &senders_bytes[idx * 20..(idx + 1) * 20];
             let mut sender_array = [0u8; 20];
             sender_array.copy_from_slice(sender_bytes);
-            let sender = Address20 { bytes: sender_array };
+            let sender = Address20 {
+                bytes: sender_array,
+            };
 
             // Create transaction context
             let ctx = TransactionContext {

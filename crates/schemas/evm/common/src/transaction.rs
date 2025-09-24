@@ -1,5 +1,5 @@
 use crate::types::{Address20, Hash32, Wei};
-use alloy_consensus::{TxEnvelope, TxEip4844Variant};
+use alloy_consensus::{TxEip4844Variant, TxEnvelope};
 use typed_arrow::Record;
 
 /// EVM Transaction schema - common across all EVM chains
@@ -89,7 +89,18 @@ impl<'a> From<TransactionContext<'a>> for TransactionRecord {
         let tx_hash = *ctx.tx.tx_hash();
 
         // Extract common fields based on transaction type
-        let (to, nonce, value, input, gas_limit, gas_price, max_fee_per_gas, max_priority_fee_per_gas, max_fee_per_blob_gas, tx_type) = match ctx.tx {
+        let (
+            to,
+            nonce,
+            value,
+            input,
+            gas_limit,
+            gas_price,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+            max_fee_per_blob_gas,
+            tx_type,
+        ) = match ctx.tx {
             TxEnvelope::Legacy(tx) => {
                 let inner = tx.tx();
                 (
@@ -104,7 +115,7 @@ impl<'a> From<TransactionContext<'a>> for TransactionRecord {
                     None,
                     0,
                 )
-            },
+            }
             TxEnvelope::Eip2930(tx) => {
                 let inner = tx.tx();
                 (
@@ -119,7 +130,7 @@ impl<'a> From<TransactionContext<'a>> for TransactionRecord {
                     None,
                     1,
                 )
-            },
+            }
             TxEnvelope::Eip1559(tx) => {
                 let inner = tx.tx();
                 (
@@ -134,7 +145,7 @@ impl<'a> From<TransactionContext<'a>> for TransactionRecord {
                     None,
                     2,
                 )
-            },
+            }
             TxEnvelope::Eip4844(tx) => {
                 // Extract the inner TxEip4844 from the variant
                 let tx_inner = match tx.tx() {
@@ -153,7 +164,7 @@ impl<'a> From<TransactionContext<'a>> for TransactionRecord {
                     Some(tx_inner.max_fee_per_blob_gas.into()),
                     3,
                 )
-            },
+            }
             TxEnvelope::Eip7702(tx) => {
                 let inner = tx.tx();
                 (
@@ -168,31 +179,51 @@ impl<'a> From<TransactionContext<'a>> for TransactionRecord {
                     None,
                     4,
                 )
-            },
+            }
         };
 
         // Extract signature components
         let (v, r, s) = match ctx.tx {
             TxEnvelope::Legacy(tx) => {
                 let sig = tx.signature();
-                (vec![if sig.v() { 1u8 } else { 0u8 }], sig.r().to_be_bytes::<32>().to_vec(), sig.s().to_be_bytes::<32>().to_vec())
-            },
+                (
+                    vec![if sig.v() { 1u8 } else { 0u8 }],
+                    sig.r().to_be_bytes::<32>().to_vec(),
+                    sig.s().to_be_bytes::<32>().to_vec(),
+                )
+            }
             TxEnvelope::Eip2930(tx) => {
                 let sig = tx.signature();
-                (vec![if sig.v() { 1u8 } else { 0u8 }], sig.r().to_be_bytes::<32>().to_vec(), sig.s().to_be_bytes::<32>().to_vec())
-            },
+                (
+                    vec![if sig.v() { 1u8 } else { 0u8 }],
+                    sig.r().to_be_bytes::<32>().to_vec(),
+                    sig.s().to_be_bytes::<32>().to_vec(),
+                )
+            }
             TxEnvelope::Eip1559(tx) => {
                 let sig = tx.signature();
-                (vec![if sig.v() { 1u8 } else { 0u8 }], sig.r().to_be_bytes::<32>().to_vec(), sig.s().to_be_bytes::<32>().to_vec())
-            },
+                (
+                    vec![if sig.v() { 1u8 } else { 0u8 }],
+                    sig.r().to_be_bytes::<32>().to_vec(),
+                    sig.s().to_be_bytes::<32>().to_vec(),
+                )
+            }
             TxEnvelope::Eip4844(tx) => {
                 let sig = tx.signature();
-                (vec![if sig.v() { 1u8 } else { 0u8 }], sig.r().to_be_bytes::<32>().to_vec(), sig.s().to_be_bytes::<32>().to_vec())
-            },
+                (
+                    vec![if sig.v() { 1u8 } else { 0u8 }],
+                    sig.r().to_be_bytes::<32>().to_vec(),
+                    sig.s().to_be_bytes::<32>().to_vec(),
+                )
+            }
             TxEnvelope::Eip7702(tx) => {
                 let sig = tx.signature();
-                (vec![if sig.v() { 1u8 } else { 0u8 }], sig.r().to_be_bytes::<32>().to_vec(), sig.s().to_be_bytes::<32>().to_vec())
-            },
+                (
+                    vec![if sig.v() { 1u8 } else { 0u8 }],
+                    sig.r().to_be_bytes::<32>().to_vec(),
+                    sig.s().to_be_bytes::<32>().to_vec(),
+                )
+            }
         };
 
         TransactionRecord {

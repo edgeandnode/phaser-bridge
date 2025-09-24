@@ -28,7 +28,7 @@ pub struct Address20 {
 
 impl From<Address> for Address20 {
     fn from(a: Address) -> Self {
-        Address20 { bytes: a.0.0 }
+        Address20 { bytes: a.0 .0 }
     }
 }
 
@@ -46,21 +46,26 @@ pub struct Wei {
 
 impl From<U256> for Wei {
     fn from(u: U256) -> Self {
-        Wei { bytes: u.to_le_bytes() }
+        Wei {
+            bytes: u.to_le_bytes(),
+        }
     }
 }
 
 impl From<u64> for Wei {
     fn from(value: u64) -> Self {
         let u256 = U256::from(value);
-        Wei { bytes: u256.to_le_bytes() }
+        Wei {
+            bytes: u256.to_le_bytes(),
+        }
     }
 }
 
 impl From<u128> for Wei {
     fn from(value: u128) -> Self {
         let u256 = U256::from(value);
-        Wei { bytes: u256.to_le_bytes() }
+        Wei {
+            bytes: u256.to_le_bytes(),
+        }
     }
 }
-

@@ -2,13 +2,12 @@
 ///
 /// This crate provides typed-arrow schemas for blocks, transactions, and logs
 /// that are common across all EVM implementations (Ethereum, Arbitrum, Optimism, etc.)
-
 use typed_arrow::schema::SchemaMeta;
 
-pub mod types;
 pub mod block;
-pub mod transaction;
 pub mod log;
+pub mod transaction;
+pub mod types;
 
 /// Version of the schema format
 pub const SCHEMA_VERSION: &str = "1.0.0";
