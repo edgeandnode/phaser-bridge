@@ -4,22 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "test-streaming"
-path = "src/bin/test-streaming.rs"
-
-[[bin]]
-name = "test-parquet-writer"
-path = "src/bin/test-parquet-writer.rs"
-
-[[bin]]
-name = "test-schema-discovery"
-path = "src/bin/test-schema-discovery.rs"
-
-[[bin]]
-name = "test-client-with-discovery"
-path = "src/bin/test-client-with-discovery.rs"
-
-[[bin]]
 name = "phaser-query"
 path = "src/bin/phaser-query.rs"
 

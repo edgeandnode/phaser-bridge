@@ -7,14 +7,11 @@ pub mod parquet_writer;
 pub mod proto;
 pub mod rpc;
 pub mod sql;
-pub mod streaming;
-pub mod streaming_service;
 pub mod streaming_with_writer;
-pub mod streaming_writer;
 
-use std::sync::Arc;
-use std::path::PathBuf;
 use anyhow::Result;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Main phaser-query service that combines RPC and SQL interfaces
 pub struct PhaserQuery {
@@ -57,9 +54,9 @@ pub struct PhaserConfig {
     pub rocksdb_path: PathBuf,
     pub data_root: PathBuf,
     pub erigon_grpc_endpoint: String,
-    pub segment_size: u64,         // Blocks per segment (500_000)
-    pub max_file_size_mb: u64,     // Max file size before rotation (1024 MB)
-    pub buffer_timeout_secs: u64,  // Timeout for flushing buffers (60 seconds)
+    pub segment_size: u64,        // Blocks per segment (500_000)
+    pub max_file_size_mb: u64,    // Max file size before rotation (1024 MB)
+    pub buffer_timeout_secs: u64, // Timeout for flushing buffers (60 seconds)
     pub rpc_port: u16,
     pub sql_port: u16,
 }

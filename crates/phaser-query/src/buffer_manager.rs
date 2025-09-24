@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-use rocksdb::{DB, WriteBatch};
+use rocksdb::{WriteBatch, DB};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -145,7 +145,11 @@ impl CfToParquetBuffer {
 
         // Store file info for the range
         let file_info_key = format!("file_{:016x}_{:016x}", min_key, max_key);
-        batch.put_cf(index_cf, file_info_key.as_bytes(), bincode::serialize(&file_info)?);
+        batch.put_cf(
+            index_cf,
+            file_info_key.as_bytes(),
+            bincode::serialize(&file_info)?,
+        );
 
         // Add index entries for each block
         for (i, (key, _)) in items.iter().enumerate() {
@@ -428,7 +432,10 @@ impl QueryManager {
             row_count += batch.num_rows();
         }
 
-        error!("Block {} not found at expected position in Parquet file", block_num);
+        error!(
+            "Block {} not found at expected position in Parquet file",
+            block_num
+        );
         Ok(None)
     }
 
@@ -446,7 +453,9 @@ impl QueryManager {
             .cf_handle(&self.historical_index_cf)
             .ok_or_else(|| anyhow!("Historical index CF not found"))?;
 
-        let streaming_indexed = self.db.iterator_cf(streaming_cf, rocksdb::IteratorMode::Start)
+        let streaming_indexed = self
+            .db
+            .iterator_cf(streaming_cf, rocksdb::IteratorMode::Start)
             .filter(|item| {
                 if let Ok((key, _)) = item {
                     !String::from_utf8_lossy(key).starts_with("file_")
@@ -456,7 +465,9 @@ impl QueryManager {
             })
             .count();
 
-        let historical_indexed = self.db.iterator_cf(historical_cf, rocksdb::IteratorMode::Start)
+        let historical_indexed = self
+            .db
+            .iterator_cf(historical_cf, rocksdb::IteratorMode::Start)
             .filter(|item| {
                 if let Ok((key, _)) = item {
                     !String::from_utf8_lossy(key).starts_with("file_")

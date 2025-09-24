@@ -1,13 +1,13 @@
 use anyhow::Result;
-use tonic::transport::Channel;
-use tracing::{info, debug, error, warn};
 use futures::StreamExt;
+use tonic::transport::Channel;
+use tracing::{debug, error, info, warn};
 
+use crate::proto::types::{H160, H256};
 use crate::proto::{
-    EthbackendClient, Event, SubscribeRequest, SubscribeReply,
-    BlockRequest, BlockReply, LogsFilterRequest, SubscribeLogsReply,
+    BlockReply, BlockRequest, EthbackendClient, Event, LogsFilterRequest, SubscribeLogsReply,
+    SubscribeReply, SubscribeRequest,
 };
-use crate::proto::types::{H256, H160};
 
 /// Client for connecting to Erigon's gRPC interface
 pub struct ErigonClient {
@@ -19,7 +19,10 @@ impl ErigonClient {
     /// Create a new ErigonClient and connect to the given endpoint
     pub async fn connect(endpoint: String) -> Result<Self> {
         info!("Connecting to Erigon gRPC at {}", endpoint);
-        info!("Note: Erigon must be running with --private.api.addr={}", endpoint);
+        info!(
+            "Note: Erigon must be running with --private.api.addr={}",
+            endpoint
+        );
 
         let channel = Channel::from_shared(format!("http://{}", endpoint))?
             .connect()
@@ -44,7 +47,10 @@ impl ErigonClient {
         let request = tonic::Request::new(ClientVersionRequest {});
         let response = self.client.client_version(request).await?;
 
-        info!("Connected to Erigon node: {}", response.into_inner().node_name);
+        info!(
+            "Connected to Erigon node: {}",
+            response.into_inner().node_name
+        );
 
         Ok(())
     }

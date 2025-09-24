@@ -1,9 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
-use phaser_query::{PhaserConfig, PhaserQuery};
+use phaser_query::{streaming_with_writer::StreamingServiceWithWriter, PhaserConfig, PhaserQuery};
 use std::path::PathBuf;
+use tracing::{error, info};
 use tracing_subscriber;
-use tracing::{info, error};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("phaser_query=info".parse()?)
                 .add_directive("phaser_bridge=info".parse()?)
-                .add_directive("erigon_bridge=info".parse()?)
+                .add_directive("erigon_bridge=info".parse()?),
         )
         .init();
 
@@ -94,7 +94,10 @@ async fn main() -> Result<()> {
 
     // Start streaming service if enabled
     if args.enable_streaming {
-        info!("Starting streaming service from bridge at {}", args.bridge_endpoint);
+        info!(
+            "Starting streaming service from bridge at {}",
+            args.bridge_endpoint
+        );
 
         let config = config.clone();
         let catalog = phaser.catalog.clone();
@@ -135,10 +138,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn import_historical_data(
-    phaser: &PhaserQuery,
-    import_path: &PathBuf
-) -> Result<()> {
+async fn import_historical_data(phaser: &PhaserQuery, import_path: &PathBuf) -> Result<()> {
     use std::fs;
 
     let historical_dir = phaser.config.historical_dir();
@@ -181,8 +181,6 @@ async fn start_streaming_service(
     config: PhaserConfig,
     catalog: std::sync::Arc<phaser_query::catalog::RocksDbCatalog>,
 ) -> Result<()> {
-    use phaser_query::streaming_with_writer::StreamingServiceWithWriter;
-
     let streaming_dir = config.streaming_dir();
 
     let mut service = StreamingServiceWithWriter::new(
@@ -190,9 +188,13 @@ async fn start_streaming_service(
         streaming_dir,
         config.max_file_size_mb,
         config.segment_size,
-    ).await?;
+    )
+    .await?;
 
-    info!("Connected to bridge, starting streaming to {:?}", config.streaming_dir());
+    info!(
+        "Connected to bridge, starting streaming to {:?}",
+        config.streaming_dir()
+    );
 
     // Start streaming with periodic index updates
     let catalog_clone = catalog.clone();
@@ -200,12 +202,18 @@ async fn start_streaming_service(
 
     tokio::spawn(async move {
         loop {
-            // Re-index every 60 seconds to pick up new streaming files
+            // Re-index every 60 seconds to pick up new historical files (e.g., from imports)
             tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
-            info!("Updating indexes for streaming data...");
-            if let Err(e) = phaser_query::indexer::build_indexes(&catalog_clone, &config_clone).await {
-                error!("Failed to update indexes: {}", e);
+            info!("Updating indexes for historical data...");
+            // Only index historical directory, not streaming
+            let historical_dir = config_clone.historical_dir();
+            if historical_dir.exists() {
+                if let Err(e) =
+                    phaser_query::indexer::index_historical_directory(&catalog_clone, &historical_dir).await
+                {
+                    error!("Failed to update historical indexes: {}", e);
+                }
             }
         }
     });

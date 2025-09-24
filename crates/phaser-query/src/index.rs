@@ -26,7 +26,10 @@ impl BlockPointer {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, IndexError> {
         if bytes.len() != 6 {
-            return Err(IndexError::InvalidPointerSize { expected: 6, got: bytes.len() });
+            return Err(IndexError::InvalidPointerSize {
+                expected: 6,
+                got: bytes.len(),
+            });
         }
         Ok(Self {
             row_group: u16::from_be_bytes([bytes[0], bytes[1]]),
@@ -54,7 +57,10 @@ impl TransactionPointer {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, IndexError> {
         if bytes.len() != 14 {
-            return Err(IndexError::InvalidPointerSize { expected: 14, got: bytes.len() });
+            return Err(IndexError::InvalidPointerSize {
+                expected: 14,
+                got: bytes.len(),
+            });
         }
         Ok(Self {
             block_number: u64::from_be_bytes(bytes[0..8].try_into().unwrap()),
@@ -81,7 +87,10 @@ impl LogPointer {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, IndexError> {
         if bytes.len() != 6 {
-            return Err(IndexError::InvalidPointerSize { expected: 6, got: bytes.len() });
+            return Err(IndexError::InvalidPointerSize {
+                expected: 6,
+                got: bytes.len(),
+            });
         }
         Ok(Self {
             row_group: u16::from_be_bytes([bytes[0], bytes[1]]),

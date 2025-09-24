@@ -1,10 +1,10 @@
+use crate::catalog::RocksDbCatalog;
+use crate::index::{BlockPointer, FileInfo, LogPointer, TransactionPointer};
+use crate::PhaserConfig;
+use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
-use anyhow::Result;
-use tracing::{info, debug};
-use crate::catalog::RocksDbCatalog;
-use crate::index::{FileInfo, BlockPointer, TransactionPointer, LogPointer};
-use crate::PhaserConfig;
+use tracing::{debug, info};
 
 /// Build indexes from Parquet files in the specified directories
 pub async fn build_indexes(catalog: &RocksDbCatalog, config: &PhaserConfig) -> Result<()> {
@@ -17,15 +17,17 @@ pub async fn build_indexes(catalog: &RocksDbCatalog, config: &PhaserConfig) -> R
         index_directory(catalog, &historical_dir).await?;
     }
 
-    // Index files from streaming directory
-    let streaming_dir = config.streaming_dir();
-    if streaming_dir.exists() {
-        info!("Indexing streaming data from {:?}", streaming_dir);
-        index_directory(catalog, &streaming_dir).await?;
-    }
+    // NOTE: We don't index streaming directory here anymore.
+    // Streaming files are indexed when they're finalized during file rotation.
 
     info!("Index building complete");
     Ok(())
+}
+
+/// Index only historical directory (used by periodic background task)
+pub async fn index_historical_directory(catalog: &RocksDbCatalog, dir: &Path) -> Result<()> {
+    info!("Indexing historical data from {:?}", dir);
+    index_directory(catalog, dir).await
 }
 
 /// Index all Parquet files in a directory
@@ -95,9 +97,9 @@ async fn index_block_file(catalog: &RocksDbCatalog, path: &PathBuf) -> Result<()
     // Expected format: blocks-${segment}.parquet or blocks-${segment}-chunk-${start}-${end}.parquet
     let file_info = FileInfo {
         file_path: path.to_string_lossy().to_string(),
-        block_start: 0,  // TODO: Parse from filename
-        block_end: 999999,  // TODO: Parse from filename
-        row_count: 0,  // TODO: Get from Parquet metadata
+        block_start: 0,    // TODO: Parse from filename
+        block_end: 999999, // TODO: Parse from filename
+        row_count: 0,      // TODO: Get from Parquet metadata
     };
 
     catalog.put_block_file(&file_info)?;

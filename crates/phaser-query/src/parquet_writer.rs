@@ -5,7 +5,7 @@ use arrow::datatypes as arrow_schema;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use tracing::{info, debug, error};
+use tracing::{debug, error, info};
 
 /// Service for writing RecordBatches to Parquet files
 pub struct ParquetWriter {
@@ -13,6 +13,7 @@ pub struct ParquetWriter {
     current_file: Option<CurrentFile>,
     max_file_size_bytes: u64,
     segment_size: u64,
+    data_type: String, // "blocks", "transactions", or "logs"
 }
 
 struct CurrentFile {
@@ -25,7 +26,7 @@ struct CurrentFile {
 }
 
 impl ParquetWriter {
-    pub fn new(data_dir: PathBuf, max_file_size_mb: u64, segment_size: u64) -> Result<Self> {
+    pub fn new(data_dir: PathBuf, max_file_size_mb: u64, segment_size: u64, data_type: String) -> Result<Self> {
         // Create data directory if it doesn't exist
         fs::create_dir_all(&data_dir)?;
 
@@ -34,12 +35,17 @@ impl ParquetWriter {
             current_file: None,
             max_file_size_bytes: max_file_size_mb * 1024 * 1024,
             segment_size,
+            data_type,
         })
     }
 
     pub async fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
         // Extract block number from the batch (assuming _block_num is first column)
-        let block_num = if let Some(array) = batch.column(0).as_any().downcast_ref::<arrow_array::UInt64Array>() {
+        let block_num = if let Some(array) = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+        {
             if array.len() > 0 {
                 array.value(0)
             } else {
@@ -86,7 +92,8 @@ impl ParquetWriter {
     fn should_start_new_file(&self, block_num: u64) -> Result<bool> {
         if let Some(ref current) = self.current_file {
             // Check segment boundary
-            let segment_boundary = (block_num / self.segment_size) != (current.start_block / self.segment_size);
+            let segment_boundary =
+                (block_num / self.segment_size) != (current.start_block / self.segment_size);
 
             // Check file size
             let size_exceeded = current.byte_count >= self.max_file_size_bytes;
@@ -100,13 +107,12 @@ impl ParquetWriter {
     fn start_new_file(&mut self, block_num: u64, schema: arrow_schema::SchemaRef) -> Result<()> {
         let segment_id = block_num / self.segment_size;
         let filename = format!(
-            "blocks_segment_{:06}_from_{}.parquet",
-            segment_id,
-            block_num
+            "{}_segment_{:06}_from_{}.parquet",
+            self.data_type, segment_id, block_num
         );
         let path = self.data_dir.join(filename);
 
-        info!("Starting new parquet file: {}", path.display());
+        info!("Starting new {} parquet file: {}", self.data_type, path.display());
 
         let file = File::create(&path)?;
         let props = WriterProperties::builder()
@@ -133,7 +139,8 @@ impl ParquetWriter {
 
             // Rename file to include end block
             let new_filename = format!(
-                "blocks_segment_{:06}_blocks_{}_to_{}.parquet",
+                "{}_segment_{:06}_{}_to_{}.parquet",
+                self.data_type,
                 current.start_block / self.segment_size,
                 current.start_block,
                 current.end_block

@@ -1,16 +1,9 @@
-use std::sync::Arc;
-use anyhow::Result;
-use axum::{
-    Router,
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Json,
-};
-use serde::{Deserialize, Serialize};
-use tracing::info;
 use crate::catalog::RocksDbCatalog;
+use anyhow::Result;
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tracing::info;
 
 pub struct SqlServer {
     catalog: Arc<RocksDbCatalog>,
@@ -40,8 +33,7 @@ impl SqlServer {
             .route("/query", post(handle_sql_query))
             .with_state(self.catalog.clone());
 
-        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", self.port))
-            .await?;
+        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", self.port)).await?;
 
         axum::serve(listener, app).await?;
         Ok(())

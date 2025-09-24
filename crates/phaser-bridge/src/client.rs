@@ -94,7 +94,10 @@ impl FlightBridgeClient {
     ) -> Result<FlightRecordBatchStream, anyhow::Error> {
         let ticket = descriptor.to_ticket();
 
-        info!("Subscribing to real-time data from bridge");
+        info!(
+            "Subscribing to real-time data from bridge ({})",
+            descriptor.stream_type.to_string()
+        );
         let stream = self.client.do_get(ticket).await?;
 
         // Return the stream for the caller to consume
