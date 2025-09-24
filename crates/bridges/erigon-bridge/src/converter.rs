@@ -17,6 +17,31 @@ use typed_arrow::prelude::BuildRows;
 pub struct ErigonDataConverter;
 
 impl ErigonDataConverter {
+    /// Convert Erigon H160 to Address20
+    fn h160_to_address20(h160: &crate::proto::types::H160) -> Address20 {
+        let mut bytes = [0u8; 20];
+        // H160 is 20 bytes = 160 bits
+        // hi is H128 (16 bytes), lo is u32 (4 bytes)
+        if let Some(hi) = &h160.hi {
+            bytes[0..8].copy_from_slice(&hi.hi.to_be_bytes());
+            bytes[8..16].copy_from_slice(&hi.lo.to_be_bytes());
+        }
+        // Last 4 bytes from lo
+        bytes[16..20].copy_from_slice(&h160.lo.to_be_bytes());
+        Address20 { bytes }
+    }
+
+    /// Convert Erigon H256 to Hash32
+    fn h256_to_hash32(h256: &crate::proto::types::H256) -> Hash32 {
+        let mut bytes = [0u8; 32];
+        if let (Some(hi), Some(lo)) = (&h256.hi, &h256.lo) {
+            bytes[0..8].copy_from_slice(&hi.hi.to_be_bytes());
+            bytes[8..16].copy_from_slice(&hi.lo.to_be_bytes());
+            bytes[16..24].copy_from_slice(&lo.hi.to_be_bytes());
+            bytes[24..32].copy_from_slice(&lo.lo.to_be_bytes());
+        }
+        Hash32 { bytes }
+    }
     /// Get the Arrow schema for blocks
     pub fn block_schema() -> Arc<Schema> {
         evm_common::block_arrow_schema()
@@ -159,39 +184,22 @@ impl ErigonDataConverter {
         let mut builders = LogRecord::new_builders(logs.len());
 
         for log in logs {
-            // Convert H160 address to Address20
-            let address = if let Some(addr) = &log.address {
-                let mut bytes = [0u8; 20];
-                bytes.copy_from_slice(&addr.hash);
-                Address20 { bytes }
-            } else {
-                return Err(anyhow!("Log missing address"));
-            };
+            // Convert types using helper functions
+            let address = log.address.as_ref()
+                .map(Self::h160_to_address20)
+                .ok_or_else(|| anyhow!("Log missing address"))?;
 
-            // Convert H256 hashes to Hash32
-            let block_hash = if let Some(hash) = &log.block_hash {
-                let mut bytes = [0u8; 32];
-                bytes.copy_from_slice(&hash.hash);
-                Hash32 { bytes }
-            } else {
-                return Err(anyhow!("Log missing block_hash"));
-            };
+            let block_hash = log.block_hash.as_ref()
+                .map(Self::h256_to_hash32)
+                .ok_or_else(|| anyhow!("Log missing block_hash"))?;
 
-            let tx_hash = if let Some(hash) = &log.transaction_hash {
-                let mut bytes = [0u8; 32];
-                bytes.copy_from_slice(&hash.hash);
-                Hash32 { bytes }
-            } else {
-                return Err(anyhow!("Log missing transaction_hash"));
-            };
+            let tx_hash = log.transaction_hash.as_ref()
+                .map(Self::h256_to_hash32)
+                .ok_or_else(|| anyhow!("Log missing transaction_hash"))?;
 
             // Convert topics
             let topics: Vec<Hash32> = log.topics.iter()
-                .map(|t| {
-                    let mut bytes = [0u8; 32];
-                    bytes.copy_from_slice(&t.hash);
-                    Hash32 { bytes }
-                })
+                .map(Self::h256_to_hash32)
                 .collect();
 
             let ctx = LogContext {

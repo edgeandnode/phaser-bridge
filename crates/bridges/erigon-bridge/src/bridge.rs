@@ -32,7 +32,7 @@ impl ErigonFlightBridge {
         // Create the streaming service for live subscriptions
         let streaming_service = Arc::new(StreamingService::new(client.clone()));
 
-        // Start the streaming service
+        // Start the streaming service (handles blocks, transactions, and logs)
         let service_clone = streaming_service.clone();
         tokio::spawn(async move {
             if let Err(e) = service_clone.start_streaming().await {
@@ -56,6 +56,27 @@ impl ErigonFlightBridge {
             capabilities: vec!["streaming".to_string()],
             current_block: 0, // Would need to query this from Erigon
             oldest_block: 0,  // Would need to query this from Erigon
+        }
+    }
+
+    /// Parse a FlightDescriptor to extract the BlockchainDescriptor
+    fn parse_descriptor(
+        descriptor: &FlightDescriptor,
+    ) -> Result<phaser_bridge::descriptors::BlockchainDescriptor, Status> {
+        if let Some(first) = descriptor.path.first() {
+            serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first)
+                .map_err(|e| Status::invalid_argument(format!("Invalid descriptor: {}", e)))
+        } else {
+            Err(Status::invalid_argument("Empty descriptor path"))
+        }
+    }
+
+    /// Get the Arrow schema for a given stream type
+    fn get_schema_for_type(stream_type: StreamType) -> Arc<arrow::datatypes::Schema> {
+        match stream_type {
+            StreamType::Blocks => ErigonDataConverter::block_schema(),
+            StreamType::Transactions => ErigonDataConverter::transaction_schema(),
+            StreamType::Logs => ErigonDataConverter::log_schema(),
         }
     }
 }
@@ -100,11 +121,11 @@ impl FlightBridge for ErigonFlightBridge {
         _request: Request<Criteria>,
     ) -> Result<Response<Pin<Box<dyn Stream<Item = Result<FlightInfo, Status>> + Send>>>, Status>
     {
-        // List available data streams
+        // List available stream types
         let info_streams = vec![
-            create_flight_info("blocks", &ErigonDataConverter::block_schema()),
-            create_flight_info("transactions", &ErigonDataConverter::transaction_schema()),
-            create_flight_info("logs", &ErigonDataConverter::log_schema()),
+            create_flight_info(StreamType::Blocks),
+            create_flight_info(StreamType::Transactions),
+            create_flight_info(StreamType::Logs),
         ];
 
         let stream = stream::iter(info_streams.into_iter().map(Ok));
@@ -116,53 +137,9 @@ impl FlightBridge for ErigonFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         let descriptor = request.into_inner();
+        let blockchain_desc = Self::parse_descriptor(&descriptor)?;
 
-        // Parse the path to determine which stream type
-        // Handle both simple path (["blocks"]) and JSON descriptor in path
-        let stream_type = if let Some(first) = descriptor.path.first() {
-            // Check if it's JSON (starts with '{')
-            if first.starts_with('{') {
-                // Try to parse as BlockchainDescriptor
-                use phaser_bridge::descriptors::BlockchainDescriptor;
-                match serde_json::from_str::<BlockchainDescriptor>(first) {
-                    Ok(desc) => match desc.stream_type {
-                        phaser_bridge::descriptors::StreamType::Blocks => "blocks",
-                        phaser_bridge::descriptors::StreamType::Transactions => "transactions",
-                        phaser_bridge::descriptors::StreamType::Logs => "logs",
-                    },
-                    Err(e) => {
-                        return Err(Status::invalid_argument(format!(
-                            "Invalid descriptor: {}",
-                            e
-                        )));
-                    }
-                }
-            } else {
-                first.as_str()
-            }
-        } else {
-            return Err(Status::invalid_argument("Empty descriptor path"));
-        };
-
-        let schema = match stream_type {
-            "blocks" => ErigonDataConverter::block_schema(),
-            "transactions" => ErigonDataConverter::transaction_schema(),
-            "logs" => ErigonDataConverter::log_schema(),
-            _ => {
-                return Err(Status::invalid_argument(format!(
-                    "Unknown stream type: {}",
-                    stream_type
-                )))
-            }
-        };
-
-        let info = FlightInfo::new()
-            .with_descriptor(descriptor)
-            .try_with_schema(&schema)
-            .map_err(|e| Status::internal(format!("Schema error: {}", e)))?
-            .with_endpoint(FlightEndpoint::new().with_ticket(Ticket::new(vec![])))
-            .with_total_records(0)
-            .with_total_bytes(0);
+        let info = create_flight_info(blockchain_desc.stream_type);
 
         Ok(Response::new(info))
     }
@@ -172,45 +149,8 @@ impl FlightBridge for ErigonFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> Result<Response<SchemaResult>, Status> {
         let descriptor = request.into_inner();
-
-        // Parse the path to determine which stream type
-        // Handle both simple path (["blocks"]) and JSON descriptor in path
-        let stream_type = if let Some(first) = descriptor.path.first() {
-            // Check if it's JSON (starts with '{')
-            if first.starts_with('{') {
-                // Try to parse as BlockchainDescriptor
-                use phaser_bridge::descriptors::BlockchainDescriptor;
-                match serde_json::from_str::<BlockchainDescriptor>(first) {
-                    Ok(desc) => match desc.stream_type {
-                        phaser_bridge::descriptors::StreamType::Blocks => "blocks",
-                        phaser_bridge::descriptors::StreamType::Transactions => "transactions",
-                        phaser_bridge::descriptors::StreamType::Logs => "logs",
-                    },
-                    Err(e) => {
-                        return Err(Status::invalid_argument(format!(
-                            "Invalid descriptor: {}",
-                            e
-                        )));
-                    }
-                }
-            } else {
-                first.as_str()
-            }
-        } else {
-            return Err(Status::invalid_argument("Empty descriptor path"));
-        };
-
-        let schema = match stream_type {
-            "blocks" => ErigonDataConverter::block_schema(),
-            "transactions" => ErigonDataConverter::transaction_schema(),
-            "logs" => ErigonDataConverter::log_schema(),
-            _ => {
-                return Err(Status::invalid_argument(format!(
-                    "Unknown stream type: {}",
-                    stream_type
-                )))
-            }
-        };
+        let blockchain_desc = Self::parse_descriptor(&descriptor)?;
+        let schema = Self::get_schema_for_type(blockchain_desc.stream_type);
 
         // Convert Arrow schema to IPC format for Flight
         // SchemaResult expects raw bytes - we need to encode the schema properly
@@ -247,49 +187,35 @@ impl FlightBridge for ErigonFlightBridge {
 
         // Parse ticket to determine what data to stream
         // The ticket contains a JSON-serialized BlockchainDescriptor
-        let stream_type = if let Ok(descriptor_json) = String::from_utf8(ticket.ticket.to_vec()) {
-            use phaser_bridge::descriptors::BlockchainDescriptor;
-            match serde_json::from_str::<BlockchainDescriptor>(&descriptor_json) {
-                Ok(desc) => match desc.stream_type {
-                    phaser_bridge::descriptors::StreamType::Blocks => "blocks",
-                    phaser_bridge::descriptors::StreamType::Transactions => "transactions",
-                    phaser_bridge::descriptors::StreamType::Logs => "logs",
-                },
-                Err(e) => {
-                    error!("Failed to parse ticket as BlockchainDescriptor: {}", e);
-                    return Err(Status::invalid_argument(format!("Invalid ticket: {}", e)));
-                }
-            }
-        } else {
-            return Err(Status::invalid_argument("Ticket is not valid UTF-8"));
+        let blockchain_desc = String::from_utf8(ticket.ticket.to_vec())
+            .map_err(|_| Status::invalid_argument("Ticket is not valid UTF-8"))
+            .and_then(|s| {
+                serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(&s)
+                    .map_err(|e| {
+                        Status::invalid_argument(format!("Invalid descriptor in ticket: {}", e))
+                    })
+            })?;
+        let stream_type = blockchain_desc.stream_type;
+
+        info!("Processing do_get for {:?}", stream_type);
+
+        let receiver = match stream_type {
+            StreamType::Blocks => self.streaming_service.subscribe_blocks(),
+            StreamType::Transactions => self.streaming_service.subscribe_transactions(),
+            StreamType::Logs => self.streaming_service.subscribe_logs(),
         };
 
-        info!("Processing do_get for {}", stream_type);
-
-        // Subscribe to live updates for do_get as well
-        let receiver = self.streaming_service.subscribe();
-
-        let schema = match stream_type {
-            "blocks" => ErigonDataConverter::block_schema(),
-            "transactions" => ErigonDataConverter::transaction_schema(),
-            "logs" => ErigonDataConverter::log_schema(),
-            _ => unreachable!(),
-        };
-
-        // Create a stream of RecordBatches from the receiver
+        let schema = Self::get_schema_for_type(stream_type);
         let batch_stream = async_stream::stream! {
             let mut rx = receiver;
             while let Ok(batch) = rx.recv().await {
                 yield Ok(batch);
             }
         };
-
-        // Create ONE encoder for the entire stream with schema
         let encoder = FlightDataEncoderBuilder::new()
             .with_schema(schema)
             .build(batch_stream);
 
-        // Convert the encoder stream to the response format
         let flight_stream = encoder.map(|result| {
             result.map_err(|e| {
                 error!("Error encoding flight data: {}", e);
@@ -316,26 +242,22 @@ impl FlightBridge for ErigonFlightBridge {
             .map_err(|e| Status::internal(format!("Stream error: {}", e)))?;
 
         let stream_type = if let Some(desc) = first.flight_descriptor {
-            desc.path
-                .first()
-                .map(|s| s.clone())
-                .unwrap_or_else(|| "blocks".to_string())
+            Self::parse_descriptor(&desc)
+                .map(|bd| bd.stream_type)
+                .unwrap_or(StreamType::Blocks)
         } else {
-            "blocks".to_string()
+            StreamType::Blocks
         };
 
-        info!("Starting data stream for {}", stream_type);
+        info!("Starting data stream for {:?}", stream_type);
 
-        // Subscribe to live updates
-        let receiver = self.streaming_service.subscribe();
-
-        // Get the schema
-        let schema = match stream_type.as_str() {
-            "blocks" => ErigonDataConverter::block_schema(),
-            "transactions" => ErigonDataConverter::transaction_schema(),
-            "logs" => ErigonDataConverter::log_schema(),
-            _ => ErigonDataConverter::block_schema(),
+        // Subscribe to the appropriate stream
+        let receiver = match stream_type {
+            StreamType::Blocks => self.streaming_service.subscribe_blocks(),
+            StreamType::Transactions => self.streaming_service.subscribe_transactions(),
+            StreamType::Logs => self.streaming_service.subscribe_logs(),
         };
+        let schema = Self::get_schema_for_type(stream_type);
 
         // Create a stream of RecordBatches from the receiver
         let batch_stream = async_stream::stream! {
@@ -362,20 +284,24 @@ impl FlightBridge for ErigonFlightBridge {
     }
 
     async fn health_check(&self) -> Result<bool, Status> {
-        // Simple health check - just verify we can lock the client
+        // Simple health check - just verify we can lOck the client
         let _client = self.client.lock().await;
         Ok(true)
     }
 }
 
-fn create_flight_info(name: &str, schema: &Arc<arrow::datatypes::Schema>) -> FlightInfo {
-    let descriptor = FlightDescriptor::new_path(vec![name.to_string()]);
+fn create_flight_info(stream_type: StreamType) -> FlightInfo {
+    let schema = ErigonFlightBridge::get_schema_for_type(stream_type);
+
+    // For discovery, just use the stream type as a simple string descriptor
+    let stream_type_str = serde_json::to_string(&stream_type).unwrap();
+    let descriptor = FlightDescriptor::new_path(vec![stream_type_str]);
 
     FlightInfo::new()
         .with_descriptor(descriptor)
-        .try_with_schema(schema)
+        .try_with_schema(&schema)
         .unwrap()
-        .with_endpoint(FlightEndpoint::new().with_ticket(Ticket::new(name.as_bytes().to_vec())))
+        .with_endpoint(FlightEndpoint::new().with_ticket(Ticket::new(vec![])))
         .with_total_records(0)
         .with_total_bytes(0)
 }

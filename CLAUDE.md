@@ -11,6 +11,14 @@ When working on new features or changes:
 
 ## Testing Guidelines
 
+- While in the process of building and debugging, don't use the --release flag unless asked.
+
+### Where do I put tests?
+**DO NOT create new binary files to test functionality unless directly asked.** Instead:
+- Write unit tests or integration tests
+- Test functionality directly in the main binary/application
+- Use existing test infrastructure
+
 ### Test Data Directory
 All test data should be written to the `test-data/` directory, which is already in `.gitignore`. This ensures test artifacts don't get committed to the repository.
 

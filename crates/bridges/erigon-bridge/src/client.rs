@@ -3,7 +3,7 @@ use futures::StreamExt;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
 
-use crate::proto::remote::SyncingReply;
+use crate::proto::remote::{SyncingReply, LogsFilterRequest, SubscribeLogsReply};
 use crate::proto::{BlockReply, BlockRequest, EthbackendClient, Event, SubscribeRequest};
 
 /// Client for connecting to Erigon's gRPC interface
@@ -66,7 +66,70 @@ impl ErigonClient {
         Ok(stream)
     }
 
-    // TODO: Implement subscribe_logs when needed
+    /// Subscribe to logs with optional filters
+    pub async fn subscribe_logs(
+        &mut self,
+        all_addresses: bool,
+        addresses: Vec<[u8; 20]>,
+        all_topics: bool,
+        topics: Vec<[u8; 32]>,
+    ) -> Result<tonic::Streaming<SubscribeLogsReply>> {
+        info!("Subscribing to logs...");
+
+        // Convert addresses to H160 format
+        let addresses = addresses.into_iter().map(|addr| {
+            // H160 is 20 bytes: hi is H128 (16 bytes), lo is u32 (4 bytes)
+            let hi_bytes = &addr[0..16];
+            let lo_bytes = &addr[16..20];
+
+            crate::proto::types::H160 {
+                hi: Some(crate::proto::types::H128 {
+                    hi: u64::from_be_bytes(hi_bytes[0..8].try_into().unwrap()),
+                    lo: u64::from_be_bytes(hi_bytes[8..16].try_into().unwrap()),
+                }),
+                lo: u32::from_be_bytes(lo_bytes.try_into().unwrap()),
+            }
+        }).collect();
+
+        // Convert topics to H256 format
+        let topics = topics.into_iter().map(|topic| {
+            let hi_bytes = &topic[0..16];
+            let lo_bytes = &topic[16..32];
+
+            crate::proto::types::H256 {
+                hi: Some(crate::proto::types::H128 {
+                    hi: u64::from_be_bytes(hi_bytes[0..8].try_into().unwrap()),
+                    lo: u64::from_be_bytes(hi_bytes[8..16].try_into().unwrap()),
+                }),
+                lo: Some(crate::proto::types::H128 {
+                    hi: u64::from_be_bytes(lo_bytes[0..8].try_into().unwrap()),
+                    lo: u64::from_be_bytes(lo_bytes[8..16].try_into().unwrap()),
+                }),
+            }
+        }).collect();
+
+        // Create a stream that sends the initial filter and then keeps the stream alive
+        let request_stream = async_stream::stream! {
+            // Send initial filter
+            yield LogsFilterRequest {
+                all_addresses,
+                addresses,
+                all_topics,
+                topics,
+            };
+
+            // Keep the stream alive by never ending
+            // The server needs the request stream to stay open
+            futures::future::pending::<()>().await;
+        };
+
+        let request = tonic::Request::new(request_stream);
+
+        let stream = self.client.subscribe_logs(request).await?.into_inner();
+        info!("Log subscription established");
+
+        Ok(stream)
+    }
 
     /// Get the latest block number
     pub async fn get_latest_block(&mut self) -> Result<u64> {

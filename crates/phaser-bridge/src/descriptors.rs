@@ -4,11 +4,21 @@ use arrow_flight::{FlightDescriptor, Ticket};
 use serde::{Deserialize, Serialize};
 
 /// Types of blockchain data streams
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StreamType {
     Blocks,
     Transactions,
     Logs,
+}
+
+impl ToString for StreamType {
+    fn to_string(&self) -> String {
+        match self {
+            StreamType::Blocks => "blocks".to_string(),
+            StreamType::Transactions => "transactions".to_string(),
+            StreamType::Logs => "logs".to_string(),
+        }
+    }
 }
 
 /// Enhanced descriptor for blockchain data requests
