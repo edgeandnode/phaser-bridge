@@ -13,22 +13,70 @@ pub struct ErigonClient {
 }
 
 impl ErigonClient {
-    /// Create a new ErigonClient and connect to the given endpoint
+    /// Create a new ErigonClient and connect to the given endpoint (TCP or IPC)
     pub async fn connect(endpoint: String) -> Result<Self> {
         info!("Connecting to Erigon gRPC at {}", endpoint);
-        info!(
-            "Note: Erigon must be running with --private.api.addr={}",
-            endpoint
-        );
 
-        let channel = Channel::from_shared(format!("http://{}", endpoint))?
-            .connect()
-            .await
-            .map_err(|e| {
-                error!("Failed to connect to Erigon at {}: {}", endpoint, e);
-                error!("Make sure Erigon is running with --private.api.addr flag");
-                e
-            })?;
+        // Determine if this is an IPC or TCP connection
+        let channel = if endpoint.starts_with("/") || endpoint.starts_with("./") {
+            // Unix domain socket (IPC) connection
+            info!("Using IPC connection to Erigon");
+            info!(
+                "Note: Erigon must be running with --private.api.addr=unix://{}",
+                endpoint
+            );
+
+            // For Unix domain sockets, we need a dummy URI
+            let uri = format!("http://[::]:50051");
+
+            #[cfg(unix)]
+            {
+                use tokio::net::UnixStream;
+                use tower::service_fn;
+                use tonic::transport::Uri;
+
+                let path = endpoint.clone();
+                Channel::from_shared(uri)?
+                    .connect_with_connector(service_fn(move |_: Uri| {
+                        let path = path.clone();
+                        async move {
+                            UnixStream::connect(path)
+                                .await
+                                .map(|stream| {
+                                    use hyper_util::rt::tokio::TokioIo;
+                                    TokioIo::new(stream)
+                                })
+                        }
+                    }))
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to connect to Erigon IPC at {}: {}", endpoint, e);
+                        error!("Make sure Erigon is running with --private.api.addr=unix://{}", endpoint);
+                        e
+                    })?
+            }
+
+            #[cfg(not(unix))]
+            {
+                return Err(anyhow::anyhow!("Unix domain sockets are not supported on this platform"));
+            }
+        } else {
+            // TCP connection (existing logic)
+            info!("Using TCP connection to Erigon");
+            info!(
+                "Note: Erigon must be running with --private.api.addr={}",
+                endpoint
+            );
+
+            Channel::from_shared(format!("http://{}", endpoint))?
+                .connect()
+                .await
+                .map_err(|e| {
+                    error!("Failed to connect to Erigon at {}: {}", endpoint, e);
+                    error!("Make sure Erigon is running with --private.api.addr flag");
+                    e
+                })?
+        };
 
         let mut client = EthbackendClient::new(channel);
 

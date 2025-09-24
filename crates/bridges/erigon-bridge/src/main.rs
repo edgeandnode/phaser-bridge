@@ -18,7 +18,7 @@ use phaser_bridge::FlightBridgeServer;
 #[command(name = "erigon-bridge")]
 #[command(about = "Arrow Flight bridge for Erigon blockchain node")]
 struct Args {
-    /// Erigon gRPC endpoint
+    /// Erigon gRPC endpoint (TCP: localhost:9090 or IPC: /path/to/erigon.ipc)
     #[arg(long, env = "ERIGON_GRPC_ENDPOINT", default_value = "localhost:9090")]
     erigon_grpc: String,
 

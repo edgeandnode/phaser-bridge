@@ -31,6 +31,8 @@ tonic = { workspace = true }
 async-trait = { workspace = true }
 futures = "0.3"
 tokio-stream = "0.1"
+tower = "0.5"
+hyper-util = "0.1"
 
 # Erigon gRPC
 prost = { workspace = true }
