@@ -2494,6 +2494,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
  "tracing",
@@ -4012,12 +4013,14 @@ dependencies = [
  "arrow-schema 56.1.0",
  "async-trait",
  "futures",
+ "hyper-util",
  "prost",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tonic",
+ "tower 0.5.2",
  "tracing",
 ]
 

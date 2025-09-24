@@ -22,9 +22,13 @@ struct Args {
     #[arg(long, env = "ERIGON_GRPC_ENDPOINT", default_value = "localhost:9090")]
     erigon_grpc: String,
 
-    /// Flight server address
-    #[arg(long, env = "FLIGHT_SERVER_ADDR", default_value = "0.0.0.0:8090")]
-    flight_addr: String,
+    /// Flight server address (TCP)
+    #[arg(long, env = "FLIGHT_SERVER_ADDR", conflicts_with = "ipc_path")]
+    flight_addr: Option<String>,
+
+    /// Unix socket path for IPC mode
+    #[arg(long, env = "FLIGHT_IPC_PATH", conflicts_with = "flight_addr")]
+    ipc_path: Option<String>,
 
     /// Chain ID
     #[arg(long, env = "CHAIN_ID", default_value_t = 1)]
@@ -43,9 +47,17 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    // Determine transport mode and set defaults
+    let (transport_mode, endpoint) = if let Some(ipc_path) = args.ipc_path {
+        ("IPC", ipc_path)
+    } else {
+        ("TCP", args.flight_addr.unwrap_or_else(|| "0.0.0.0:8090".to_string()))
+    };
+
     info!("Starting Erigon Flight Bridge");
     info!("Erigon endpoint: {}", args.erigon_grpc);
-    info!("Flight server: {}", args.flight_addr);
+    info!("Transport mode: {}", transport_mode);
+    info!("Endpoint: {}", endpoint);
     info!("Chain ID: {}", args.chain_id);
 
     // Create the bridge
@@ -62,16 +74,41 @@ async fn main() -> Result<()> {
     let flight_server = FlightBridgeServer::new(bridge);
     let flight_service = flight_server.into_service();
 
-    // Parse the address
-    let addr: SocketAddr = args.flight_addr.parse()?;
+    // Start server based on transport mode
+    if transport_mode == "IPC" {
+        // Unix domain socket mode
+        use std::fs;
+        use tokio::net::UnixListener;
+        use tokio_stream::wrappers::UnixListenerStream;
 
-    info!("Starting Arrow Flight server on {}", addr);
+        // Remove existing socket file if it exists
+        let _ = fs::remove_file(&endpoint);
 
-    // Start the server
-    tonic::transport::Server::builder()
-        .add_service(flight_service)
-        .serve(addr)
-        .await?;
+        // Create parent directory if needed
+        if let Some(parent) = std::path::Path::new(&endpoint).parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let uds_listener = UnixListener::bind(&endpoint)?;
+        let uds_stream = UnixListenerStream::new(uds_listener);
+
+        info!("Starting Arrow Flight server on Unix socket: {}", endpoint);
+
+        tonic::transport::Server::builder()
+            .add_service(flight_service)
+            .serve_with_incoming(uds_stream)
+            .await?;
+    } else {
+        // TCP mode
+        let addr: SocketAddr = endpoint.parse()?;
+
+        info!("Starting Arrow Flight server on TCP: {}", addr);
+
+        tonic::transport::Server::builder()
+            .add_service(flight_service)
+            .serve(addr)
+            .await?;
+    }
 
     Ok(())
 }

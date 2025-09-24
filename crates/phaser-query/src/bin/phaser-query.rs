@@ -16,7 +16,7 @@ struct Args {
     #[clap(short, long, default_value = "./data")]
     data_root: PathBuf,
 
-    /// Erigon gRPC endpoint for streaming (via bridge)
+    /// Bridge endpoint (TCP: http://localhost:8090 or IPC: /tmp/erigon-bridge.sock)
     #[clap(short = 'e', long, default_value = "http://localhost:8090")]
     bridge_endpoint: String,
 

@@ -15,11 +15,59 @@ pub struct FlightBridgeClient {
 }
 
 impl FlightBridgeClient {
-    /// Connect to a bridge endpoint
+    /// Connect to a bridge endpoint (TCP or Unix domain socket)
     pub async fn connect(endpoint: String) -> Result<Self, anyhow::Error> {
         info!("Connecting to bridge at {}", endpoint);
 
-        let channel = Channel::from_shared(endpoint.clone())?.connect().await?;
+        let channel = if endpoint.starts_with("unix:") || endpoint.starts_with("/") || endpoint.starts_with("./") {
+            // Unix domain socket
+            let path = if endpoint.starts_with("unix:") {
+                endpoint.strip_prefix("unix:").unwrap().to_string()
+            } else {
+                endpoint.clone()
+            };
+
+            info!("Connecting via Unix domain socket: {}", path);
+
+            // For Unix domain sockets, we need a special URI format
+            let uri = format!("http://[::]:50051"); // dummy URI for unix socket
+
+            // Use tonic's built-in Unix socket support
+            use tonic::transport::Uri;
+
+            // Parse as endpoint
+            let channel_endpoint = Channel::from_shared(uri)?;
+
+            // Connect with Unix domain socket
+            #[cfg(unix)]
+            {
+                use tokio::net::UnixStream;
+                use tower::service_fn;
+
+                channel_endpoint
+                    .connect_with_connector(service_fn(move |_: Uri| {
+                        let path = path.clone();
+                        async move {
+                            // Use hyper_util to wrap the UnixStream properly
+                            UnixStream::connect(path)
+                                .await
+                                .map(|stream| {
+                                    use hyper_util::rt::tokio::TokioIo;
+                                    TokioIo::new(stream)
+                                })
+                        }
+                    }))
+                    .await?
+            }
+
+            #[cfg(not(unix))]
+            {
+                return Err(anyhow::anyhow!("Unix domain sockets are not supported on this platform"));
+            }
+        } else {
+            // TCP connection
+            Channel::from_shared(endpoint.clone())?.connect().await?
+        };
 
         let client = FlightClient::new(channel);
 
