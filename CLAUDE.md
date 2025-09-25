@@ -50,3 +50,18 @@ cargo check --all-targets
 - Write to `.tmp` files during active writes
 - Rename to `.parquet` only after successful flush and rotation
 - Dual-write strategy: Write to both RocksDB CF and Parquet simultaneously
+
+## Error Handling Guidelines
+
+### Result Type Aliases
+**NEVER** create `Result` type aliases over `std::result::Result`. This causes:
+- Type confusion between different Result types
+- Incompatible trait implementations
+- Breaking changes when error boundaries need different error types
+
+Instead:
+- Use bare `Result<T, ErrorType>` (from prelude) in function signatures
+- **NEVER** import any Result types without `as` - always use `as` (e.g., `use anyhow::Result as AnyhowResult`)
+- Use appropriate error types (like `tonic::Status`) at API boundaries
+- Implement `From` traits for automatic error conversion with `?` operator
+- Import conflicting types with `as` (e.g., `use tonic::Status as TonicStatus`)

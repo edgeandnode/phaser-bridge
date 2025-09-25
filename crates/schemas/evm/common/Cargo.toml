@@ -8,5 +8,8 @@ typed-arrow = { workspace = true }
 arrow = { workspace = true }
 arrow-array = { workspace = true }
 alloy-primitives = { workspace = true }
-alloy-consensus = "1.0"
+alloy-consensus = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+alloy-network = { workspace = true }
 serde = { workspace = true }
+thiserror = { workspace = true }

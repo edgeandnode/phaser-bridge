@@ -19,7 +19,10 @@ impl FlightBridgeClient {
     pub async fn connect(endpoint: String) -> Result<Self, anyhow::Error> {
         info!("Connecting to bridge at {}", endpoint);
 
-        let channel = if endpoint.starts_with("unix:") || endpoint.starts_with("/") || endpoint.starts_with("./") {
+        let channel = if endpoint.starts_with("unix:")
+            || endpoint.starts_with("/")
+            || endpoint.starts_with("./")
+        {
             // Unix domain socket
             let path = if endpoint.starts_with("unix:") {
                 endpoint.strip_prefix("unix:").unwrap().to_string()
@@ -49,12 +52,10 @@ impl FlightBridgeClient {
                         let path = path.clone();
                         async move {
                             // Use hyper_util to wrap the UnixStream properly
-                            UnixStream::connect(path)
-                                .await
-                                .map(|stream| {
-                                    use hyper_util::rt::tokio::TokioIo;
-                                    TokioIo::new(stream)
-                                })
+                            UnixStream::connect(path).await.map(|stream| {
+                                use hyper_util::rt::tokio::TokioIo;
+                                TokioIo::new(stream)
+                            })
                         }
                     }))
                     .await?
@@ -62,7 +63,9 @@ impl FlightBridgeClient {
 
             #[cfg(not(unix))]
             {
-                return Err(anyhow::anyhow!("Unix domain sockets are not supported on this platform"));
+                return Err(anyhow::anyhow!(
+                    "Unix domain sockets are not supported on this platform"
+                ));
             }
         } else {
             // TCP connection

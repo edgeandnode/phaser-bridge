@@ -209,8 +209,11 @@ async fn start_streaming_service(
             // Only index historical directory, not streaming
             let historical_dir = config_clone.historical_dir();
             if historical_dir.exists() {
-                if let Err(e) =
-                    phaser_query::indexer::index_historical_directory(&catalog_clone, &historical_dir).await
+                if let Err(e) = phaser_query::indexer::index_historical_directory(
+                    &catalog_clone,
+                    &historical_dir,
+                )
+                .await
                 {
                     error!("Failed to update historical indexes: {}", e);
                 }

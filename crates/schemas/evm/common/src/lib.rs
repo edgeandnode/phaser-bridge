@@ -5,7 +5,9 @@
 use typed_arrow::schema::SchemaMeta;
 
 pub mod block;
+pub mod error;
 pub mod log;
+pub mod rpc_conversions;
 pub mod transaction;
 pub mod types;
 

@@ -26,7 +26,12 @@ struct CurrentFile {
 }
 
 impl ParquetWriter {
-    pub fn new(data_dir: PathBuf, max_file_size_mb: u64, segment_size: u64, data_type: String) -> Result<Self> {
+    pub fn new(
+        data_dir: PathBuf,
+        max_file_size_mb: u64,
+        segment_size: u64,
+        data_type: String,
+    ) -> Result<Self> {
         // Create data directory if it doesn't exist
         fs::create_dir_all(&data_dir)?;
 
@@ -112,7 +117,11 @@ impl ParquetWriter {
         );
         let path = self.data_dir.join(filename);
 
-        info!("Starting new {} parquet file: {}", self.data_type, path.display());
+        info!(
+            "Starting new {} parquet file: {}",
+            self.data_type,
+            path.display()
+        );
 
         let file = File::create(&path)?;
         let props = WriterProperties::builder()

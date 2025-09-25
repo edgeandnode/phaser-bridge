@@ -1,6 +1,7 @@
 mod bridge;
 mod client;
 mod converter;
+mod error;
 mod proto;
 mod streaming_service;
 
@@ -51,7 +52,11 @@ async fn main() -> Result<()> {
     let (transport_mode, endpoint) = if let Some(ipc_path) = args.ipc_path {
         ("IPC", ipc_path)
     } else {
-        ("TCP", args.flight_addr.unwrap_or_else(|| "0.0.0.0:8090".to_string()))
+        (
+            "TCP",
+            args.flight_addr
+                .unwrap_or_else(|| "0.0.0.0:8090".to_string()),
+        )
     };
 
     info!("Starting Erigon Flight Bridge");

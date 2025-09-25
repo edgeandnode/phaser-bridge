@@ -1,0 +1,52 @@
+[package]
+name = "jsonrpc-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "jsonrpc_bridge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "jsonrpc-bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Bridge framework
+phaser-bridge = { path = "../../phaser-bridge" }
+evm-common = { path = "../../schemas/evm/common" }
+
+# Alloy - all from workspace
+alloy = { workspace = true }
+alloy-consensus = { workspace = true }
+alloy-network = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+alloy-pubsub = { workspace = true }
+
+# Arrow and async
+arrow = { workspace = true }
+arrow-flight = { workspace = true }
+arrow-array = "56.1"
+arrow-schema = "56.1"
+typed-arrow = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = "0.3"
+futures-util = "0.3"
+async-stream = "0.3"
+
+# Other
+tonic = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4.5", features = ["derive", "env"] }
+hex = "0.4"
+tokio-stream = "0.1"
+tower = "0.5"
+hyper-util = "0.1"

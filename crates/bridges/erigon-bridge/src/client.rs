@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::ErigonBridgeError;
 use futures::StreamExt;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
@@ -14,7 +14,7 @@ pub struct ErigonClient {
 
 impl ErigonClient {
     /// Create a new ErigonClient and connect to the given endpoint (TCP or IPC)
-    pub async fn connect(endpoint: String) -> Result<Self> {
+    pub async fn connect(endpoint: String) -> Result<Self, ErigonBridgeError> {
         info!("Connecting to Erigon gRPC at {}", endpoint);
 
         // Determine if this is an IPC or TCP connection
@@ -32,33 +32,36 @@ impl ErigonClient {
             #[cfg(unix)]
             {
                 use tokio::net::UnixStream;
-                use tower::service_fn;
                 use tonic::transport::Uri;
+                use tower::service_fn;
 
                 let path = endpoint.clone();
                 Channel::from_shared(uri)?
                     .connect_with_connector(service_fn(move |_: Uri| {
                         let path = path.clone();
                         async move {
-                            UnixStream::connect(path)
-                                .await
-                                .map(|stream| {
-                                    use hyper_util::rt::tokio::TokioIo;
-                                    TokioIo::new(stream)
-                                })
+                            UnixStream::connect(path).await.map(|stream| {
+                                use hyper_util::rt::tokio::TokioIo;
+                                TokioIo::new(stream)
+                            })
                         }
                     }))
                     .await
                     .map_err(|e| {
                         error!("Failed to connect to Erigon IPC at {}: {}", endpoint, e);
-                        error!("Make sure Erigon is running with --private.api.addr=unix://{}", endpoint);
+                        error!(
+                            "Make sure Erigon is running with --private.api.addr=unix://{}",
+                            endpoint
+                        );
                         e
                     })?
             }
 
             #[cfg(not(unix))]
             {
-                return Err(anyhow::anyhow!("Unix domain sockets are not supported on this platform"));
+                return Err(anyhow::anyhow!(
+                    "Unix domain sockets are not supported on this platform"
+                ));
             }
         } else {
             // TCP connection (existing logic)
@@ -92,7 +95,7 @@ impl ErigonClient {
     }
 
     /// Get the current syncing status
-    pub async fn syncing_status(&mut self) -> Result<SyncingReply> {
+    pub async fn syncing_status(&mut self) -> Result<SyncingReply, ErigonBridgeError> {
         let request = tonic::Request::new(());
         let response = self.client.syncing(request).await?;
         Ok(response.into_inner())
@@ -101,7 +104,7 @@ impl ErigonClient {
     /// Subscribe to block headers
     pub async fn subscribe_headers(
         &mut self,
-    ) -> Result<tonic::Streaming<crate::proto::remote::SubscribeReply>> {
+    ) -> Result<tonic::Streaming<crate::proto::remote::SubscribeReply>, ErigonBridgeError> {
         info!("Subscribing to block headers...");
 
         let request = tonic::Request::new(SubscribeRequest {
@@ -121,7 +124,7 @@ impl ErigonClient {
         addresses: Vec<[u8; 20]>,
         all_topics: bool,
         topics: Vec<[u8; 32]>,
-    ) -> Result<tonic::Streaming<SubscribeLogsReply>> {
+    ) -> Result<tonic::Streaming<SubscribeLogsReply>, ErigonBridgeError> {
         info!("Subscribing to logs...");
 
         // Convert addresses to H160 format
@@ -134,10 +137,22 @@ impl ErigonClient {
 
                 crate::proto::types::H160 {
                     hi: Some(crate::proto::types::H128 {
-                        hi: u64::from_be_bytes(hi_bytes[0..8].try_into().unwrap()),
-                        lo: u64::from_be_bytes(hi_bytes[8..16].try_into().unwrap()),
+                        hi: u64::from_be_bytes(
+                            hi_bytes[0..8]
+                                .try_into()
+                                .expect("20-byte address should split into 8-byte chunks"),
+                        ),
+                        lo: u64::from_be_bytes(
+                            hi_bytes[8..16]
+                                .try_into()
+                                .expect("20-byte address should split into 8-byte chunks"),
+                        ),
                     }),
-                    lo: u32::from_be_bytes(lo_bytes.try_into().unwrap()),
+                    lo: u32::from_be_bytes(
+                        lo_bytes
+                            .try_into()
+                            .expect("20-byte address should have 4-byte remainder"),
+                    ),
                 }
             })
             .collect();
@@ -151,12 +166,28 @@ impl ErigonClient {
 
                 crate::proto::types::H256 {
                     hi: Some(crate::proto::types::H128 {
-                        hi: u64::from_be_bytes(hi_bytes[0..8].try_into().unwrap()),
-                        lo: u64::from_be_bytes(hi_bytes[8..16].try_into().unwrap()),
+                        hi: u64::from_be_bytes(
+                            hi_bytes[0..8]
+                                .try_into()
+                                .expect("32-byte topic should split into 8-byte chunks"),
+                        ),
+                        lo: u64::from_be_bytes(
+                            hi_bytes[8..16]
+                                .try_into()
+                                .expect("32-byte topic should split into 8-byte chunks"),
+                        ),
                     }),
                     lo: Some(crate::proto::types::H128 {
-                        hi: u64::from_be_bytes(lo_bytes[0..8].try_into().unwrap()),
-                        lo: u64::from_be_bytes(lo_bytes[8..16].try_into().unwrap()),
+                        hi: u64::from_be_bytes(
+                            lo_bytes[0..8]
+                                .try_into()
+                                .expect("32-byte topic should split into 8-byte chunks"),
+                        ),
+                        lo: u64::from_be_bytes(
+                            lo_bytes[8..16]
+                                .try_into()
+                                .expect("32-byte topic should split into 8-byte chunks"),
+                        ),
                     }),
                 }
             })
@@ -186,7 +217,7 @@ impl ErigonClient {
     }
 
     /// Get the latest block number
-    pub async fn get_latest_block(&mut self) -> Result<u64> {
+    pub async fn get_latest_block(&mut self) -> Result<u64, ErigonBridgeError> {
         let sync_info = self.syncing_status().await?;
         Ok(sync_info.current_block)
     }
@@ -196,7 +227,7 @@ impl ErigonClient {
         &mut self,
         block_number: u64,
         block_hash: Option<&[u8; 32]>,
-    ) -> Result<BlockReply> {
+    ) -> Result<BlockReply, ErigonBridgeError> {
         debug!("Fetching full block #{}", block_number);
 
         // Convert the block hash bytes to the protobuf H256 format if provided
@@ -207,12 +238,28 @@ impl ErigonClient {
 
             crate::proto::types::H256 {
                 hi: Some(crate::proto::types::H128 {
-                    hi: u64::from_be_bytes(hi_bytes[0..8].try_into().unwrap()),
-                    lo: u64::from_be_bytes(hi_bytes[8..16].try_into().unwrap()),
+                    hi: u64::from_be_bytes(
+                        hi_bytes[0..8]
+                            .try_into()
+                            .expect("32-byte hash should split into 8-byte chunks"),
+                    ),
+                    lo: u64::from_be_bytes(
+                        hi_bytes[8..16]
+                            .try_into()
+                            .expect("32-byte hash should split into 8-byte chunks"),
+                    ),
                 }),
                 lo: Some(crate::proto::types::H128 {
-                    hi: u64::from_be_bytes(lo_bytes[0..8].try_into().unwrap()),
-                    lo: u64::from_be_bytes(lo_bytes[8..16].try_into().unwrap()),
+                    hi: u64::from_be_bytes(
+                        lo_bytes[0..8]
+                            .try_into()
+                            .expect("32-byte hash should split into 8-byte chunks"),
+                    ),
+                    lo: u64::from_be_bytes(
+                        lo_bytes[8..16]
+                            .try_into()
+                            .expect("32-byte hash should split into 8-byte chunks"),
+                    ),
                 }),
             }
         });

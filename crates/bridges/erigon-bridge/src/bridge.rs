@@ -15,8 +15,10 @@ use tracing::{error, info};
 
 use crate::client::ErigonClient;
 use crate::converter::ErigonDataConverter;
+use crate::error::ErigonBridgeError;
 use crate::streaming_service::StreamingService;
 use std::sync::Arc;
+use tonic::Status as TonicStatus;
 
 /// A stateless bridge that translates between Erigon gRPC and Arrow Flight
 pub struct ErigonFlightBridge {
@@ -62,12 +64,12 @@ impl ErigonFlightBridge {
     /// Parse a FlightDescriptor to extract the BlockchainDescriptor
     fn parse_descriptor(
         descriptor: &FlightDescriptor,
-    ) -> Result<phaser_bridge::descriptors::BlockchainDescriptor, Status> {
+    ) -> Result<phaser_bridge::descriptors::BlockchainDescriptor, TonicStatus> {
         if let Some(first) = descriptor.path.first() {
             serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first)
-                .map_err(|e| Status::invalid_argument(format!("Invalid descriptor: {}", e)))
+                .map_err(|e| TonicStatus::invalid_argument(format!("Invalid descriptor: {}", e)))
         } else {
-            Err(Status::invalid_argument("Empty descriptor path"))
+            Err(TonicStatus::invalid_argument("Empty descriptor path"))
         }
     }
 
@@ -119,13 +121,15 @@ impl FlightBridge for ErigonFlightBridge {
     async fn list_flights(
         &self,
         _request: Request<Criteria>,
-    ) -> Result<Response<Pin<Box<dyn Stream<Item = Result<FlightInfo, Status>> + Send>>>, Status>
-    {
+    ) -> std::result::Result<
+        Response<Pin<Box<dyn Stream<Item = std::result::Result<FlightInfo, Status>> + Send>>>,
+        Status,
+    > {
         // List available stream types
         let info_streams = vec![
-            create_flight_info(StreamType::Blocks),
-            create_flight_info(StreamType::Transactions),
-            create_flight_info(StreamType::Logs),
+            create_flight_info(StreamType::Blocks)?,
+            create_flight_info(StreamType::Transactions)?,
+            create_flight_info(StreamType::Logs)?,
         ];
 
         let stream = stream::iter(info_streams.into_iter().map(Ok));
@@ -135,11 +139,11 @@ impl FlightBridge for ErigonFlightBridge {
     async fn get_flight_info(
         &self,
         request: Request<FlightDescriptor>,
-    ) -> Result<Response<FlightInfo>, Status> {
+    ) -> std::result::Result<Response<FlightInfo>, Status> {
         let descriptor = request.into_inner();
         let blockchain_desc = Self::parse_descriptor(&descriptor)?;
 
-        let info = create_flight_info(blockchain_desc.stream_type);
+        let info = create_flight_info(blockchain_desc.stream_type)?;
 
         Ok(Response::new(info))
     }
@@ -290,18 +294,19 @@ impl FlightBridge for ErigonFlightBridge {
     }
 }
 
-fn create_flight_info(stream_type: StreamType) -> FlightInfo {
+fn create_flight_info(stream_type: StreamType) -> Result<FlightInfo, ErigonBridgeError> {
     let schema = ErigonFlightBridge::get_schema_for_type(stream_type);
 
     // For discovery, just use the stream type as a simple string descriptor
-    let stream_type_str = serde_json::to_string(&stream_type).unwrap();
+    let stream_type_str = serde_json::to_string(&stream_type)?;
     let descriptor = FlightDescriptor::new_path(vec![stream_type_str]);
 
-    FlightInfo::new()
+    let info = FlightInfo::new()
         .with_descriptor(descriptor)
-        .try_with_schema(&schema)
-        .unwrap()
+        .try_with_schema(&schema)?
         .with_endpoint(FlightEndpoint::new().with_ticket(Ticket::new(vec![])))
         .with_total_records(0)
-        .with_total_bytes(0)
+        .with_total_bytes(0);
+
+    Ok(info)
 }

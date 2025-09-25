@@ -282,7 +282,7 @@ impl StreamingService {
                 current_block_timestamp = Some(
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
+                        .expect("System clock is set before Unix epoch")
                         .as_nanos() as i64,
                 );
             }

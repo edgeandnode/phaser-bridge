@@ -82,7 +82,10 @@ impl StreamingServiceWithWriter {
     /// Spawn a stream processor task for any stream type
     fn spawn_stream_processor(
         stream_type: StreamType,
-        mut stream: impl StreamExt<Item = Result<RecordBatch, arrow_flight::error::FlightError>> + Send + Unpin + 'static,
+        mut stream: impl StreamExt<Item = Result<RecordBatch, arrow_flight::error::FlightError>>
+            + Send
+            + Unpin
+            + 'static,
         sender: mpsc::Sender<RecordBatch>,
     ) {
         let stream_name = format!("{:?}", stream_type).to_lowercase();
