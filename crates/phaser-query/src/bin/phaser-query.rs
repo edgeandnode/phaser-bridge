@@ -20,17 +20,21 @@ struct Args {
     #[clap(short, long)]
     data_root: Option<PathBuf>,
 
-    /// Enable real-time streaming from bridge
+    /// Disable real-time streaming from bridge (enabled by default if bridges configured)
     #[clap(long)]
-    enable_streaming: bool,
+    disable_streaming: bool,
 
-    /// Enable RPC server
+    /// Disable RPC server (enabled by default if rpc_port > 0)
     #[clap(long)]
-    enable_rpc: bool,
+    disable_rpc: bool,
 
     /// Enable trie streaming (state data) from bridge
     #[clap(long)]
     enable_trie: bool,
+
+    /// Disable sync admin gRPC server (enabled by default if sync_admin_port > 0)
+    #[clap(long)]
+    disable_sync_admin: bool,
 
     /// Bridge name to use for streaming (must be defined in config)
     #[clap(long)]
@@ -87,8 +91,9 @@ async fn main() -> Result<()> {
     // Determine which bridge to use for streaming
     let bridge_name = args.bridge_name.as_deref().unwrap_or("default");
 
-    // Start streaming service if enabled
-    if args.enable_streaming {
+    // Start streaming service if enabled (default: enabled if bridges configured)
+    let enable_streaming = !args.disable_streaming && !config.bridges.is_empty();
+    if enable_streaming {
         if config.bridges.is_empty() {
             error!("No bridges configured. Please add bridges to config file.");
             return Ok(());
@@ -153,8 +158,9 @@ async fn main() -> Result<()> {
         handles.push(handle);
     }
 
-    // Start RPC server if enabled
-    if args.enable_rpc {
+    // Start RPC server if enabled (default: enabled if rpc_port > 0)
+    let enable_rpc = !args.disable_rpc && config.rpc_port > 0;
+    if enable_rpc {
         info!("Starting RPC server on port {}", config.rpc_port);
 
         let catalog = phaser.catalog.clone();
@@ -168,9 +174,31 @@ async fn main() -> Result<()> {
         handles.push(handle);
     }
 
+    // Start sync admin server if enabled (default: enabled if sync_admin_port > 0)
+    let enable_sync_admin = !args.disable_sync_admin && config.sync_admin_port > 0;
+    if enable_sync_admin {
+        info!(
+            "Starting sync admin gRPC server on port {}",
+            config.sync_admin_port
+        );
+
+        let config_clone = config.clone();
+
+        let handle = tokio::spawn(async move {
+            if let Err(e) = start_sync_admin_server(config_clone).await {
+                error!("Sync admin server error: {}", e);
+            }
+        });
+        handles.push(handle);
+    }
+
     if handles.is_empty() {
-        info!("No services enabled. Use --enable-streaming, --enable-trie, or --enable-rpc");
-        info!("Example: phaser-query --config config.yaml --enable-streaming --enable-rpc");
+        info!("No services enabled.");
+        info!("Services are enabled by default based on config:");
+        info!("  - Streaming: enabled if bridges configured (disable with --disable-streaming)");
+        info!("  - RPC: enabled if rpc_port > 0 (disable with --disable-rpc)");
+        info!("  - Sync Admin: enabled if sync_admin_port > 0 (disable with --disable-sync-admin)");
+        info!("  - Trie: disabled by default (enable with --enable-trie)");
         return Ok(());
     }
 
@@ -263,6 +291,15 @@ async fn start_rpc_server(
 
     let server = RpcServer::new(catalog, port).await?;
     server.start().await?;
+
+    Ok(())
+}
+
+async fn start_sync_admin_server(config: PhaserConfig) -> Result<()> {
+    use phaser_query::sync::SyncServer;
+
+    let server = SyncServer::new(std::sync::Arc::new(config.clone()));
+    server.start(config.sync_admin_port).await?;
 
     Ok(())
 }
