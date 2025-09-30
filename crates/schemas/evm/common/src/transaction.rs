@@ -23,7 +23,7 @@ pub struct TransactionRecord {
     /// Transaction hash
     pub tx_hash: Hash32,
 
-    /// Sender address
+    /// Sender address (recovered from signature)
     pub from: Address20,
 
     /// Recipient address (None for contract creation)
@@ -79,7 +79,7 @@ pub struct TransactionContext<'a> {
     pub block_num: u64,
     pub timestamp: i64, // nanos
     pub tx_index: u32,
-    pub sender: Address20,
+    pub from: Address20,
     pub gas_used: u64,
     pub status: bool,
 }
@@ -233,7 +233,7 @@ impl<'a> From<TransactionContext<'a>> for TransactionRecord {
             timestamp: ctx.timestamp,
             tx_index: ctx.tx_index,
             tx_hash: tx_hash.into(),
-            from: ctx.sender,
+            from: ctx.from,
             to,
             nonce,
             gas_price,
@@ -252,3 +252,42 @@ impl<'a> From<TransactionContext<'a>> for TransactionRecord {
         }
     }
 }
+
+/// Trait for recovering sender address from transaction signatures
+pub trait RecoverSender {
+    /// Recover the sender address from the transaction signature
+    fn recover_sender(&self) -> Option<Address20>;
+}
+
+impl RecoverSender for TxEnvelope {
+    fn recover_sender(&self) -> Option<Address20> {
+        use alloy_consensus::SignableTransaction;
+
+        let sig_hash = match self {
+            TxEnvelope::Legacy(tx) => tx.tx().signature_hash(),
+            TxEnvelope::Eip2930(tx) => tx.tx().signature_hash(),
+            TxEnvelope::Eip1559(tx) => tx.tx().signature_hash(),
+            TxEnvelope::Eip4844(tx) => match tx.tx() {
+                alloy_consensus::TxEip4844Variant::TxEip4844(inner) => inner.signature_hash(),
+                alloy_consensus::TxEip4844Variant::TxEip4844WithSidecar(with_sidecar) => {
+                    with_sidecar.tx.signature_hash()
+                }
+            },
+            TxEnvelope::Eip7702(tx) => tx.tx().signature_hash(),
+        };
+
+        let signature = match self {
+            TxEnvelope::Legacy(tx) => tx.signature(),
+            TxEnvelope::Eip2930(tx) => tx.signature(),
+            TxEnvelope::Eip1559(tx) => tx.signature(),
+            TxEnvelope::Eip4844(tx) => tx.signature(),
+            TxEnvelope::Eip7702(tx) => tx.signature(),
+        };
+
+        signature
+            .recover_address_from_prehash(&sig_hash)
+            .ok()
+            .map(|addr| addr.into())
+    }
+}
+
