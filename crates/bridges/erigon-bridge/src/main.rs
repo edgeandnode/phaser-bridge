@@ -4,6 +4,8 @@ mod converter;
 mod error;
 mod proto;
 mod streaming_service;
+mod trie_client;
+mod trie_converter;
 
 use anyhow::Result;
 use clap::Parser;

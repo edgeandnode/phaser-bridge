@@ -1,10 +1,9 @@
 use crate::proto::remote::{BlockReply, SubscribeLogsReply, SubscribeReply};
 use alloy_consensus::{Block, Header, TxEnvelope};
+use alloy_rlp::Decodable;
 use anyhow::{anyhow, Result};
 use arrow::datatypes::Schema;
 use arrow_array::RecordBatch;
-type EthBlock = Block<TxEnvelope>;
-use alloy_rlp::Decodable;
 use evm_common::block::BlockRecord;
 use evm_common::log::{LogContext, LogRecord};
 use evm_common::transaction::{TransactionContext, TransactionRecord};
@@ -13,6 +12,7 @@ use std::sync::Arc;
 use tracing::{debug, error};
 use typed_arrow::prelude::BuildRows;
 
+type EthBlock = Block<TxEnvelope>;
 /// Converter for Erigon data to Arrow format
 pub struct ErigonDataConverter;
 
@@ -266,7 +266,7 @@ impl ErigonDataConverter {
                 block_num: block.header.number,
                 timestamp,
                 tx_index: idx as u32,
-                sender,
+                from: sender,
                 gas_used: 0,  // Would need receipts
                 status: true, // Would need receipts
             };

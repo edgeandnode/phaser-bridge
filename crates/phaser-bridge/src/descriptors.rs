@@ -9,6 +9,7 @@ pub enum StreamType {
     Blocks,
     Transactions,
     Logs,
+    Trie, // Raw trie nodes for state reconstruction
 }
 
 impl ToString for StreamType {
@@ -17,6 +18,7 @@ impl ToString for StreamType {
             StreamType::Blocks => "blocks".to_string(),
             StreamType::Transactions => "transactions".to_string(),
             StreamType::Logs => "logs".to_string(),
+            StreamType::Trie => "trie".to_string(),
         }
     }
 }

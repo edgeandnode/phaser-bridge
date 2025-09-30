@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// RocksDB-backed catalog implementation
 /// Stores only indexes pointing to Parquet files, not the data itself
 pub struct RocksDbCatalog {
-    db: Arc<DB>,
+    pub db: Arc<DB>,
     parquet_files: Vec<String>,
     pub streaming_buffer: Option<Arc<CfToParquetBuffer>>,
     pub query_manager: Option<Arc<QueryManager>>,
@@ -33,6 +33,8 @@ impl RocksDbCatalog {
             ColumnFamilyDescriptor::new(cf::STREAMING_BUFFER, Options::default()),
             ColumnFamilyDescriptor::new(cf::STREAMING_INDEX, Options::default()),
             ColumnFamilyDescriptor::new(cf::HISTORICAL_INDEX, Options::default()),
+            // Trie data
+            ColumnFamilyDescriptor::new(cf::TRIE, Options::default()),
         ];
 
         let db = DB::open_cf_descriptors(&opts, path, cf_descriptors)?;

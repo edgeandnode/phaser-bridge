@@ -115,6 +115,8 @@ pub mod cf {
     pub const STREAMING_BUFFER: &str = "streaming_buffer";
     pub const STREAMING_INDEX: &str = "streaming_index";
     pub const HISTORICAL_INDEX: &str = "historical_index";
+    // Trie data
+    pub const TRIE: &str = "trie";
 }
 
 /// Index-related errors

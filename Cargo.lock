@@ -4823,6 +4823,7 @@ dependencies = [
  "bincode",
  "clap",
  "datafusion",
+ "evm-common",
  "futures",
  "jsonrpsee",
  "parquet 56.1.0",
@@ -4838,6 +4839,7 @@ dependencies = [
  "tonic-build",
  "tracing",
  "tracing-subscriber",
+ "typed-arrow",
  "url",
 ]
 

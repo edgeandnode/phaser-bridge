@@ -47,6 +47,10 @@ struct Args {
     /// Enable RPC server
     #[clap(long)]
     enable_rpc: bool,
+
+    /// Enable trie streaming (state data) from bridge
+    #[clap(long)]
+    enable_trie: bool,
 }
 
 #[tokio::main]
@@ -110,6 +114,24 @@ async fn main() -> Result<()> {
         handles.push(handle);
     }
 
+    // Start trie streaming service if enabled
+    if args.enable_trie {
+        info!(
+            "Starting trie streaming service from bridge at {}",
+            args.bridge_endpoint
+        );
+
+        let config = config.clone();
+        let catalog = phaser.catalog.clone();
+
+        let handle = tokio::spawn(async move {
+            if let Err(e) = start_trie_streaming_service(config, catalog).await {
+                error!("Trie streaming service error: {}", e);
+            }
+        });
+        handles.push(handle);
+    }
+
     // Start RPC server if enabled
     if args.enable_rpc {
         info!("Starting RPC server on port {}", args.rpc_port);
@@ -126,7 +148,7 @@ async fn main() -> Result<()> {
     }
 
     if handles.is_empty() {
-        info!("No services enabled. Use --enable-streaming or --enable-rpc");
+        info!("No services enabled. Use --enable-streaming, --enable-trie, or --enable-rpc");
         return Ok(());
     }
 
@@ -222,6 +244,30 @@ async fn start_streaming_service(
     });
 
     service.start_streaming().await?;
+
+    Ok(())
+}
+
+async fn start_trie_streaming_service(
+    config: PhaserConfig,
+    catalog: std::sync::Arc<phaser_query::catalog::RocksDbCatalog>,
+) -> Result<()> {
+    // Create streaming service with writer
+    let mut service = StreamingServiceWithWriter::new(
+        vec![config.erigon_grpc_endpoint.clone()],
+        config.streaming_dir(),
+        config.max_file_size_mb,
+        config.segment_size,
+    )
+    .await?;
+
+    // Set the RocksDB instance for trie storage
+    service.set_db(catalog.db.clone());
+
+    info!("Connected to bridge for trie streaming, will store in RocksDB",);
+
+    // Start trie streaming
+    service.start_trie_streaming().await?;
 
     Ok(())
 }

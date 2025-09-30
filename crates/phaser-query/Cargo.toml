@@ -10,6 +10,10 @@ path = "src/bin/phaser-query.rs"
 [dependencies]
 # Local dependencies
 phaser-bridge = { path = "../phaser-bridge" }
+evm-common = { path = "../schemas/evm/common" }
+
+# Typed Arrow support
+typed-arrow = { workspace = true }
 
 # Workspace dependencies
 tokio.workspace = true

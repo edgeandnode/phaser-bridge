@@ -1,12 +1,16 @@
 use crate::parquet_writer::ParquetWriter;
+use crate::trie_writer::TrieWriter;
 use anyhow::Result;
-use arrow::array::{RecordBatch, UInt64Array};
+use arrow::array::UInt64Array;
+use arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use phaser_bridge::{
     descriptors::{BlockchainDescriptor, StreamType},
     FlightBridgeClient,
 };
+use rocksdb::DB;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
@@ -16,6 +20,7 @@ pub struct StreamingServiceWithWriter {
     data_dir: PathBuf,
     max_file_size_mb: u64,
     segment_size: u64,
+    db: Option<Arc<DB>>,
 }
 
 impl StreamingServiceWithWriter {
@@ -41,6 +46,7 @@ impl StreamingServiceWithWriter {
             data_dir,
             max_file_size_mb,
             segment_size,
+            db: None,
         })
     }
 
@@ -218,6 +224,75 @@ impl StreamingServiceWithWriter {
 
         writer.finalize_current_file()?;
         info!("Historical data fetch completed");
+
+        Ok(())
+    }
+
+    /// Set the RocksDB instance for trie storage
+    pub fn set_db(&mut self, db: Arc<DB>) {
+        self.db = Some(db);
+    }
+
+    /// Spawn a trie writer task that writes to RocksDB
+    fn spawn_trie_writer_task(db: Arc<DB>, mut receiver: mpsc::Receiver<RecordBatch>) {
+        tokio::spawn(async move {
+            let mut writer = match TrieWriter::new(db, crate::index::cf::TRIE.to_string()) {
+                Ok(w) => w,
+                Err(e) => {
+                    error!("Failed to create trie writer: {}", e);
+                    return;
+                }
+            };
+
+            while let Some(batch) = receiver.recv().await {
+                if let Err(e) = writer.write_batch(batch) {
+                    error!("Failed to write trie batch to RocksDB: {}", e);
+                }
+            }
+
+            info!(
+                "Trie writer task completed, wrote {} nodes",
+                writer.nodes_written()
+            );
+        });
+    }
+
+    /// Start streaming trie data from bridges
+    pub async fn start_trie_streaming(&mut self) -> Result<()> {
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("RocksDB not set for trie storage"))?
+            .clone();
+
+        // Create channel for trie data
+        let (trie_tx, trie_rx) = mpsc::channel::<RecordBatch>(100);
+
+        // Spawn trie writer task
+        Self::spawn_trie_writer_task(db, trie_rx);
+
+        // Start streaming from each bridge
+        for bridge in &mut self.bridges {
+            // Check bridge health
+            if !bridge.health_check().await? {
+                error!("Bridge health check failed");
+                continue;
+            }
+
+            // Subscribe to trie stream
+            let trie_descriptor = BlockchainDescriptor::live(StreamType::Trie, None);
+            info!("Subscribing to trie data from bridge");
+
+            match bridge.subscribe(&trie_descriptor).await {
+                Ok(trie_stream) => {
+                    info!("Successfully subscribed to trie stream");
+                    Self::spawn_stream_processor(StreamType::Trie, trie_stream, trie_tx.clone());
+                }
+                Err(e) => {
+                    error!("Failed to subscribe to trie stream: {}", e);
+                }
+            }
+        }
 
         Ok(())
     }

@@ -92,7 +92,7 @@ pub fn convert_rpc_transactions(block: &AnyRpcBlock) -> Result<RecordBatch> {
                 block_num,
                 timestamp: timestamp as i64 * 1_000_000_000,
                 tx_index: idx as u32,
-                sender: any_rpc_tx.from().into(),
+                from: any_rpc_tx.from().into(),
                 gas_used: 0,  // Would need receipt data
                 status: true, // Would need receipt data
             };

@@ -28,8 +28,15 @@ pub enum ErigonBridgeError {
 
     #[error("Internal error: {0}")]
     Internal(#[from] anyhow::Error),
+
+    #[error("Invalid data: {0}")]
+    InvalidData(String),
+
+    #[error("Conversion error: {0}")]
+    ConversionError(String),
 }
 
+/// Implements conversion from our error to a gRPC Status for proper error reporting
 impl From<ErigonBridgeError> for Status {
     fn from(err: ErigonBridgeError) -> Self {
         error!("Erigon bridge error: {}", err);
@@ -46,6 +53,8 @@ impl From<ErigonBridgeError> for Status {
             ErigonBridgeError::Transport(_) => Status::unavailable("Transport connection error"),
             ErigonBridgeError::InvalidUri(_) => Status::invalid_argument("Invalid connection URI"),
             ErigonBridgeError::Internal(_) => Status::internal("Internal bridge error"),
+            ErigonBridgeError::InvalidData(msg) => Status::invalid_argument(msg),
+            ErigonBridgeError::ConversionError(msg) => Status::internal(msg),
         }
     }
 }

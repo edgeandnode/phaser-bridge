@@ -8,6 +8,7 @@ pub mod proto;
 pub mod rpc;
 pub mod sql;
 pub mod streaming_with_writer;
+pub mod trie_writer;
 
 use anyhow::Result;
 use std::path::PathBuf;

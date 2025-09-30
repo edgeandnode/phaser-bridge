@@ -1,4 +1,3 @@
-use arrow_array::RecordBatch;
 use arrow_flight::{
     encode::FlightDataEncoderBuilder, Criteria, FlightData, FlightDescriptor, FlightEndpoint,
     FlightInfo, HandshakeRequest, HandshakeResponse, SchemaResult, Ticket,
@@ -11,25 +10,50 @@ use phaser_bridge::{
 };
 use std::pin::Pin;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::client::ErigonClient;
 use crate::converter::ErigonDataConverter;
 use crate::error::ErigonBridgeError;
 use crate::streaming_service::StreamingService;
+use crate::trie_client::TrieClient;
+use crate::trie_converter;
 use std::sync::Arc;
 use tonic::Status as TonicStatus;
 
 /// A stateless bridge that translates between Erigon gRPC and Arrow Flight
 pub struct ErigonFlightBridge {
     client: Arc<tokio::sync::Mutex<ErigonClient>>,
+    trie_client: Option<Arc<tokio::sync::Mutex<TrieClient>>>,
     chain_id: u64,
     streaming_service: Arc<StreamingService>,
 }
 
 impl ErigonFlightBridge {
     pub async fn new(endpoint: String, chain_id: u64) -> Result<Self, anyhow::Error> {
-        let client = ErigonClient::connect(endpoint).await?;
+        let client = ErigonClient::connect(endpoint.clone()).await?;
+
+        // Try to connect to the TrieBackend service (custom Erigon only)
+        // This is optional - if not available, trie streaming won't work
+        let trie_client = match TrieClient::connect(endpoint.clone()).await {
+            Ok(mut client) => {
+                // Test the connection to verify TrieBackend is available
+                match client.test_connection().await {
+                    Ok(()) => {
+                        info!("TrieBackend service available at {}", endpoint);
+                        Some(Arc::new(tokio::sync::Mutex::new(client)))
+                    }
+                    Err(e) => {
+                        info!("TrieBackend service not available: {}", e);
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                info!("Could not connect to TrieBackend service: {}", e);
+                None
+            }
+        };
 
         // Create the streaming service for live subscriptions
         let streaming_service = Arc::new(StreamingService::new(client.clone()));
@@ -44,6 +68,7 @@ impl ErigonFlightBridge {
 
         Ok(Self {
             client: Arc::new(tokio::sync::Mutex::new(client)),
+            trie_client,
             chain_id,
             streaming_service,
         })
@@ -73,12 +98,71 @@ impl ErigonFlightBridge {
         }
     }
 
+    /// Create a stream of trie node batches
+    async fn create_trie_stream(
+        &self,
+    ) -> Result<
+        impl Stream<Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>> + Send,
+        Status,
+    > {
+        info!("Starting trie stream creation");
+        use futures::StreamExt;
+
+        let trie_client = self
+            .trie_client
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("TrieBackend service not available"))?
+            .clone();
+
+        let stream = async_stream::stream! {
+            let mut client = trie_client.lock().await;
+
+            info!("Streaming commitment nodes from Erigon TrieBackend");
+            // Stream all commitment nodes without a specific state root
+            // This tests the CommitmentIterator path
+            let mut node_stream = match client.stream_commitment_nodes(None, 0, 0, 1000).await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    error!("Failed to start trie streaming: {}", e);
+                    return;
+                }
+            };
+
+            while let Some(result) = node_stream.next().await {
+                let batch = match result {
+                    Ok(batch) => batch,
+                    Err(e) => {
+                        error!("Stream error: {}", e);
+                        break;
+                    }
+                };
+
+                // Convert protobuf batch to Arrow RecordBatch
+                match trie_converter::convert_trie_batch(batch) {
+                    Ok(record_batch) => yield Ok(record_batch),
+                    Err(e) => {
+                        error!("Failed to convert trie batch: {}", e);
+                        break;
+                    }
+                }
+            }
+        };
+
+        Ok(stream)
+    }
+
     /// Get the Arrow schema for a given stream type
     fn get_schema_for_type(stream_type: StreamType) -> Arc<arrow::datatypes::Schema> {
         match stream_type {
             StreamType::Blocks => ErigonDataConverter::block_schema(),
             StreamType::Transactions => ErigonDataConverter::transaction_schema(),
             StreamType::Logs => ErigonDataConverter::log_schema(),
+            StreamType::Trie => {
+                // Use the TrieNodeRecord schema
+                use evm_common::trie::TrieNodeRecord;
+                use typed_arrow::schema::SchemaMeta;
+                TrieNodeRecord::schema()
+            }
         }
     }
 }
@@ -126,11 +210,16 @@ impl FlightBridge for ErigonFlightBridge {
         Status,
     > {
         // List available stream types
-        let info_streams = vec![
+        let mut info_streams = vec![
             create_flight_info(StreamType::Blocks)?,
             create_flight_info(StreamType::Transactions)?,
             create_flight_info(StreamType::Logs)?,
         ];
+
+        // Only advertise trie streaming if we have the TrieBackend service
+        if self.trie_client.is_some() {
+            info_streams.push(create_flight_info(StreamType::Trie)?);
+        }
 
         let stream = stream::iter(info_streams.into_iter().map(Ok));
         Ok(Response::new(Box::pin(stream)))
@@ -189,6 +278,11 @@ impl FlightBridge for ErigonFlightBridge {
     {
         let ticket = request.into_inner();
 
+        debug!(
+            "Received do_get request with ticket: {:?}",
+            String::from_utf8_lossy(&ticket.ticket)
+        );
+
         // Parse ticket to determine what data to stream
         // The ticket contains a JSON-serialized BlockchainDescriptor
         let blockchain_desc = String::from_utf8(ticket.ticket.to_vec())
@@ -203,10 +297,30 @@ impl FlightBridge for ErigonFlightBridge {
 
         info!("Processing do_get for {:?}", stream_type);
 
+        // Handle trie streaming separately
+        if stream_type == StreamType::Trie {
+            let batch_stream = self.create_trie_stream().await?;
+            let schema = Self::get_schema_for_type(stream_type);
+            let encoder = FlightDataEncoderBuilder::new()
+                .with_schema(schema)
+                .build(batch_stream);
+
+            let flight_stream = encoder.map(|result| {
+                result.map_err(|e| {
+                    error!("Error encoding flight data: {}", e);
+                    Status::internal(format!("Encoding error: {}", e))
+                })
+            });
+
+            return Ok(Response::new(Box::pin(flight_stream)));
+        }
+
+        // Handle regular streaming (blocks, transactions, logs)
         let receiver = match stream_type {
             StreamType::Blocks => self.streaming_service.subscribe_blocks(),
             StreamType::Transactions => self.streaming_service.subscribe_transactions(),
             StreamType::Logs => self.streaming_service.subscribe_logs(),
+            StreamType::Trie => unreachable!("Trie handled above"),
         };
 
         let schema = Self::get_schema_for_type(stream_type);
@@ -255,11 +369,30 @@ impl FlightBridge for ErigonFlightBridge {
 
         info!("Starting data stream for {:?}", stream_type);
 
-        // Subscribe to the appropriate stream
+        // Handle trie streaming separately
+        if stream_type == StreamType::Trie {
+            let batch_stream = self.create_trie_stream().await?;
+            let schema = Self::get_schema_for_type(stream_type);
+            let encoder = FlightDataEncoderBuilder::new()
+                .with_schema(schema)
+                .build(batch_stream);
+
+            let flight_stream = encoder.map(|result| {
+                result.map_err(|e| {
+                    error!("Error encoding flight data: {}", e);
+                    Status::internal(format!("Encoding error: {}", e))
+                })
+            });
+
+            return Ok(Response::new(Box::pin(flight_stream)));
+        }
+
+        // Subscribe to the appropriate stream for regular data
         let receiver = match stream_type {
             StreamType::Blocks => self.streaming_service.subscribe_blocks(),
             StreamType::Transactions => self.streaming_service.subscribe_transactions(),
             StreamType::Logs => self.streaming_service.subscribe_logs(),
+            StreamType::Trie => unreachable!("Trie handled above"),
         };
         let schema = Self::get_schema_for_type(stream_type);
 
