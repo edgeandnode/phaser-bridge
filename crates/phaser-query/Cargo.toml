@@ -7,6 +7,10 @@ edition = "2021"
 name = "phaser-query"
 path = "src/bin/phaser-query.rs"
 
+[[bin]]
+name = "phaser-cli"
+path = "src/bin/phaser-cli.rs"
+
 [dependencies]
 # Local dependencies
 phaser-bridge = { path = "../phaser-bridge" }
