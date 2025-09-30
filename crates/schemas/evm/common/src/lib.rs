@@ -9,6 +9,7 @@ pub mod error;
 pub mod log;
 pub mod rpc_conversions;
 pub mod transaction;
+pub mod trie;
 pub mod types;
 
 /// Version of the schema format
@@ -27,4 +28,9 @@ pub fn transaction_arrow_schema() -> arrow::datatypes::SchemaRef {
 /// Get the Arrow schema for logs
 pub fn log_arrow_schema() -> arrow::datatypes::SchemaRef {
     crate::log::LogRecord::schema()
+}
+
+/// Get the Arrow schema for trie nodes
+pub fn trie_arrow_schema() -> arrow::datatypes::SchemaRef {
+    crate::trie::TrieNodeRecord::schema()
 }

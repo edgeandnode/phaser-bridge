@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package custom;
+
+option go_package = "./custom;custom";
+
+// NOTE: This is a custom extension to Erigon's gRPC interface.
+// Standard Erigon nodes will NOT have this service.
+// Clients MUST handle "Unimplemented" errors gracefully when these methods don't exist.
+//
+// To use this service, Erigon must be running a custom build that includes
+// the TrieBackend server implementation with access to CommitmentDomain data.
+
+// TrieBackend service provides access to Merkle Patricia Trie data from CommitmentDomain
+service TrieBackend {
+  // Get state root for a specific block
+  rpc GetStateRoot(GetStateRootRequest) returns (GetStateRootReply);
+
+  // Stream all trie nodes from CommitmentDomain for reconstruction
+  rpc StreamCommitmentNodes(StreamCommitmentRequest) returns (stream CommitmentNodeBatch);
+
+  // Get specific nodes by hash (for filling gaps)
+  rpc GetNodesByHash(GetNodesByHashRequest) returns (GetNodesByHashReply);
+}
+
+// Request state root for a block
+message GetStateRootRequest {
+  oneof block_id {
+    uint64 block_number = 1;
+    bytes block_hash = 2;
+    string block_tag = 3;  // "latest", "finalized", "safe"
+  }
+}
+
+message GetStateRootReply {
+  bytes state_root = 1;     // 32-byte state root hash
+  uint64 block_number = 2;
+  bytes block_hash = 3;
+  uint64 step = 4;          // Aggregator step number
+}
+
+// Stream commitment nodes for full trie reconstruction
+message StreamCommitmentRequest {
+  bytes state_root = 1;     // Target state root (empty for latest)
+  uint64 from_step = 2;     // Start from this step (0 for beginning)
+  uint64 to_step = 3;       // End at this step (0 for latest)
+
+  // Resumability via bloom filter
+  // Uses simple FNV-1a hash with seed for cross-language compatibility
+  bytes bloom_filter = 4;   // Bloom filter bits of already-seen node hashes
+  uint32 bloom_bits = 5;    // Size of bloom filter in bits
+  uint32 bloom_hashes = 6;  // Number of hash functions (seeds 0..n-1)
+
+  // Options
+  uint32 batch_size = 7;    // Nodes per message (default 1000)
+  bool include_proofs = 8;  // Include merkle paths for verification
+}
+
+// Batch of commitment nodes
+message CommitmentNodeBatch {
+  repeated CommitmentNode nodes = 1;
+  uint64 total_sent = 2;        // Running total of nodes sent
+  uint64 estimated_total = 3;   // Estimated total nodes
+  bytes next_marker = 4;        // Pagination marker for resume
+}
+
+// Individual commitment node from domain - minimal version
+message CommitmentNode {
+  bytes key = 1;                // Trie path/key from CommitmentDomain (variable length)
+  bytes hash = 2;               // 32-byte keccak256 hash of the RLP value
+  bytes raw_value = 3;          // Raw RLP-encoded node data (RocksDB value)
+  uint64 step = 4;              // Aggregator step for versioning
+}
+
+// NodeType enum removed - can be determined from RLP structure when needed
+// AccountInfo removed - already encoded in the RLP for account nodes
+
+// Get specific nodes (for gap filling)
+message GetNodesByHashRequest {
+  repeated bytes hashes = 1;  // List of 32-byte node hashes
+  uint64 as_of_step = 2;      // Optional: get as of specific step
+}
+
+message GetNodesByHashReply {
+  repeated CommitmentNode nodes = 1;
+  repeated bytes missing_hashes = 2; // Hashes that weren't found
+}
+
+// Bloom Filter Implementation Notes:
+//
+// The bloom filter uses FNV-1a hash for cross-language compatibility:
+// 1. FNV-1a with 32-bit output
+// 2. Multiple hashes created by prepending seed (0, 1, 2...) as 4-byte little-endian
+// 3. Bit layout: byte[n] contains bits [n*8, n*8+7]
+// 4. Set bit: byte |= (1 << (bit % 8))
+// 5. Test bit: (byte & (1 << (bit % 8))) != 0
