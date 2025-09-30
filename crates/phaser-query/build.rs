@@ -1,4 +1,5 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Build clients for remote services
     tonic_build::configure()
         .build_server(false)
         .build_client(true)
@@ -11,6 +12,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
             &["proto"],
         )?;
+
+    // Build server and client for admin services
+    tonic_build::configure()
+        .build_server(true)
+        .build_client(true)
+        .out_dir("src/generated")
+        .compile_protos(&["proto/admin/sync.proto"], &["proto"])?;
 
     println!("cargo:rerun-if-changed=proto/");
 

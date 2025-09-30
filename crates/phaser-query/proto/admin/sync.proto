@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package phaser.admin;
+
+// Admin service for managing historical data synchronization
+service SyncService {
+  // Start a historical sync job
+  rpc StartSync(SyncRequest) returns (SyncResponse);
+
+  // Get status of a sync job
+  rpc GetSyncStatus(SyncStatusRequest) returns (SyncStatusResponse);
+
+  // Cancel a running sync job
+  rpc CancelSync(CancelSyncRequest) returns (CancelSyncResponse);
+}
+
+message SyncRequest {
+  // Chain ID to sync (must match a configured bridge)
+  uint64 chain_id = 1;
+
+  // Bridge name to use (must be configured in bridges)
+  string bridge_name = 2;
+
+  // Starting block number (inclusive)
+  uint64 from_block = 3;
+
+  // Ending block number (inclusive)
+  uint64 to_block = 4;
+}
+
+message SyncResponse {
+  // Unique ID for this sync job
+  string job_id = 1;
+
+  // Status message
+  string message = 2;
+
+  // Whether the request was accepted
+  bool accepted = 3;
+}
+
+message SyncStatusRequest {
+  // Job ID to query
+  string job_id = 1;
+}
+
+message SyncStatusResponse {
+  // Job ID
+  string job_id = 1;
+
+  // Current status
+  SyncStatus status = 2;
+
+  // Current block being synced
+  uint64 current_block = 3;
+
+  // Total blocks to sync
+  uint64 total_blocks = 4;
+
+  // Number of blocks synced so far
+  uint64 blocks_synced = 5;
+
+  // Error message if failed
+  string error = 6;
+
+  // Number of active workers
+  uint32 active_workers = 7;
+}
+
+message CancelSyncRequest {
+  // Job ID to cancel
+  string job_id = 1;
+}
+
+message CancelSyncResponse {
+  // Whether cancellation was successful
+  bool success = 1;
+
+  // Status message
+  string message = 2;
+}
+
+enum SyncStatus {
+  SYNC_STATUS_UNKNOWN = 0;
+  SYNC_STATUS_PENDING = 1;
+  SYNC_STATUS_RUNNING = 2;
+  SYNC_STATUS_COMPLETED = 3;
+  SYNC_STATUS_FAILED = 4;
+  SYNC_STATUS_CANCELLED = 5;
+}
