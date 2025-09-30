@@ -1,0 +1,33 @@
+# Phaser Query Configuration
+
+# Path to RocksDB database for indexes
+rocksdb_path: ./test-data/rocksdb
+
+# Root directory for data files
+# Data will be organized as: data_root/{chain_id}/{bridge_name}/
+data_root: ./test-data
+
+# Bridge configurations
+# Each bridge represents a connection to an erigon-bridge endpoint
+bridges:
+  # Mainnet local bridge
+  - chain_id: 1
+    endpoint: http://localhost:8090
+    name: default
+
+  # Example: Sepolia testnet
+  # - chain_id: 11155111
+  #   endpoint: http://localhost:8091
+  #   name: sepolia-local
+
+# Number of blocks per segment file (default: 500000)
+segment_size: 500000
+
+# Maximum file size in MB before rotation (default: 1024)
+max_file_size_mb: 1024
+
+# Buffer timeout in seconds before flushing (default: 60)
+buffer_timeout_secs: 60
+
+# Port for JSON-RPC interface (default: 8545)
+rpc_port: 8545

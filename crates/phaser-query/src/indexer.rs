@@ -6,28 +6,37 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
-/// Build indexes from Parquet files in the specified directories
+/// Build indexes from Parquet files in all bridge directories
 pub async fn build_indexes(catalog: &RocksDbCatalog, config: &PhaserConfig) -> Result<()> {
     info!("Building indexes from Parquet files");
 
-    // Index files from historical directory
-    let historical_dir = config.historical_dir();
-    if historical_dir.exists() {
-        info!("Indexing historical data from {:?}", historical_dir);
-        index_directory(catalog, &historical_dir).await?;
-    }
+    // Scan data_root for chain_id directories
+    if config.data_root.exists() {
+        for chain_entry in fs::read_dir(&config.data_root)? {
+            let chain_entry = chain_entry?;
+            let chain_path = chain_entry.path();
 
-    // NOTE: We don't index streaming directory here anymore.
-    // Streaming files are indexed when they're finalized during file rotation.
+            if !chain_path.is_dir() {
+                continue;
+            }
+
+            // Scan for bridge directories within each chain
+            for bridge_entry in fs::read_dir(&chain_path)? {
+                let bridge_entry = bridge_entry?;
+                let bridge_path = bridge_entry.path();
+
+                if !bridge_path.is_dir() {
+                    continue;
+                }
+
+                info!("Indexing data from {:?}", bridge_path);
+                index_directory(catalog, &bridge_path).await?;
+            }
+        }
+    }
 
     info!("Index building complete");
     Ok(())
-}
-
-/// Index only historical directory (used by periodic background task)
-pub async fn index_historical_directory(catalog: &RocksDbCatalog, dir: &Path) -> Result<()> {
-    info!("Indexing historical data from {:?}", dir);
-    index_directory(catalog, dir).await
 }
 
 /// Index all Parquet files in a directory
