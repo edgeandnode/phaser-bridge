@@ -8,6 +8,7 @@ pub mod proto;
 pub mod rpc;
 pub mod sql;
 pub mod streaming_with_writer;
+pub mod sync;
 pub mod trie_writer;
 
 use anyhow::{Context, Result};
@@ -71,6 +72,10 @@ pub struct PhaserConfig {
     pub rpc_port: u16,
     #[serde(default)]
     pub sql_port: u16,
+    #[serde(default = "default_sync_admin_port")]
+    pub sync_admin_port: u16, // Port for sync admin gRPC (9090)
+    #[serde(default = "default_sync_parallelism")]
+    pub sync_parallelism: u32, // Number of parallel workers for historical sync (4)
 }
 
 fn default_segment_size() -> u64 {
@@ -87,6 +92,14 @@ fn default_buffer_timeout_secs() -> u64 {
 
 fn default_rpc_port() -> u16 {
     8545
+}
+
+fn default_sync_admin_port() -> u16 {
+    9090
+}
+
+fn default_sync_parallelism() -> u32 {
+    4
 }
 
 impl PhaserConfig {

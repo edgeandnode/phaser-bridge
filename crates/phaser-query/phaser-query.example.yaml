@@ -31,3 +31,12 @@ buffer_timeout_secs: 60
 
 # Port for JSON-RPC interface (default: 8545)
 rpc_port: 8545
+
+# Port for SQL interface (0 = disabled)
+sql_port: 0
+
+# Port for sync admin gRPC interface (default: 9090)
+sync_admin_port: 9090
+
+# Number of parallel workers for historical sync (default: 4)
+sync_parallelism: 4
