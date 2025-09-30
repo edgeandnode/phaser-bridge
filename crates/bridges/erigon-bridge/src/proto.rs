@@ -9,6 +9,10 @@ pub mod remote {
     include!("generated/remote.rs");
 }
 
+pub mod custom {
+    include!("generated/custom.rs");
+}
+
 // Re-export commonly used types
 pub use remote::ethbackend_client::EthbackendClient;
 pub use remote::{BlockReply, BlockRequest, Event, SubscribeReply, SubscribeRequest};
