@@ -55,6 +55,29 @@ pub struct SyncStatusResponse {
     /// Number of active workers
     #[prost(uint32, tag = "7")]
     pub active_workers: u32,
+    /// Chain ID
+    #[prost(uint64, tag = "8")]
+    pub chain_id: u64,
+    /// Bridge name
+    #[prost(string, tag = "9")]
+    pub bridge_name: ::prost::alloc::string::String,
+    /// Block range
+    #[prost(uint64, tag = "10")]
+    pub from_block: u64,
+    #[prost(uint64, tag = "11")]
+    pub to_block: u64,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct ListSyncJobsRequest {
+    /// Optional: filter by status
+    #[prost(enumeration = "SyncStatus", optional, tag = "1")]
+    pub status_filter: ::core::option::Option<i32>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListSyncJobsResponse {
+    /// List of sync jobs
+    #[prost(message, repeated, tag = "1")]
+    pub jobs: ::prost::alloc::vec::Vec<SyncStatusResponse>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelSyncRequest {
@@ -70,6 +93,65 @@ pub struct CancelSyncResponse {
     /// Status message
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SyncProgressRequest {
+    /// Job ID to stream progress for
+    #[prost(string, tag = "1")]
+    pub job_id: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SyncProgressUpdate {
+    /// Job ID
+    #[prost(string, tag = "1")]
+    pub job_id: ::prost::alloc::string::String,
+    /// Overall job status
+    #[prost(enumeration = "SyncStatus", tag = "2")]
+    pub status: i32,
+    /// Timestamp of this update (Unix timestamp in seconds)
+    #[prost(int64, tag = "3")]
+    pub timestamp: i64,
+    /// Per-worker progress
+    #[prost(message, repeated, tag = "4")]
+    pub workers: ::prost::alloc::vec::Vec<WorkerProgress>,
+    /// Overall statistics
+    #[prost(uint64, tag = "5")]
+    pub total_blocks_synced: u64,
+    #[prost(uint64, tag = "6")]
+    pub total_blocks: u64,
+    /// blocks per second
+    #[prost(double, tag = "7")]
+    pub overall_rate: f64,
+    #[prost(uint64, tag = "8")]
+    pub total_bytes_written: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkerProgress {
+    /// Worker ID
+    #[prost(uint32, tag = "1")]
+    pub worker_id: u32,
+    /// Current stage: "blocks", "transactions", "logs"
+    #[prost(string, tag = "2")]
+    pub stage: ::prost::alloc::string::String,
+    /// Block range for this worker
+    #[prost(uint64, tag = "3")]
+    pub from_block: u64,
+    #[prost(uint64, tag = "4")]
+    pub to_block: u64,
+    /// Current progress
+    #[prost(uint64, tag = "5")]
+    pub current_block: u64,
+    #[prost(uint64, tag = "6")]
+    pub blocks_processed: u64,
+    /// Rate (blocks per second)
+    #[prost(double, tag = "7")]
+    pub rate: f64,
+    /// Bytes written
+    #[prost(uint64, tag = "8")]
+    pub bytes_written: u64,
+    /// Number of parquet files created
+    #[prost(uint32, tag = "9")]
+    pub files_created: u32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -248,6 +330,31 @@ pub mod sync_service_client {
                 .insert(GrpcMethod::new("phaser.admin.SyncService", "GetSyncStatus"));
             self.inner.unary(req, path, codec).await
         }
+        /// List all sync jobs
+        pub async fn list_sync_jobs(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListSyncJobsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSyncJobsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/phaser.admin.SyncService/ListSyncJobs",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("phaser.admin.SyncService", "ListSyncJobs"));
+            self.inner.unary(req, path, codec).await
+        }
         /// Cancel a running sync job
         pub async fn cancel_sync(
             &mut self,
@@ -272,6 +379,33 @@ pub mod sync_service_client {
             req.extensions_mut()
                 .insert(GrpcMethod::new("phaser.admin.SyncService", "CancelSync"));
             self.inner.unary(req, path, codec).await
+        }
+        /// Stream real-time progress updates for a sync job
+        pub async fn stream_sync_progress(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SyncProgressRequest>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::SyncProgressUpdate>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/phaser.admin.SyncService/StreamSyncProgress",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("phaser.admin.SyncService", "StreamSyncProgress"),
+                );
+            self.inner.server_streaming(req, path, codec).await
         }
     }
 }
@@ -301,12 +435,34 @@ pub mod sync_service_server {
             tonic::Response<super::SyncStatusResponse>,
             tonic::Status,
         >;
+        /// List all sync jobs
+        async fn list_sync_jobs(
+            &self,
+            request: tonic::Request<super::ListSyncJobsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSyncJobsResponse>,
+            tonic::Status,
+        >;
         /// Cancel a running sync job
         async fn cancel_sync(
             &self,
             request: tonic::Request<super::CancelSyncRequest>,
         ) -> std::result::Result<
             tonic::Response<super::CancelSyncResponse>,
+            tonic::Status,
+        >;
+        /// Server streaming response type for the StreamSyncProgress method.
+        type StreamSyncProgressStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::SyncProgressUpdate, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        /// Stream real-time progress updates for a sync job
+        async fn stream_sync_progress(
+            &self,
+            request: tonic::Request<super::SyncProgressRequest>,
+        ) -> std::result::Result<
+            tonic::Response<Self::StreamSyncProgressStream>,
             tonic::Status,
         >;
     }
@@ -475,6 +631,51 @@ pub mod sync_service_server {
                     };
                     Box::pin(fut)
                 }
+                "/phaser.admin.SyncService/ListSyncJobs" => {
+                    #[allow(non_camel_case_types)]
+                    struct ListSyncJobsSvc<T: SyncService>(pub Arc<T>);
+                    impl<
+                        T: SyncService,
+                    > tonic::server::UnaryService<super::ListSyncJobsRequest>
+                    for ListSyncJobsSvc<T> {
+                        type Response = super::ListSyncJobsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ListSyncJobsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SyncService>::list_sync_jobs(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ListSyncJobsSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
                 "/phaser.admin.SyncService/CancelSync" => {
                     #[allow(non_camel_case_types)]
                     struct CancelSyncSvc<T: SyncService>(pub Arc<T>);
@@ -516,6 +717,53 @@ pub mod sync_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/phaser.admin.SyncService/StreamSyncProgress" => {
+                    #[allow(non_camel_case_types)]
+                    struct StreamSyncProgressSvc<T: SyncService>(pub Arc<T>);
+                    impl<
+                        T: SyncService,
+                    > tonic::server::ServerStreamingService<super::SyncProgressRequest>
+                    for StreamSyncProgressSvc<T> {
+                        type Response = super::SyncProgressUpdate;
+                        type ResponseStream = T::StreamSyncProgressStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SyncProgressRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SyncService>::stream_sync_progress(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = StreamSyncProgressSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

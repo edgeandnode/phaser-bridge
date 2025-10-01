@@ -10,8 +10,14 @@ service SyncService {
   // Get status of a sync job
   rpc GetSyncStatus(SyncStatusRequest) returns (SyncStatusResponse);
 
+  // List all sync jobs
+  rpc ListSyncJobs(ListSyncJobsRequest) returns (ListSyncJobsResponse);
+
   // Cancel a running sync job
   rpc CancelSync(CancelSyncRequest) returns (CancelSyncResponse);
+
+  // Stream real-time progress updates for a sync job
+  rpc StreamSyncProgress(SyncProgressRequest) returns (stream SyncProgressUpdate);
 }
 
 message SyncRequest {
@@ -65,6 +71,26 @@ message SyncStatusResponse {
 
   // Number of active workers
   uint32 active_workers = 7;
+
+  // Chain ID
+  uint64 chain_id = 8;
+
+  // Bridge name
+  string bridge_name = 9;
+
+  // Block range
+  uint64 from_block = 10;
+  uint64 to_block = 11;
+}
+
+message ListSyncJobsRequest {
+  // Optional: filter by status
+  optional SyncStatus status_filter = 1;
+}
+
+message ListSyncJobsResponse {
+  // List of sync jobs
+  repeated SyncStatusResponse jobs = 1;
 }
 
 message CancelSyncRequest {
@@ -78,6 +104,56 @@ message CancelSyncResponse {
 
   // Status message
   string message = 2;
+}
+
+message SyncProgressRequest {
+  // Job ID to stream progress for
+  string job_id = 1;
+}
+
+message SyncProgressUpdate {
+  // Job ID
+  string job_id = 1;
+
+  // Overall job status
+  SyncStatus status = 2;
+
+  // Timestamp of this update (Unix timestamp in seconds)
+  int64 timestamp = 3;
+
+  // Per-worker progress
+  repeated WorkerProgress workers = 4;
+
+  // Overall statistics
+  uint64 total_blocks_synced = 5;
+  uint64 total_blocks = 6;
+  double overall_rate = 7; // blocks per second
+  uint64 total_bytes_written = 8;
+}
+
+message WorkerProgress {
+  // Worker ID
+  uint32 worker_id = 1;
+
+  // Current stage: "blocks", "transactions", "logs"
+  string stage = 2;
+
+  // Block range for this worker
+  uint64 from_block = 3;
+  uint64 to_block = 4;
+
+  // Current progress
+  uint64 current_block = 5;
+  uint64 blocks_processed = 6;
+
+  // Rate (blocks per second)
+  double rate = 7;
+
+  // Bytes written
+  uint64 bytes_written = 8;
+
+  // Number of parquet files created
+  uint32 files_created = 9;
 }
 
 enum SyncStatus {
