@@ -151,6 +151,109 @@ impl ErigonFlightBridge {
         Ok(stream)
     }
 
+    /// Create a historical stream that fetches data from Erigon for a block range
+    async fn create_historical_stream(
+        &self,
+        stream_type: StreamType,
+        start: u64,
+        end: u64,
+    ) -> Result<
+        impl Stream<Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>> + Send,
+        Status,
+    > {
+        info!(
+            "Creating historical stream for {:?} from block {} to {}",
+            stream_type, start, end
+        );
+
+        let client = self.client.clone();
+
+        let stream = async_stream::stream! {
+            let mut current_block = start;
+
+            while current_block <= end {
+                debug!("Fetching historical {:?} for block {}", stream_type, current_block);
+
+                // Fetch the block
+                let block_reply = {
+                    let mut client_guard = client.lock().await;
+                    match client_guard.get_block(current_block, None).await {
+                        Ok(reply) => reply,
+                        Err(e) => {
+                            error!("Failed to fetch block {}: {}", current_block, e);
+                            current_block += 1;
+                            continue;
+                        }
+                    }
+                };
+
+                // Convert block to RecordBatch based on stream type
+                match stream_type {
+                    StreamType::Blocks => {
+                        match ErigonDataConverter::convert_full_block(&block_reply) {
+                            Ok((block_batch, _)) => {
+                                debug!("Converted block {} to RecordBatch with {} rows", current_block, block_batch.num_rows());
+                                yield Ok(block_batch);
+                            }
+                            Err(e) => {
+                                error!("Failed to convert block {}: {}", current_block, e);
+                                yield Err(arrow_flight::error::FlightError::ExternalError(
+                                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    StreamType::Transactions => {
+                        match ErigonDataConverter::convert_full_block(&block_reply) {
+                            Ok((_, Some(tx_batch))) => {
+                                debug!("Converted transactions for block {} to RecordBatch with {} rows", current_block, tx_batch.num_rows());
+                                yield Ok(tx_batch);
+                            }
+                            Ok((_, None)) => {
+                                // No transactions in this block, skip
+                                debug!("Block {} has no transactions, skipping", current_block);
+                            }
+                            Err(e) => {
+                                error!("Failed to convert transactions for block {}: {}", current_block, e);
+                                yield Err(arrow_flight::error::FlightError::ExternalError(
+                                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    StreamType::Logs => {
+                        error!("Historical log streaming not yet implemented");
+                        yield Err(arrow_flight::error::FlightError::ExternalError(
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::Unsupported,
+                                "Historical log streaming not yet implemented"
+                            ))
+                        ));
+                        break;
+                    }
+                    StreamType::Trie => {
+                        error!("Historical trie streaming not supported");
+                        yield Err(arrow_flight::error::FlightError::ExternalError(
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::Unsupported,
+                                "Historical trie streaming not supported"
+                            ))
+                        ));
+                        break;
+                    }
+                }
+
+                current_block += 1;
+            }
+
+            info!("Completed historical stream for {:?} blocks {}-{}", stream_type, start, end);
+        };
+
+        Ok(stream)
+    }
+
     /// Get the Arrow schema for a given stream type
     fn get_schema_for_type(stream_type: StreamType) -> Arc<arrow::datatypes::Schema> {
         match stream_type {
@@ -175,7 +278,7 @@ impl FlightBridge for ErigonFlightBridge {
 
     async fn get_capabilities(&self) -> Result<BridgeCapabilities, Status> {
         Ok(BridgeCapabilities {
-            supports_historical: false, // We're stateless, no historical data
+            supports_historical: true, // Now supports historical queries via do_get
             supports_streaming: true,
             supports_reorg_notifications: false,
             supports_filters: false,
@@ -294,8 +397,9 @@ impl FlightBridge for ErigonFlightBridge {
                     })
             })?;
         let stream_type = blockchain_desc.stream_type;
+        let query_mode = blockchain_desc.query_mode.clone();
 
-        info!("Processing do_get for {:?}", stream_type);
+        info!("Processing do_get for {:?} with mode {:?}", stream_type, query_mode);
 
         // Handle trie streaming separately
         if stream_type == StreamType::Trie {
@@ -315,21 +419,37 @@ impl FlightBridge for ErigonFlightBridge {
             return Ok(Response::new(Box::pin(flight_stream)));
         }
 
-        // Handle regular streaming (blocks, transactions, logs)
-        let receiver = match stream_type {
-            StreamType::Blocks => self.streaming_service.subscribe_blocks(),
-            StreamType::Transactions => self.streaming_service.subscribe_transactions(),
-            StreamType::Logs => self.streaming_service.subscribe_logs(),
-            StreamType::Trie => unreachable!("Trie handled above"),
+        // Handle based on query mode
+        use phaser_bridge::subscription::QueryMode;
+        let batch_stream: Pin<Box<dyn Stream<Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>> + Send>> = match query_mode {
+            QueryMode::Historical { start, end } => {
+                info!("Creating historical stream for blocks {}-{}", start, end);
+                Box::pin(self.create_historical_stream(stream_type, start, end).await?)
+            }
+            QueryMode::Live { from_block, .. } => {
+                info!("Creating live stream from block {:?}", from_block);
+                let receiver = match stream_type {
+                    StreamType::Blocks => self.streaming_service.subscribe_blocks(),
+                    StreamType::Transactions => self.streaming_service.subscribe_transactions(),
+                    StreamType::Logs => self.streaming_service.subscribe_logs(),
+                    StreamType::Trie => unreachable!("Trie handled above"),
+                };
+
+                Box::pin(async_stream::stream! {
+                    let mut rx = receiver;
+                    while let Ok(batch) = rx.recv().await {
+                        yield Ok(batch);
+                    }
+                })
+            }
+            QueryMode::Hybrid { historical_start, then_follow } => {
+                info!("Creating hybrid stream starting at block {}, follow: {}", historical_start, then_follow);
+                // TODO: Implement hybrid mode (historical then live)
+                return Err(Status::unimplemented("Hybrid mode not yet implemented"));
+            }
         };
 
         let schema = Self::get_schema_for_type(stream_type);
-        let batch_stream = async_stream::stream! {
-            let mut rx = receiver;
-            while let Ok(batch) = rx.recv().await {
-                yield Ok(batch);
-            }
-        };
         let encoder = FlightDataEncoderBuilder::new()
             .with_schema(schema)
             .build(batch_stream);
