@@ -9,7 +9,7 @@ use parquet::{
     file::properties::{EnabledStatistics, WriterProperties, WriterPropertiesBuilder},
 };
 use std::fs::{self, File};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::{debug, error, info};
 
 /// Service for writing RecordBatches to Parquet files
@@ -24,10 +24,12 @@ pub struct ParquetWriter {
 
 struct CurrentFile {
     writer: ArrowWriter<File>,
-    path: PathBuf,
+    temp_path: PathBuf,
     row_count: usize,
     start_block: u64,
     end_block: u64,
+    segment_start: u64,
+    segment_end: u64,
 }
 
 impl ParquetWriter {
@@ -97,7 +99,7 @@ impl ParquetWriter {
             debug!(
                 "Wrote batch with {} rows to {}, total rows: {}, block: {}",
                 batch.num_rows(),
-                current.path.display(),
+                current.temp_path.display(),
                 current.row_count,
                 block_num
             );
@@ -113,7 +115,7 @@ impl ParquetWriter {
                 (block_num / self.segment_size) != (current.start_block / self.segment_size);
 
             // Check actual file size on disk
-            let actual_size = fs::metadata(&current.path)?.len();
+            let actual_size = fs::metadata(&current.temp_path)?.len();
             let size_exceeded = actual_size >= self.max_file_size_bytes;
 
             Ok(segment_boundary || size_exceeded)
@@ -123,30 +125,38 @@ impl ParquetWriter {
     }
 
     fn start_new_file(&mut self, block_num: u64, schema: arrow_schema::SchemaRef) -> Result<()> {
-        let segment_id = block_num / self.segment_size;
+        // Calculate segment boundaries
+        let segment_start = (block_num / self.segment_size) * self.segment_size;
+        let segment_end = segment_start + self.segment_size - 1;
+
+        // Create temporary filename with .tmp extension
+        // Format: {topic}_{segment_start}-{segment_end}_from_{block}_to_{block}.parquet.tmp
+        // Final rename will update the actual range
         let filename = format!(
-            "{}_segment_{:06}_from_{}.parquet",
-            self.data_type, segment_id, block_num
+            "{}_{}-{}_from_{}_to_{}.parquet.tmp",
+            self.data_type, segment_start, segment_end, block_num, block_num
         );
-        let path = self.data_dir.join(filename);
+        let temp_path = self.data_dir.join(filename);
 
         info!(
             "Starting new {} parquet file: {}",
             self.data_type,
-            path.display()
+            temp_path.display()
         );
 
-        let file = File::create(&path)?;
+        let file = File::create(&temp_path)?;
         let props = self.build_writer_properties(&schema)?;
 
         let writer = ArrowWriter::try_new(file, schema, Some(props))?;
 
         self.current_file = Some(CurrentFile {
             writer,
-            path,
+            temp_path,
             row_count: 0,
             start_block: block_num,
             end_block: block_num,
+            segment_start,
+            segment_end,
         });
 
         Ok(())
@@ -220,24 +230,27 @@ impl ParquetWriter {
     }
 
     pub fn finalize_current_file(&mut self) -> Result<()> {
-        if let Some(mut current) = self.current_file.take() {
+        if let Some(current) = self.current_file.take() {
             current.writer.close()?;
 
-            // Rename file to include end block
-            let new_filename = format!(
-                "{}_segment_{:06}_{}_to_{}.parquet",
+            // Build final filename with actual block range
+            // Format: {topic}_{segment_start}-{segment_end}_from_{actual_start}_to_{actual_end}.parquet
+            let final_filename = format!(
+                "{}_{}-{}_from_{}_to_{}.parquet",
                 self.data_type,
-                current.start_block / self.segment_size,
+                current.segment_start,
+                current.segment_end,
                 current.start_block,
                 current.end_block
             );
-            let new_path = self.data_dir.join(new_filename);
+            let final_path = self.data_dir.join(final_filename);
 
-            fs::rename(&current.path, &new_path)?;
+            // Rename from .tmp to final name
+            fs::rename(&current.temp_path, &final_path)?;
 
             info!(
                 "Finalized parquet file: {} with {} rows, blocks {} to {}",
-                new_path.display(),
+                final_path.display(),
                 current.row_count,
                 current.start_block,
                 current.end_block
