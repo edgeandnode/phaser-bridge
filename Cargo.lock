@@ -3762,14 +3762,18 @@ dependencies = [
 name = "phaser-query"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-rlp",
  "anyhow",
  "arrow",
  "arrow-flight",
  "async-channel",
+ "async-stream",
  "async-trait",
  "axum 0.7.9",
  "bincode",
  "clap",
+ "erigon-bridge",
  "evm-common",
  "futures",
  "jsonrpsee",
@@ -3783,6 +3787,7 @@ dependencies = [
  "serde_yaml",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
  "tracing",
