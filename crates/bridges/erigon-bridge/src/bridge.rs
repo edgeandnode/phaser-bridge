@@ -12,18 +12,22 @@ use std::pin::Pin;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info};
 
+use crate::blockdata_client::BlockDataClient;
+use crate::blockdata_converter::BlockDataConverter;
 use crate::client::ErigonClient;
 use crate::converter::ErigonDataConverter;
 use crate::error::ErigonBridgeError;
 use crate::streaming_service::StreamingService;
 use crate::trie_client::TrieClient;
 use crate::trie_converter;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tonic::Status as TonicStatus;
 
 /// A stateless bridge that translates between Erigon gRPC and Arrow Flight
 pub struct ErigonFlightBridge {
     client: Arc<tokio::sync::Mutex<ErigonClient>>,
+    blockdata_client: Arc<tokio::sync::Mutex<BlockDataClient>>,
     trie_client: Option<Arc<tokio::sync::Mutex<TrieClient>>>,
     chain_id: u64,
     streaming_service: Arc<StreamingService>,
@@ -55,6 +59,9 @@ impl ErigonFlightBridge {
             }
         };
 
+        // Create BlockDataClient for historical queries
+        let blockdata_client = BlockDataClient::connect(endpoint.clone()).await?;
+
         // Create the streaming service for live subscriptions
         let streaming_service = Arc::new(StreamingService::new(client.clone()));
 
@@ -68,6 +75,7 @@ impl ErigonFlightBridge {
 
         Ok(Self {
             client: Arc::new(tokio::sync::Mutex::new(client)),
+            blockdata_client: Arc::new(tokio::sync::Mutex::new(blockdata_client)),
             trie_client,
             chain_id,
             streaming_service,
@@ -166,86 +174,141 @@ impl ErigonFlightBridge {
             stream_type, start, end
         );
 
-        let client = self.client.clone();
+        let blockdata_client = self.blockdata_client.clone();
 
         let stream = async_stream::stream! {
-            let mut current_block = start;
-
-            while current_block <= end {
-                debug!("Fetching historical {:?} for block {}", stream_type, current_block);
-
-                // Fetch the block
-                let block_reply = {
-                    let mut client_guard = client.lock().await;
-                    match client_guard.get_block(current_block, None).await {
-                        Ok(reply) => reply,
+            match stream_type {
+                StreamType::Blocks => {
+                    // Stream blocks using BlockDataClient
+                    let mut client_guard = blockdata_client.lock().await;
+                    let mut block_stream = match client_guard.stream_blocks(start, end, 100).await {
+                        Ok(s) => s,
                         Err(e) => {
-                            error!("Failed to fetch block {}: {}", current_block, e);
-                            current_block += 1;
-                            continue;
+                            error!("Failed to start block stream: {}", e);
+                            yield Err(arrow_flight::error::FlightError::ExternalError(
+                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                            ));
+                            return;
                         }
-                    }
-                };
+                    };
+                    drop(client_guard);
 
-                // Convert block to RecordBatch based on stream type
-                match stream_type {
-                    StreamType::Blocks => {
-                        match ErigonDataConverter::convert_full_block(&block_reply) {
-                            Ok((block_batch, _)) => {
-                                debug!("Converted block {} to RecordBatch with {} rows", current_block, block_batch.num_rows());
-                                yield Ok(block_batch);
+                    while let Some(batch_result) = block_stream.message().await.transpose() {
+                        match batch_result {
+                            Ok(block_batch) => {
+                                match BlockDataConverter::blocks_to_arrow(block_batch) {
+                                    Ok(record_batch) => {
+                                        debug!("Converted block batch with {} rows", record_batch.num_rows());
+                                        yield Ok(record_batch);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to convert block batch: {}", e);
+                                        yield Err(arrow_flight::error::FlightError::ExternalError(
+                                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                        ));
+                                        break;
+                                    }
+                                }
                             }
                             Err(e) => {
-                                error!("Failed to convert block {}: {}", current_block, e);
+                                error!("Failed to receive block batch: {}", e);
                                 yield Err(arrow_flight::error::FlightError::ExternalError(
                                     Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
                                 ));
                                 break;
                             }
                         }
-                    }
-                    StreamType::Transactions => {
-                        match ErigonDataConverter::convert_full_block(&block_reply) {
-                            Ok((_, Some(tx_batch))) => {
-                                debug!("Converted transactions for block {} to RecordBatch with {} rows", current_block, tx_batch.num_rows());
-                                yield Ok(tx_batch);
-                            }
-                            Ok((_, None)) => {
-                                // No transactions in this block, skip
-                                debug!("Block {} has no transactions, skipping", current_block);
-                            }
-                            Err(e) => {
-                                error!("Failed to convert transactions for block {}: {}", current_block, e);
-                                yield Err(arrow_flight::error::FlightError::ExternalError(
-                                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                                ));
-                                break;
-                            }
-                        }
-                    }
-                    StreamType::Logs => {
-                        error!("Historical log streaming not yet implemented");
-                        yield Err(arrow_flight::error::FlightError::ExternalError(
-                            Box::new(std::io::Error::new(
-                                std::io::ErrorKind::Unsupported,
-                                "Historical log streaming not yet implemented"
-                            ))
-                        ));
-                        break;
-                    }
-                    StreamType::Trie => {
-                        error!("Historical trie streaming not supported");
-                        yield Err(arrow_flight::error::FlightError::ExternalError(
-                            Box::new(std::io::Error::new(
-                                std::io::ErrorKind::Unsupported,
-                                "Historical trie streaming not supported"
-                            ))
-                        ));
-                        break;
                     }
                 }
+                StreamType::Transactions => {
+                    // For transactions, we need to get block timestamps first
+                    let mut client_guard = blockdata_client.lock().await;
 
-                current_block += 1;
+                    // First get blocks to extract timestamps
+                    let mut timestamps = HashMap::new();
+                    let mut block_stream = match client_guard.stream_blocks(start, end, 100).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to start block stream for timestamps: {}", e);
+                            yield Err(arrow_flight::error::FlightError::ExternalError(
+                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                            ));
+                            return;
+                        }
+                    };
+
+                    // Collect timestamps
+                    while let Some(batch_result) = block_stream.message().await.transpose() {
+                        if let Ok(block_batch) = batch_result {
+                            use alloy_consensus::Header;
+                            use alloy_rlp::Decodable;
+                            for block in &block_batch.blocks {
+                                // Decode RLP header to get timestamp
+                                if let Ok(header) = Header::decode(&mut block.rlp_header.as_slice()) {
+                                    timestamps.insert(block.block_number, header.timestamp as i64);
+                                }
+                            }
+                        }
+                    }
+
+                    // Now stream transactions
+                    let mut tx_stream = match client_guard.stream_transactions(start, end, 100).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to start transaction stream: {}", e);
+                            yield Err(arrow_flight::error::FlightError::ExternalError(
+                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                            ));
+                            return;
+                        }
+                    };
+                    drop(client_guard);
+
+                    while let Some(batch_result) = tx_stream.message().await.transpose() {
+                        match batch_result {
+                            Ok(tx_batch) => {
+                                match BlockDataConverter::transactions_to_arrow(tx_batch, &timestamps) {
+                                    Ok(record_batch) => {
+                                        debug!("Converted transaction batch with {} rows", record_batch.num_rows());
+                                        yield Ok(record_batch);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to convert transaction batch: {}", e);
+                                        yield Err(arrow_flight::error::FlightError::ExternalError(
+                                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to receive transaction batch: {}", e);
+                                yield Err(arrow_flight::error::FlightError::ExternalError(
+                                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+                StreamType::Logs => {
+                    error!("Historical log streaming not yet implemented");
+                    yield Err(arrow_flight::error::FlightError::ExternalError(
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Unsupported,
+                            "Historical log streaming not yet implemented"
+                        ))
+                    ));
+                }
+                StreamType::Trie => {
+                    error!("Historical trie streaming not supported");
+                    yield Err(arrow_flight::error::FlightError::ExternalError(
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Unsupported,
+                            "Historical trie streaming not supported"
+                        ))
+                    ));
+                }
             }
 
             info!("Completed historical stream for {:?} blocks {}-{}", stream_type, start, end);
