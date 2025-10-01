@@ -38,6 +38,26 @@ cargo clippy --all-targets --all-features
 cargo check --all-targets
 ```
 
+## Git Commit Guidelines
+
+### Commit Messages
+- **NEVER** include Claude attribution or "Generated with Claude Code" footer in commit messages
+- Write clear, concise commit messages that explain the "why" not just the "what"
+- Use conventional commit format when appropriate
+- Due to GPG signing requirements, provide the full git command for the user to execute themselves
+
+### Atomic Commits
+When there are multiple unrelated changes in the working directory:
+- Analyze the git diff and identify logical groupings
+- Create a shell script (e.g., `commit-changes.sh`) with separate commits for each logical change
+- Common groupings:
+  - Feature additions (separate commit per feature)
+  - Bug fixes (separate commit per fix)
+  - Logging/debugging improvements
+  - Code formatting (cargo fmt)
+  - Documentation updates
+- Always make formatting commits last to keep the history clean
+
 ## Architecture Notes
 
 ### Bridges
