@@ -13,6 +13,7 @@ pub mod trie_writer;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -58,6 +59,42 @@ pub struct BridgeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParquetConfig {
+    #[serde(default = "default_compression")]
+    pub default_compression: String, // "zstd", "lz4", "snappy", "gzip", "brotli", "none"
+    #[serde(default)]
+    pub default_compression_level: Option<u32>,
+    #[serde(default = "default_row_group_size_mb")]
+    pub row_group_size_mb: usize,
+    #[serde(default)]
+    pub column_options: HashMap<String, ColumnOptions>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnOptions {
+    #[serde(default)]
+    pub compression: Option<String>,
+    #[serde(default)]
+    pub compression_level: Option<u32>,
+    #[serde(default)]
+    pub encoding: Option<String>, // "plain", "rle", "delta_binary_packed", "dictionary"
+    #[serde(default)]
+    pub bloom_filter: Option<bool>,
+    #[serde(default)]
+    pub statistics: Option<String>, // "none", "chunk", "page"
+    #[serde(default)]
+    pub dictionary: Option<bool>,
+}
+
+fn default_compression() -> String {
+    "zstd".to_string()
+}
+
+fn default_row_group_size_mb() -> usize {
+    128
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaserConfig {
     pub rocksdb_path: PathBuf,
     pub data_root: PathBuf,
@@ -76,6 +113,8 @@ pub struct PhaserConfig {
     pub sync_admin_port: u16, // Port for sync admin gRPC (9090)
     #[serde(default = "default_sync_parallelism")]
     pub sync_parallelism: u32, // Number of parallel workers for historical sync (4)
+    #[serde(default)]
+    pub parquet: Option<ParquetConfig>,
 }
 
 fn default_segment_size() -> u64 {

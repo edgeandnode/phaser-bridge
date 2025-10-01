@@ -1,8 +1,13 @@
+use crate::{ColumnOptions, ParquetConfig};
 use anyhow::Result;
 use arrow::array as arrow_array;
 use arrow::array::RecordBatch;
 use arrow::datatypes as arrow_schema;
-use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+use parquet::{
+    arrow::ArrowWriter,
+    basic::{Compression, Encoding},
+    file::properties::{EnabledStatistics, WriterProperties, WriterPropertiesBuilder},
+};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info};
@@ -14,6 +19,7 @@ pub struct ParquetWriter {
     max_file_size_bytes: u64,
     segment_size: u64,
     data_type: String, // "blocks", "transactions", or "logs"
+    parquet_config: Option<ParquetConfig>,
 }
 
 struct CurrentFile {
@@ -32,6 +38,16 @@ impl ParquetWriter {
         segment_size: u64,
         data_type: String,
     ) -> Result<Self> {
+        Self::with_config(data_dir, max_file_size_mb, segment_size, data_type, None)
+    }
+
+    pub fn with_config(
+        data_dir: PathBuf,
+        max_file_size_mb: u64,
+        segment_size: u64,
+        data_type: String,
+        parquet_config: Option<ParquetConfig>,
+    ) -> Result<Self> {
         // Create data directory if it doesn't exist
         fs::create_dir_all(&data_dir)?;
 
@@ -41,6 +57,7 @@ impl ParquetWriter {
             max_file_size_bytes: max_file_size_mb * 1024 * 1024,
             segment_size,
             data_type,
+            parquet_config,
         })
     }
 
@@ -124,9 +141,7 @@ impl ParquetWriter {
         );
 
         let file = File::create(&path)?;
-        let props = WriterProperties::builder()
-            .set_compression(parquet::basic::Compression::SNAPPY)
-            .build();
+        let props = self.build_writer_properties(&schema)?;
 
         let writer = ArrowWriter::try_new(file, schema, Some(props))?;
 
@@ -140,6 +155,73 @@ impl ParquetWriter {
         });
 
         Ok(())
+    }
+
+    fn build_writer_properties(
+        &self,
+        schema: &arrow_schema::SchemaRef,
+    ) -> Result<WriterProperties> {
+        let mut builder = WriterProperties::builder();
+
+        // Apply config if available
+        if let Some(config) = &self.parquet_config {
+            // Set default compression
+            let default_compression = parse_compression(&config.default_compression);
+            builder = builder.set_compression(default_compression);
+
+            // Set row group size
+            builder = builder.set_max_row_group_size(config.row_group_size_mb * 1024 * 1024);
+
+            // Apply per-column options
+            for field in schema.fields() {
+                let col_name = field.name();
+                if let Some(col_opts) = config.column_options.get(col_name) {
+                    builder = self.apply_column_options(builder, col_name, col_opts);
+                }
+            }
+        } else {
+            // Default to SNAPPY if no config
+            builder = builder.set_compression(Compression::SNAPPY);
+        }
+
+        Ok(builder.build())
+    }
+
+    fn apply_column_options(
+        &self,
+        mut builder: WriterPropertiesBuilder,
+        col_name: &str,
+        opts: &ColumnOptions,
+    ) -> WriterPropertiesBuilder {
+        // Set compression
+        if let Some(compression_str) = &opts.compression {
+            let compression = parse_compression(compression_str);
+            builder = builder.set_column_compression(col_name.into(), compression);
+        }
+
+        // Set encoding
+        if let Some(encoding_str) = &opts.encoding {
+            let encoding = parse_encoding(encoding_str);
+            builder = builder.set_column_encoding(col_name.into(), encoding);
+        }
+
+        // Set bloom filter
+        if let Some(true) = opts.bloom_filter {
+            builder = builder.set_column_bloom_filter_enabled(col_name.into(), true);
+        }
+
+        // Set statistics
+        if let Some(stats_str) = &opts.statistics {
+            let stats = parse_statistics(stats_str);
+            builder = builder.set_column_statistics_enabled(col_name.into(), stats);
+        }
+
+        // Set dictionary
+        if let Some(enable_dict) = opts.dictionary {
+            builder = builder.set_column_dictionary_enabled(col_name.into(), enable_dict);
+        }
+
+        builder
     }
 
     pub fn finalize_current_file(&mut self) -> Result<()> {
@@ -174,5 +256,51 @@ impl ParquetWriter {
             current.writer.flush()?;
         }
         Ok(())
+    }
+}
+
+fn parse_compression(s: &str) -> Compression {
+    match s.to_lowercase().as_str() {
+        "snappy" => Compression::SNAPPY,
+        "gzip" => Compression::GZIP(Default::default()),
+        "lzo" => Compression::LZO,
+        "brotli" => Compression::BROTLI(Default::default()),
+        "lz4" => Compression::LZ4,
+        "zstd" => Compression::ZSTD(Default::default()),
+        "lz4_raw" => Compression::LZ4_RAW,
+        "none" | "uncompressed" => Compression::UNCOMPRESSED,
+        _ => {
+            info!("Unknown compression '{}', defaulting to ZSTD", s);
+            Compression::ZSTD(Default::default())
+        }
+    }
+}
+
+fn parse_encoding(s: &str) -> Encoding {
+    match s.to_lowercase().as_str() {
+        "plain" => Encoding::PLAIN,
+        "rle" => Encoding::RLE,
+        "bit_packed" => Encoding::BIT_PACKED,
+        "delta_binary_packed" => Encoding::DELTA_BINARY_PACKED,
+        "delta_length_byte_array" => Encoding::DELTA_LENGTH_BYTE_ARRAY,
+        "delta_byte_array" => Encoding::DELTA_BYTE_ARRAY,
+        "rle_dictionary" => Encoding::RLE_DICTIONARY,
+        "byte_stream_split" => Encoding::BYTE_STREAM_SPLIT,
+        _ => {
+            info!("Unknown encoding '{}', defaulting to PLAIN", s);
+            Encoding::PLAIN
+        }
+    }
+}
+
+fn parse_statistics(s: &str) -> EnabledStatistics {
+    match s.to_lowercase().as_str() {
+        "none" => EnabledStatistics::None,
+        "chunk" => EnabledStatistics::Chunk,
+        "page" => EnabledStatistics::Page,
+        _ => {
+            info!("Unknown statistics level '{}', defaulting to Page", s);
+            EnabledStatistics::Page
+        }
     }
 }
