@@ -26,7 +26,6 @@ struct CurrentFile {
     writer: ArrowWriter<File>,
     path: PathBuf,
     row_count: usize,
-    byte_count: u64,
     start_block: u64,
     end_block: u64,
 }
@@ -95,10 +94,6 @@ impl ParquetWriter {
             current.row_count += batch.num_rows();
             current.end_block = block_num;
 
-            // Estimate size (this is approximate)
-            let batch_size = batch.get_array_memory_size() as u64;
-            current.byte_count += batch_size;
-
             debug!(
                 "Wrote batch with {} rows to {}, total rows: {}, block: {}",
                 batch.num_rows(),
@@ -117,8 +112,9 @@ impl ParquetWriter {
             let segment_boundary =
                 (block_num / self.segment_size) != (current.start_block / self.segment_size);
 
-            // Check file size
-            let size_exceeded = current.byte_count >= self.max_file_size_bytes;
+            // Check actual file size on disk
+            let actual_size = fs::metadata(&current.path)?.len();
+            let size_exceeded = actual_size >= self.max_file_size_bytes;
 
             Ok(segment_boundary || size_exceeded)
         } else {
@@ -149,7 +145,6 @@ impl ParquetWriter {
             writer,
             path,
             row_count: 0,
-            byte_count: 0,
             start_block: block_num,
             end_block: block_num,
         });
