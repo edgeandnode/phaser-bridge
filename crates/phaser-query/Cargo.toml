@@ -14,6 +14,7 @@ path = "src/bin/phaser-cli.rs"
 [dependencies]
 # Local dependencies
 phaser-bridge = { path = "../phaser-bridge" }
+erigon-bridge = { path = "../bridges/erigon-bridge" }
 evm-common = { path = "../schemas/evm/common" }
 
 # Typed Arrow support
@@ -39,6 +40,7 @@ prost-types.workspace = true
 
 # Additional crate-specific dependencies
 async-channel = "2.3"
+async-stream = "0.3"
 futures = "0.3"
 url = "2.5"
 bincode = "1.3"
@@ -46,6 +48,9 @@ clap = { version = "4.5", features = ["derive", "env"] }
 parquet = "56.1"
 serde_yaml = "0.9"
 uuid = { version = "1.18", features = ["v4"] }
+tokio-stream = "0.1"
+alloy-consensus.workspace = true
+alloy-rlp.workspace = true
 
 [build-dependencies]
 tonic-build = "0.13"
