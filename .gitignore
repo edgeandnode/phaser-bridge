@@ -5,3 +5,4 @@ test-data/
 test-data/streaming
 test-data/rocksdb
 erigon-bridge.log
+commit-changes.sh
