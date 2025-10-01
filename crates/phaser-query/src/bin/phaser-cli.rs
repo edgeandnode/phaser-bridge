@@ -41,6 +41,12 @@ enum Commands {
         /// Job ID to query
         job_id: String,
     },
+    /// List all sync jobs
+    List {
+        /// Optional: filter by status (PENDING, RUNNING, COMPLETED, FAILED, CANCELLED)
+        #[clap(short, long)]
+        status: Option<String>,
+    },
     /// Cancel a running sync job
     Cancel {
         /// Job ID to cancel
@@ -99,12 +105,65 @@ async fn main() -> Result<()> {
 
             println!("Job ID: {}", job_id);
             println!("Status: {}", status_str);
+            println!("Chain: {} / Bridge: {}", status.chain_id, status.bridge_name);
+            println!("Blocks: {}-{}", status.from_block, status.to_block);
             println!("Progress: {}/{} blocks", status.blocks_synced, status.total_blocks);
             println!("Current block: {}", status.current_block);
             println!("Active workers: {}", status.active_workers);
 
             if !status.error.is_empty() {
                 println!("Error: {}", status.error);
+            }
+        }
+        Commands::List { status } => {
+            let status_filter = if let Some(status_str) = status {
+                let filter = match status_str.to_uppercase().as_str() {
+                    "PENDING" => SyncStatus::Pending,
+                    "RUNNING" => SyncStatus::Running,
+                    "COMPLETED" => SyncStatus::Completed,
+                    "FAILED" => SyncStatus::Failed,
+                    "CANCELLED" => SyncStatus::Cancelled,
+                    _ => {
+                        println!("Invalid status filter: {}", status_str);
+                        println!("Valid values: PENDING, RUNNING, COMPLETED, FAILED, CANCELLED");
+                        return Ok(());
+                    }
+                };
+                Some(filter as i32)
+            } else {
+                None
+            };
+
+            let request = tonic::Request::new(ListSyncJobsRequest { status_filter });
+
+            let response = client.list_sync_jobs(request).await?;
+            let jobs = response.into_inner().jobs;
+
+            if jobs.is_empty() {
+                println!("No sync jobs found");
+            } else {
+                println!("Found {} sync job(s):\n", jobs.len());
+                for job in jobs {
+                    let status_str = match SyncStatus::try_from(job.status) {
+                        Ok(SyncStatus::Pending) => "PENDING",
+                        Ok(SyncStatus::Running) => "RUNNING",
+                        Ok(SyncStatus::Completed) => "COMPLETED",
+                        Ok(SyncStatus::Failed) => "FAILED",
+                        Ok(SyncStatus::Cancelled) => "CANCELLED",
+                        _ => "UNKNOWN",
+                    };
+
+                    println!("Job: {}", job.job_id);
+                    println!("  Status: {}", status_str);
+                    println!("  Chain: {} / Bridge: {}", job.chain_id, job.bridge_name);
+                    println!("  Blocks: {}-{}", job.from_block, job.to_block);
+                    println!("  Progress: {}/{} blocks", job.blocks_synced, job.total_blocks);
+                    println!("  Workers: {}", job.active_workers);
+                    if !job.error.is_empty() {
+                        println!("  Error: {}", job.error);
+                    }
+                    println!();
+                }
             }
         }
         Commands::Cancel { job_id } => {
