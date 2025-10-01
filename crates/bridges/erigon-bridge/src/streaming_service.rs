@@ -101,7 +101,7 @@ impl StreamingService {
             let tx_subscribers = self.tx_sender.receiver_count();
 
             if block_subscribers == 0 && tx_subscribers == 0 {
-                info!("No subscribers for blocks or transactions, skipping processing");
+                info!("Event type: {} - No subscribers for blocks or transactions, skipping processing", msg.r#type);
                 continue;
             }
 

@@ -156,9 +156,9 @@ impl TrieClient {
                 // Check if it's an "Unimplemented" error
                 if let ErigonBridgeError::ErigonClient(status) = &e {
                     if status.code() == tonic::Code::Unimplemented {
-                        error!(
+                        warn!(
                             "TrieBackend service is NOT implemented in this Erigon instance. \
-                            You need to run a custom Erigon build with TrieBackend support."
+                            You need to run a custom Erigon build with TrieBackend support in order for this service to work."
                         );
                     }
                 }
