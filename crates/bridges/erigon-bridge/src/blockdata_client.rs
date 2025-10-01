@@ -1,8 +1,8 @@
 /// Client for Erigon's custom BlockDataBackend service
 use crate::error::ErigonBridgeError;
 use crate::proto::custom::{
-    block_data_backend_client::BlockDataBackendClient, BlockBatch, BlockRangeRequest,
-    ReceiptBatch, TransactionBatch,
+    block_data_backend_client::BlockDataBackendClient, BlockBatch, BlockRangeRequest, ReceiptBatch,
+    TransactionBatch,
 };
 use tonic::transport::Channel;
 use tonic::Streaming;
@@ -132,27 +132,25 @@ impl BlockDataClient {
 
         // Try to stream a single block (genesis)
         match self.stream_blocks(0, 0, 1).await {
-            Ok(mut stream) => {
-                match stream.message().await {
-                    Ok(Some(batch)) => {
-                        info!(
-                            "BlockDataBackend service is available! Received {} blocks",
-                            batch.blocks.len()
-                        );
-                        Ok(())
-                    }
-                    Ok(None) => {
-                        error!("BlockDataBackend service returned no data");
-                        Err(ErigonBridgeError::ErigonClient(tonic::Status::not_found(
-                            "No blocks returned",
-                        )))
-                    }
-                    Err(e) => {
-                        error!("BlockDataBackend service error: {}", e);
-                        Err(ErigonBridgeError::from(e))
-                    }
+            Ok(mut stream) => match stream.message().await {
+                Ok(Some(batch)) => {
+                    info!(
+                        "BlockDataBackend service is available! Received {} blocks",
+                        batch.blocks.len()
+                    );
+                    Ok(())
                 }
-            }
+                Ok(None) => {
+                    error!("BlockDataBackend service returned no data");
+                    Err(ErigonBridgeError::ErigonClient(tonic::Status::not_found(
+                        "No blocks returned",
+                    )))
+                }
+                Err(e) => {
+                    error!("BlockDataBackend service error: {}", e);
+                    Err(ErigonBridgeError::from(e))
+                }
+            },
             Err(e) => {
                 // Check if it's an "Unimplemented" error
                 if let ErigonBridgeError::ErigonClient(status) = &e {

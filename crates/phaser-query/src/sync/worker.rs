@@ -83,11 +83,8 @@ impl SyncWorker {
         )?;
 
         // Create historical query descriptor
-        let descriptor = BlockchainDescriptor::historical(
-            StreamType::Blocks,
-            self.from_block,
-            self.to_block,
-        );
+        let descriptor =
+            BlockchainDescriptor::historical(StreamType::Blocks, self.from_block, self.to_block);
 
         // Subscribe to the block stream (returns Arrow RecordBatches)
         let mut stream = client
@@ -179,5 +176,4 @@ impl SyncWorker {
         );
         Ok(())
     }
-
 }

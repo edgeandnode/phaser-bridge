@@ -290,4 +290,3 @@ impl RecoverSender for TxEnvelope {
             .map(|addr| addr.into())
     }
 }
-

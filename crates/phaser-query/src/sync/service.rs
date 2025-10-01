@@ -81,8 +81,8 @@ impl SyncServer {
 
         // Calculate block range per worker
         let total_blocks = to_block - from_block + 1;
-        let blocks_per_worker = (total_blocks + config.sync_parallelism as u64 - 1)
-            / config.sync_parallelism as u64;
+        let blocks_per_worker =
+            (total_blocks + config.sync_parallelism as u64 - 1) / config.sync_parallelism as u64;
 
         // Get data directory for this bridge
         let data_dir = config.bridge_data_dir(chain_id, &bridge_name);
@@ -91,10 +91,7 @@ impl SyncServer {
         let mut worker_handles = vec![];
         for worker_id in 0..config.sync_parallelism {
             let worker_from = from_block + (worker_id as u64 * blocks_per_worker);
-            let worker_to = std::cmp::min(
-                worker_from + blocks_per_worker - 1,
-                to_block,
-            );
+            let worker_to = std::cmp::min(worker_from + blocks_per_worker - 1, to_block);
 
             // Skip if this worker has no blocks to process
             if worker_from > to_block {
@@ -113,9 +110,7 @@ impl SyncServer {
                 config.parquet.clone(),
             );
 
-            let handle = tokio::spawn(async move {
-                worker.run().await
-            });
+            let handle = tokio::spawn(async move { worker.run().await });
 
             worker_handles.push(handle);
         }

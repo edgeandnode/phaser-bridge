@@ -399,7 +399,10 @@ impl FlightBridge for ErigonFlightBridge {
         let stream_type = blockchain_desc.stream_type;
         let query_mode = blockchain_desc.query_mode.clone();
 
-        info!("Processing do_get for {:?} with mode {:?}", stream_type, query_mode);
+        info!(
+            "Processing do_get for {:?} with mode {:?}",
+            stream_type, query_mode
+        );
 
         // Handle trie streaming separately
         if stream_type == StreamType::Trie {
@@ -421,10 +424,19 @@ impl FlightBridge for ErigonFlightBridge {
 
         // Handle based on query mode
         use phaser_bridge::subscription::QueryMode;
-        let batch_stream: Pin<Box<dyn Stream<Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>> + Send>> = match query_mode {
+        let batch_stream: Pin<
+            Box<
+                dyn Stream<
+                        Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>,
+                    > + Send,
+            >,
+        > = match query_mode {
             QueryMode::Historical { start, end } => {
                 info!("Creating historical stream for blocks {}-{}", start, end);
-                Box::pin(self.create_historical_stream(stream_type, start, end).await?)
+                Box::pin(
+                    self.create_historical_stream(stream_type, start, end)
+                        .await?,
+                )
             }
             QueryMode::Live { from_block, .. } => {
                 info!("Creating live stream from block {:?}", from_block);
@@ -442,8 +454,14 @@ impl FlightBridge for ErigonFlightBridge {
                     }
                 })
             }
-            QueryMode::Hybrid { historical_start, then_follow } => {
-                info!("Creating hybrid stream starting at block {}, follow: {}", historical_start, then_follow);
+            QueryMode::Hybrid {
+                historical_start,
+                then_follow,
+            } => {
+                info!(
+                    "Creating hybrid stream starting at block {}, follow: {}",
+                    historical_start, then_follow
+                );
                 // TODO: Implement hybrid mode (historical then live)
                 return Err(Status::unimplemented("Hybrid mode not yet implemented"));
             }

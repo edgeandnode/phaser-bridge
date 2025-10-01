@@ -129,8 +129,8 @@ impl BlockDataConverter {
                 timestamp,
                 tx_index: tx_data.tx_index,
                 from: sender,
-                gas_used: 0,     // Not available without receipt
-                status: false,   // Not available without receipt (false = unknown)
+                gas_used: 0,   // Not available without receipt
+                status: false, // Not available without receipt (false = unknown)
             };
 
             // Use From impl: TransactionContext → TransactionRecord
@@ -158,19 +158,22 @@ impl BlockDataConverter {
 
         for receipt_data in &batch.receipts {
             // Decode RLP → alloy ReceiptEnvelope
-            let receipt_envelope = match ReceiptEnvelope::decode(&mut receipt_data.rlp_receipt.as_slice()) {
-                Ok(r) => r,
-                Err(e) => {
-                    error!(
-                        "Failed to decode RLP receipt for block {} tx {}: {}",
-                        receipt_data.block_number, receipt_data.tx_index, e
-                    );
-                    continue;
-                }
-            };
+            let receipt_envelope =
+                match ReceiptEnvelope::decode(&mut receipt_data.rlp_receipt.as_slice()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!(
+                            "Failed to decode RLP receipt for block {} tx {}: {}",
+                            receipt_data.block_number, receipt_data.tx_index, e
+                        );
+                        continue;
+                    }
+                };
 
             // Extract inner receipt (all variants contain ReceiptWithBloom<Receipt>)
-            let receipt = receipt_envelope.as_receipt().expect("Receipt envelope should contain receipt");
+            let receipt = receipt_envelope
+                .as_receipt()
+                .expect("Receipt envelope should contain receipt");
 
             let tx_hash = Hash32 {
                 bytes: receipt_data

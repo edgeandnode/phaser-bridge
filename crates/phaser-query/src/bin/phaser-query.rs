@@ -149,8 +149,7 @@ async fn main() -> Result<()> {
         let bridge_clone = bridge.clone();
 
         let handle = tokio::spawn(async move {
-            if let Err(e) =
-                start_trie_streaming_service(config_clone, catalog, bridge_clone).await
+            if let Err(e) = start_trie_streaming_service(config_clone, catalog, bridge_clone).await
             {
                 error!("Trie streaming service error: {}", e);
             }
@@ -225,10 +224,7 @@ async fn start_streaming_service(
     )
     .await?;
 
-    info!(
-        "Connected to bridge, starting streaming to {:?}",
-        data_dir
-    );
+    info!("Connected to bridge, starting streaming to {:?}", data_dir);
 
     // Start streaming with periodic index updates
     let catalog_clone = catalog.clone();
@@ -240,11 +236,8 @@ async fn start_streaming_service(
             tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
             info!("Updating indexes...");
-            if let Err(e) = phaser_query::indexer::build_indexes(
-                &catalog_clone,
-                &config_clone,
-            )
-            .await
+            if let Err(e) =
+                phaser_query::indexer::build_indexes(&catalog_clone, &config_clone).await
             {
                 error!("Failed to update indexes: {}", e);
             }

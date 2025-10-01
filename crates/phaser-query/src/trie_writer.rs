@@ -1,5 +1,7 @@
 use anyhow::Result;
-use arrow::array::{Array, BinaryArray, FixedSizeBinaryArray, RecordBatch, StructArray, UInt64Array};
+use arrow::array::{
+    Array, BinaryArray, FixedSizeBinaryArray, RecordBatch, StructArray, UInt64Array,
+};
 use rocksdb::DB;
 use std::sync::Arc;
 use tracing::debug;
