@@ -69,7 +69,7 @@ impl ParquetWriter {
             .as_any()
             .downcast_ref::<arrow_array::UInt64Array>()
         {
-            if array.len() > 0 {
+            if !array.is_empty() {
                 array.value(0)
             } else {
                 return Ok(()); // Skip empty batch
@@ -129,12 +129,13 @@ impl ParquetWriter {
         let segment_start = (block_num / self.segment_size) * self.segment_size;
         let segment_end = segment_start + self.segment_size - 1;
 
-        // Create temporary filename with .tmp extension
-        // Format: {topic}_{segment_start}-{segment_end}_from_{block}_to_{block}.parquet.tmp
-        // Final rename will update the actual range
+        // Create temporary filename showing the actual range we'll write
+        // Format: {topic}_from_{actual_start}_to_{segment_end}.parquet.tmp
+        // Live sync starts mid-segment and writes to segment boundary
+        // Historical sync starts at segment boundary
         let filename = format!(
-            "{}_{}-{}_from_{}_to_{}.parquet.tmp",
-            self.data_type, segment_start, segment_end, block_num, block_num
+            "{}_from_{}_to_{}.parquet.tmp",
+            self.data_type, block_num, segment_end
         );
         let temp_path = self.data_dir.join(filename);
 
@@ -288,7 +289,6 @@ fn parse_encoding(s: &str) -> Encoding {
     match s.to_lowercase().as_str() {
         "plain" => Encoding::PLAIN,
         "rle" => Encoding::RLE,
-        "bit_packed" => Encoding::BIT_PACKED,
         "delta_binary_packed" => Encoding::DELTA_BINARY_PACKED,
         "delta_length_byte_array" => Encoding::DELTA_LENGTH_BYTE_ARRAY,
         "delta_byte_array" => Encoding::DELTA_BYTE_ARRAY,
