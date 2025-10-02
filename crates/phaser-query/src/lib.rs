@@ -44,7 +44,9 @@ impl LiveStreamingState {
     /// Returns None if live streaming hasn't started yet for this chain/bridge
     pub async fn get_boundary(&self, chain_id: u64, bridge_name: &str) -> Option<u64> {
         let boundaries = self.boundaries.read().await;
-        boundaries.get(&(chain_id, bridge_name.to_string())).copied()
+        boundaries
+            .get(&(chain_id, bridge_name.to_string()))
+            .copied()
     }
 
     /// Wait for live streaming to initialize (with timeout)

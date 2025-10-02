@@ -206,7 +206,7 @@ impl StreamingServiceWithWriter {
             }
 
             // Subscribe to blocks
-            let blocks_descriptor = BlockchainDescriptor::live(StreamType::Blocks, None);
+            let blocks_descriptor = BlockchainDescriptor::live(StreamType::Blocks);
             info!("Subscribing to blocks from bridge");
             let blocks_stream = bridge.subscribe(&blocks_descriptor).await?;
             Self::spawn_stream_processor(
@@ -219,7 +219,7 @@ impl StreamingServiceWithWriter {
             );
 
             // Subscribe to transactions
-            let txs_descriptor = BlockchainDescriptor::live(StreamType::Transactions, None);
+            let txs_descriptor = BlockchainDescriptor::live(StreamType::Transactions);
             info!("Subscribing to transactions from bridge");
             let txs_stream = bridge.subscribe(&txs_descriptor).await?;
             Self::spawn_stream_processor(
@@ -232,7 +232,7 @@ impl StreamingServiceWithWriter {
             );
 
             // Subscribe to logs
-            let logs_descriptor = BlockchainDescriptor::live(StreamType::Logs, None);
+            let logs_descriptor = BlockchainDescriptor::live(StreamType::Logs);
             info!("Subscribing to logs from bridge");
             let logs_stream = bridge.subscribe(&logs_descriptor).await?;
             Self::spawn_stream_processor(
@@ -331,7 +331,7 @@ impl StreamingServiceWithWriter {
             }
 
             // Subscribe to trie stream
-            let trie_descriptor = BlockchainDescriptor::live(StreamType::Trie, None);
+            let trie_descriptor = BlockchainDescriptor::live(StreamType::Trie);
             info!("Subscribing to trie data from bridge");
 
             match bridge.subscribe(&trie_descriptor).await {

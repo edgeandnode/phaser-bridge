@@ -121,7 +121,8 @@ impl SyncWorker {
         );
 
         // Initialize progress
-        self.update_progress("blocks", false, false, false, self.from_block, 0, 0, 0).await;
+        self.update_progress("blocks", false, false, false, self.from_block, 0, 0, 0)
+            .await;
 
         // Connect to bridge via Arrow Flight
         let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
@@ -132,14 +133,43 @@ impl SyncWorker {
 
         // Sync blocks, transactions, and logs
         let (blocks_processed, blocks_bytes) = self.sync_blocks(&mut client).await?;
-        self.update_progress("transactions", true, false, false, self.to_block, blocks_processed, blocks_bytes, 1)
-            .await;
+        self.update_progress(
+            "transactions",
+            true,
+            false,
+            false,
+            self.to_block,
+            blocks_processed,
+            blocks_bytes,
+            1,
+        )
+        .await;
 
         let (txs_processed, txs_bytes) = self.sync_transactions(&mut client).await?;
-        self.update_progress("logs", true, true, false, self.to_block, blocks_processed + txs_processed, blocks_bytes + txs_bytes, 2).await;
+        self.update_progress(
+            "logs",
+            true,
+            true,
+            false,
+            self.to_block,
+            blocks_processed + txs_processed,
+            blocks_bytes + txs_bytes,
+            2,
+        )
+        .await;
 
         let (logs_processed, logs_bytes) = self.sync_logs(&mut client).await?;
-        self.update_progress("completed", true, true, true, self.to_block, blocks_processed + txs_processed + logs_processed, blocks_bytes + txs_bytes + logs_bytes, 3).await;
+        self.update_progress(
+            "completed",
+            true,
+            true,
+            true,
+            self.to_block,
+            blocks_processed + txs_processed + logs_processed,
+            blocks_bytes + txs_bytes + logs_bytes,
+            3,
+        )
+        .await;
 
         info!("Worker {} completed sync successfully", self.worker_id);
         Ok(())

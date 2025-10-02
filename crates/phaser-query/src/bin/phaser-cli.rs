@@ -419,10 +419,15 @@ async fn main() -> Result<()> {
                 };
 
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                println!("Status: {} | Progress: {}/{} blocks ({:.1}%)",
-                    status_str, update.total_blocks_synced, update.total_blocks, percent);
-                println!("Rate: {:.1} blocks/sec | Bytes: {:.2} GB",
-                    update.overall_rate, update.total_bytes_written as f64 / 1_000_000_000.0);
+                println!(
+                    "Status: {} | Progress: {}/{} blocks ({:.1}%)",
+                    status_str, update.total_blocks_synced, update.total_blocks, percent
+                );
+                println!(
+                    "Rate: {:.1} blocks/sec | Bytes: {:.2} GB",
+                    update.overall_rate,
+                    update.total_bytes_written as f64 / 1_000_000_000.0
+                );
 
                 if !update.workers.is_empty() {
                     println!("\nActive Workers: {}", update.workers.len());
@@ -430,22 +435,26 @@ async fn main() -> Result<()> {
                         let elapsed = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap()
-                            .as_secs() as i64 - worker.started_at;
+                            .as_secs() as i64
+                            - worker.started_at;
 
-                        println!("  Worker {}: {} | blocks {}-{} | {:.1} blocks/sec | {} elapsed",
+                        println!(
+                            "  Worker {}: {} | blocks {}-{} | {:.1} blocks/sec | {} elapsed",
                             worker.worker_id,
                             worker.stage,
                             worker.from_block,
                             worker.to_block,
                             worker.rate,
-                            format_duration(elapsed as u64));
+                            format_duration(elapsed as u64)
+                        );
                     }
                 }
 
                 println!();
 
                 // Check if job is finished
-                if status_str == "COMPLETED" || status_str == "FAILED" || status_str == "CANCELLED" {
+                if status_str == "COMPLETED" || status_str == "FAILED" || status_str == "CANCELLED"
+                {
                     println!("Job finished with status: {}", status_str);
                     break;
                 }
