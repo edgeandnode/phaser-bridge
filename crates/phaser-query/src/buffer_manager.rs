@@ -271,14 +271,14 @@ impl CfToParquetBuffer {
         use std::io::Cursor;
 
         let cursor = Cursor::new(bytes);
-        let reader = StreamReader::try_new(cursor, None)?;
+        let mut reader = StreamReader::try_new(cursor, None)?;
 
         // Read the first (and only) batch
-        for batch in reader {
-            return Ok(batch?);
+        if let Some(batch_result) = reader.next() {
+            Ok(batch_result?)
+        } else {
+            Err(anyhow!("No batch found in serialized data"))
         }
-
-        Err(anyhow!("No batch found in serialized data"))
     }
 
     /// Force flush any remaining items (for shutdown)

@@ -8,7 +8,7 @@ use futures::Stream;
 use std::pin::Pin;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::descriptors::{BlockchainDescriptor, BridgeInfo};
+use crate::descriptors::BridgeInfo;
 
 /// Capabilities that a bridge can advertise
 #[derive(Debug, Clone)]

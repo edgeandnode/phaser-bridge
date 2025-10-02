@@ -1,18 +1,13 @@
 use anyhow::Result;
 use futures::StreamExt;
 use tonic::transport::Channel;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
-use crate::proto::types::{H160, H256};
-use crate::proto::{
-    BlockReply, BlockRequest, EthbackendClient, Event, LogsFilterRequest, SubscribeLogsReply,
-    SubscribeReply, SubscribeRequest,
-};
+use crate::proto::{BlockRequest, EthbackendClient, Event, SubscribeRequest};
 
 /// Client for connecting to Erigon's gRPC interface
 pub struct ErigonClient {
     client: EthbackendClient<Channel>,
-    endpoint: String,
 }
 
 impl ErigonClient {
@@ -37,7 +32,7 @@ impl ErigonClient {
 
         info!("Successfully connected to Erigon");
 
-        Ok(Self { client, endpoint })
+        Ok(Self { client })
     }
 
     /// Test the connection by fetching the client version

@@ -1,5 +1,5 @@
 use crate::catalog::RocksDbCatalog;
-use crate::index::{BlockPointer, FileInfo, LogPointer, TransactionPointer};
+use crate::index::FileInfo;
 use crate::PhaserConfig;
 use anyhow::Result;
 use std::fs;
@@ -117,7 +117,7 @@ async fn index_block_file(catalog: &RocksDbCatalog, path: &PathBuf) -> Result<()
 }
 
 /// Index a transaction Parquet file
-async fn index_transaction_file(catalog: &RocksDbCatalog, path: &PathBuf) -> Result<()> {
+async fn index_transaction_file(_catalog: &RocksDbCatalog, path: &PathBuf) -> Result<()> {
     debug!("Indexing transaction file: {:?}", path);
 
     // TODO: Similar to block indexing
@@ -128,7 +128,7 @@ async fn index_transaction_file(catalog: &RocksDbCatalog, path: &PathBuf) -> Res
 }
 
 /// Index a log Parquet file
-async fn index_log_file(catalog: &RocksDbCatalog, path: &PathBuf) -> Result<()> {
+async fn index_log_file(_catalog: &RocksDbCatalog, path: &PathBuf) -> Result<()> {
     debug!("Indexing log file: {:?}", path);
 
     // TODO: Similar to block indexing
