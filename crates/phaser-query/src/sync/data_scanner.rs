@@ -204,12 +204,10 @@ impl DataScanner {
         Ok(summary)
     }
 
-    /// Clean all stale temp files in the data directory
-    /// Removes any .parquet.tmp files that are older than 5 seconds
-    /// This is called lazily at the start of sync jobs to clean up crashed writers
-    pub fn clean_stale_temp_files(&self) -> Result<usize> {
-        use std::time::SystemTime;
-
+    /// Clean temp files that conflict with segments we're about to sync
+    /// Only removes .parquet.tmp files for segments in the provided list
+    /// This prevents deleting active live streaming temp files
+    pub fn clean_conflicting_temp_files(&self, segments: &[u64], segment_size: u64) -> Result<usize> {
         if !self.data_dir.exists() {
             return Ok(0);
         }
@@ -227,50 +225,37 @@ impl DataScanner {
                 continue;
             }
 
-            // Check if file is stale (older than 5 seconds)
-            let is_stale = if let Ok(metadata) = fs::metadata(&path) {
-                if let Ok(modified) = metadata.modified() {
-                    if let Ok(elapsed) = SystemTime::now().duration_since(modified) {
-                        elapsed.as_secs() >= 5
+            // Parse the temp file to see what segment it covers
+            if let Some(range) = self.parse_filename(&path)? {
+                let file_segment = range.start / segment_size;
+
+                // Only delete if this temp file is for a segment we're about to sync
+                if segments.contains(&file_segment) {
+                    info!(
+                        "Cleaning conflicting temp file for segment {} (blocks {}-{}): {}",
+                        file_segment,
+                        range.start,
+                        range.end,
+                        path.display()
+                    );
+
+                    if let Err(e) = fs::remove_file(&path) {
+                        warn!("Failed to remove temp file {}: {}", path.display(), e);
                     } else {
-                        false // Can't determine age, don't delete
+                        cleaned_count += 1;
                     }
                 } else {
-                    false
+                    debug!(
+                        "Preserving non-conflicting temp file for segment {}: {}",
+                        file_segment,
+                        path.display()
+                    );
                 }
-            } else {
-                false
-            };
-
-            if is_stale {
-                // Parse to get details for logging
-                let range_str = if let Some(range) = self.parse_filename(&path)? {
-                    format!("blocks {}-{}", range.start, range.end)
-                } else {
-                    "unknown range".to_string()
-                };
-
-                info!(
-                    "Cleaning stale temp file ({}): {}",
-                    range_str,
-                    path.display()
-                );
-
-                if let Err(e) = fs::remove_file(&path) {
-                    warn!("Failed to remove temp file {}: {}", path.display(), e);
-                } else {
-                    cleaned_count += 1;
-                }
-            } else {
-                debug!(
-                    "Skipping recently modified temp file: {}",
-                    path.display()
-                );
             }
         }
 
         if cleaned_count > 0 {
-            info!("Cleaned {} stale temp files", cleaned_count);
+            info!("Cleaned {} conflicting temp files", cleaned_count);
         }
 
         Ok(cleaned_count)
