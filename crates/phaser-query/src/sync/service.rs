@@ -11,8 +11,8 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::sync::data_scanner::GapAnalysis as DataGapAnalysis;
 use crate::proto::admin::{GapAnalysis as ProtoGapAnalysis, IncompleteSegment};
+use crate::sync::data_scanner::GapAnalysis as DataGapAnalysis;
 
 /// Convert internal GapAnalysis to proto
 fn gap_analysis_to_proto(analysis: &DataGapAnalysis, segment_size: u64) -> ProtoGapAnalysis {
@@ -101,6 +101,7 @@ impl SyncServer {
         from_block: u64,
         to_block: u64,
         progress_tracker: ProgressTracker,
+        historical_boundary: Option<u64>,
     ) -> Result<()> {
         // Update status to RUNNING
         {
@@ -122,10 +123,8 @@ impl SyncServer {
         let data_dir = config.bridge_data_dir(chain_id, &bridge_name);
         let scanner = DataScanner::new(data_dir.clone());
 
-        // Check for live sync boundary
-        let historical_boundary = scanner
-            .find_historical_boundary(segment_size)
-            .map_err(|e| anyhow::anyhow!("Failed to scan existing data: {}", e))?;
+        // Use boundary from LiveStreamingState (already computed in start_sync)
+        // This is more reliable than scanning temp files
 
         // Analyze what needs syncing
         let mut analysis = scanner
@@ -135,7 +134,9 @@ impl SyncServer {
         // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
         let segments_to_clean: Vec<u64> = if let Some(boundary) = historical_boundary {
             let live_segment = (boundary + 1) / segment_size;
-            analysis.missing_segments.iter()
+            analysis
+                .missing_segments
+                .iter()
                 .filter(|&seg| *seg < live_segment)
                 .copied()
                 .collect()
@@ -376,9 +377,7 @@ impl SyncService for SyncServer {
             if req.to_block > safe_boundary {
                 info!(
                     "Live streaming detected at block {}. Adjusting to_block from {} to {}",
-                    boundary_block,
-                    req.to_block,
-                    safe_boundary
+                    boundary_block, req.to_block, safe_boundary
                 );
                 safe_boundary
             } else {
@@ -416,7 +415,9 @@ impl SyncService for SyncServer {
         // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
         let segments_to_clean: Vec<u64> = if let Some(boundary_block) = historical_boundary {
             let live_segment = boundary_block / self.config.segment_size;
-            gap_analysis.missing_segments.iter()
+            gap_analysis
+                .missing_segments
+                .iter()
                 .filter(|&seg| *seg < live_segment)
                 .copied()
                 .collect()
@@ -477,6 +478,7 @@ impl SyncService for SyncServer {
                 from_block,
                 to_block,
                 progress_tracker,
+                historical_boundary,
             )
             .await
             {
@@ -502,7 +504,10 @@ impl SyncService for SyncServer {
             job_id,
             message,
             accepted: true,
-            gap_analysis: Some(gap_analysis_to_proto(&gap_analysis, self.config.segment_size)),
+            gap_analysis: Some(gap_analysis_to_proto(
+                &gap_analysis,
+                self.config.segment_size,
+            )),
         }))
     }
 
@@ -561,7 +566,10 @@ impl SyncService for SyncServer {
             bridge_name: job.bridge_name.clone(),
             from_block: job.from_block,
             to_block: job.to_block,
-            gap_analysis: job.gap_analysis.as_ref().map(|ga| gap_analysis_to_proto(ga, self.config.segment_size)),
+            gap_analysis: job
+                .gap_analysis
+                .as_ref()
+                .map(|ga| gap_analysis_to_proto(ga, self.config.segment_size)),
         }))
     }
 
@@ -595,7 +603,10 @@ impl SyncService for SyncServer {
                 bridge_name: job.bridge_name.clone(),
                 from_block: job.from_block,
                 to_block: job.to_block,
-                gap_analysis: job.gap_analysis.as_ref().map(|ga| gap_analysis_to_proto(ga, self.config.segment_size)),
+                gap_analysis: job
+                    .gap_analysis
+                    .as_ref()
+                    .map(|ga| gap_analysis_to_proto(ga, self.config.segment_size)),
             })
             .collect();
 
@@ -659,15 +670,18 @@ impl SyncService for SyncServer {
             .analyze_sync_range(req.from_block, req.to_block, self.config.segment_size)
             .map_err(|e| Status::internal(format!("Failed to analyze sync range: {}", e)))?;
 
-        // Find historical boundary to avoid cleaning live streaming temp files
-        let historical_boundary = scanner
-            .find_historical_boundary(self.config.segment_size)
-            .map_err(|e| Status::internal(format!("Failed to find historical boundary: {}", e)))?;
+        // Get historical boundary from LiveStreamingState to avoid cleaning live streaming temp files
+        let historical_boundary = self
+            .live_state
+            .get_boundary(req.chain_id, &req.bridge_name)
+            .await;
 
         // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
         let segments_to_clean: Vec<u64> = if let Some(boundary_block) = historical_boundary {
             let live_segment = boundary_block / self.config.segment_size;
-            gap_analysis.missing_segments.iter()
+            gap_analysis
+                .missing_segments
+                .iter()
                 .filter(|&seg| *seg < live_segment)
                 .copied()
                 .collect()
@@ -696,7 +710,10 @@ impl SyncService for SyncServer {
         };
 
         Ok(Response::new(AnalyzeGapsResponse {
-            gap_analysis: Some(gap_analysis_to_proto(&gap_analysis, self.config.segment_size)),
+            gap_analysis: Some(gap_analysis_to_proto(
+                &gap_analysis,
+                self.config.segment_size,
+            )),
             message,
         }))
     }
