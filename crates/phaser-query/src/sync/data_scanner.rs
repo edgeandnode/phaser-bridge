@@ -10,6 +10,37 @@ pub struct BlockRange {
     pub end: u64,
 }
 
+/// Analysis of what segments need syncing
+#[derive(Debug, Clone)]
+pub struct GapAnalysis {
+    pub total_segments: u64,
+    pub complete_segments: Vec<u64>,
+    pub missing_segments: Vec<u64>,
+    pub incomplete_segments: Vec<(u64, Vec<String>)>, // (segment_num, missing data types)
+    pub cleaned_temp_files: usize,
+}
+
+impl GapAnalysis {
+    pub fn complete_count(&self) -> usize {
+        self.complete_segments.len()
+    }
+
+    pub fn missing_count(&self) -> usize {
+        self.missing_segments.len()
+    }
+
+    pub fn completion_percentage(&self) -> f64 {
+        if self.total_segments == 0 {
+            return 100.0;
+        }
+        (self.complete_count() as f64 / self.total_segments as f64) * 100.0
+    }
+
+    pub fn needs_sync(&self) -> bool {
+        !self.missing_segments.is_empty()
+    }
+}
+
 /// Scanner for detecting existing blockchain data
 pub struct DataScanner {
     data_dir: PathBuf,
@@ -173,29 +204,112 @@ impl DataScanner {
         Ok(summary)
     }
 
-    /// Find and clean incomplete segments, returning which ones need to be synced
-    /// This method:
-    /// 1. Finds .tmp files (incomplete segments)
-    /// 2. Deletes them (they're partial/corrupted)
-    /// 3. Returns segment numbers that need to be synced
-    pub fn find_missing_segments(
+    /// Clean all stale temp files in the data directory
+    /// Removes any .parquet.tmp files that are older than 5 seconds
+    /// This is called lazily at the start of sync jobs to clean up crashed writers
+    pub fn clean_stale_temp_files(&self) -> Result<usize> {
+        use std::time::SystemTime;
+
+        if !self.data_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut cleaned_count = 0;
+
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let filename = entry.file_name();
+            let filename_str = filename.to_string_lossy();
+
+            // Only process temp files
+            if !filename_str.ends_with(".parquet.tmp") {
+                continue;
+            }
+
+            // Check if file is stale (older than 5 seconds)
+            let is_stale = if let Ok(metadata) = fs::metadata(&path) {
+                if let Ok(modified) = metadata.modified() {
+                    if let Ok(elapsed) = SystemTime::now().duration_since(modified) {
+                        elapsed.as_secs() >= 5
+                    } else {
+                        false // Can't determine age, don't delete
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if is_stale {
+                // Parse to get details for logging
+                let range_str = if let Some(range) = self.parse_filename(&path)? {
+                    format!("blocks {}-{}", range.start, range.end)
+                } else {
+                    "unknown range".to_string()
+                };
+
+                info!(
+                    "Cleaning stale temp file ({}): {}",
+                    range_str,
+                    path.display()
+                );
+
+                if let Err(e) = fs::remove_file(&path) {
+                    warn!("Failed to remove temp file {}: {}", path.display(), e);
+                } else {
+                    cleaned_count += 1;
+                }
+            } else {
+                debug!(
+                    "Skipping recently modified temp file: {}",
+                    path.display()
+                );
+            }
+        }
+
+        if cleaned_count > 0 {
+            info!("Cleaned {} stale temp files", cleaned_count);
+        }
+
+        Ok(cleaned_count)
+    }
+
+    /// Analyze sync range and find gaps
+    /// Returns detailed analysis of what needs syncing
+    pub fn analyze_sync_range(
         &self,
         from_block: u64,
         to_block: u64,
         segment_size: u64,
-    ) -> Result<Vec<u64>> {
+    ) -> Result<GapAnalysis> {
         // Calculate total segments in the requested range
         let first_segment = from_block / segment_size;
         let last_segment = to_block / segment_size;
+        let total_segments = last_segment - first_segment + 1;
+
+        info!(
+            "Analyzing sync range: blocks {}-{} ({} segments)",
+            from_block, to_block, total_segments
+        );
 
         let mut missing_segments = Vec::new();
+        let mut complete_segments = Vec::new();
+        let mut incomplete_segments = Vec::new(); // For detailed logging
 
         if !self.data_dir.exists() {
-            // No data directory means all segments are missing
+            info!("Data directory doesn't exist - all {} segments need syncing", total_segments);
             for segment_num in first_segment..=last_segment {
                 missing_segments.push(segment_num);
             }
-            return Ok(missing_segments);
+            return Ok(GapAnalysis {
+                total_segments,
+                complete_segments: Vec::new(),
+                missing_segments,
+                incomplete_segments: Vec::new(),
+                cleaned_temp_files: 0,
+            });
         }
 
         for segment_num in first_segment..=last_segment {
@@ -209,22 +323,115 @@ impl DataScanner {
                 self.has_completed_segment("transactions", segment_start, segment_end)?;
             let logs_complete = self.has_completed_segment("logs", segment_start, segment_end)?;
 
-            if !blocks_complete || !txs_complete || !logs_complete {
+            if blocks_complete && txs_complete && logs_complete {
+                complete_segments.push(segment_num);
+                debug!(
+                    "Segment {} (blocks {}-{}) is complete",
+                    segment_num, segment_start, segment_end
+                );
+            } else {
+                // Track what's missing for better logging
+                let mut missing_parts = Vec::new();
+                if !blocks_complete {
+                    missing_parts.push("blocks");
+                }
+                if !txs_complete {
+                    missing_parts.push("txs");
+                }
+                if !logs_complete {
+                    missing_parts.push("logs");
+                }
+
+                info!(
+                    "Segment {} (blocks {}-{}) incomplete - missing: {}",
+                    segment_num,
+                    segment_start,
+                    segment_end,
+                    missing_parts.join(", ")
+                );
+
                 // Clean any temp files for this segment
                 self.clean_temp_files_for_segment(segment_start, segment_end)?;
                 missing_segments.push(segment_num);
+                incomplete_segments.push((
+                    segment_num,
+                    missing_parts.into_iter().map(|s| s.to_string()).collect(),
+                ));
             }
         }
 
-        info!(
-            "Found {} missing segments out of {} total segments in range {}-{}",
-            missing_segments.len(),
-            (last_segment - first_segment + 1),
-            from_block,
-            to_block
-        );
+        // Summary of gap analysis
+        if complete_segments.is_empty() {
+            info!("No existing segments found - full sync required");
+        } else {
+            info!(
+                "Found {} complete segments that overlap with requested range:",
+                complete_segments.len()
+            );
+            // Log ranges of complete segments
+            let mut ranges = Vec::new();
+            let mut range_start = None;
+            let mut range_end = None;
 
-        Ok(missing_segments)
+            for &seg in &complete_segments {
+                if range_start.is_none() {
+                    range_start = Some(seg);
+                    range_end = Some(seg);
+                } else if range_end == Some(seg - 1) {
+                    // Consecutive
+                    range_end = Some(seg);
+                } else {
+                    // Gap found, log previous range
+                    if let (Some(start), Some(end)) = (range_start, range_end) {
+                        let block_start = start * segment_size;
+                        let block_end = (end + 1) * segment_size - 1;
+                        ranges.push(format!("  segments {}-{} (blocks {}-{})", start, end, block_start, block_end));
+                    }
+                    range_start = Some(seg);
+                    range_end = Some(seg);
+                }
+            }
+            // Log final range
+            if let (Some(start), Some(end)) = (range_start, range_end) {
+                let block_start = start * segment_size;
+                let block_end = (end + 1) * segment_size - 1;
+                ranges.push(format!("  segments {}-{} (blocks {}-{})", start, end, block_start, block_end));
+            }
+
+            for range in ranges {
+                info!("{}", range);
+            }
+        }
+
+        if missing_segments.is_empty() {
+            info!("All {} segments already synced - nothing to do", total_segments);
+        } else {
+            info!(
+                "Need to sync {} missing segments ({}% of range)",
+                missing_segments.len(),
+                (missing_segments.len() as f64 / total_segments as f64 * 100.0) as u32
+            );
+        }
+
+        Ok(GapAnalysis {
+            total_segments,
+            complete_segments,
+            missing_segments,
+            incomplete_segments,
+            cleaned_temp_files: 0, // Will be filled in by caller
+        })
+    }
+
+    /// Legacy method - kept for backward compatibility
+    /// Use analyze_sync_range() for detailed analysis
+    pub fn find_missing_segments(
+        &self,
+        from_block: u64,
+        to_block: u64,
+        segment_size: u64,
+    ) -> Result<Vec<u64>> {
+        let analysis = self.analyze_sync_range(from_block, to_block, segment_size)?;
+        Ok(analysis.missing_segments)
     }
 
     /// Check if a completed parquet file exists for a specific segment

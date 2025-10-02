@@ -88,13 +88,29 @@ impl SyncServer {
         let data_dir = config.bridge_data_dir(chain_id, &bridge_name);
         let scanner = DataScanner::new(data_dir.clone());
 
-        let missing_segments = scanner
-            .find_missing_segments(from_block, to_block, segment_size)
-            .map_err(|e| anyhow::anyhow!("Failed to find missing segments: {}", e))?;
+        // Clean up any stale temp files from previous crashes
+        info!("Scanning for stale temp files in {:?}", data_dir);
+        let cleaned_count = scanner
+            .clean_stale_temp_files()
+            .map_err(|e| anyhow::anyhow!("Failed to clean temp files: {}", e))?;
 
-        let total_segments = missing_segments.len() as u64;
+        // Analyze what needs syncing
+        let mut analysis = scanner
+            .analyze_sync_range(from_block, to_block, segment_size)
+            .map_err(|e| anyhow::anyhow!("Failed to analyze sync range: {}", e))?;
 
-        if total_segments == 0 {
+        analysis.cleaned_temp_files = cleaned_count;
+
+        // Log summary for CLI/API consumers
+        info!(
+            "Gap analysis: {}/{} segments complete ({:.1}%), {} need syncing",
+            analysis.complete_count(),
+            analysis.total_segments,
+            analysis.completion_percentage(),
+            analysis.missing_count()
+        );
+
+        if !analysis.needs_sync() {
             info!(
                 "All segments already synced for range {}-{}",
                 from_block, to_block
@@ -108,6 +124,9 @@ impl SyncServer {
             }
             return Ok(());
         }
+
+        let missing_segments = analysis.missing_segments;
+        let total_segments = missing_segments.len() as u64;
 
         info!(
             "Found {} segments to sync ({} blocks per segment)",
