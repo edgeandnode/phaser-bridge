@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use std::fs;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::file::statistics::Statistics;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
@@ -84,6 +86,85 @@ impl DataScanner {
         Ok(ranges)
     }
 
+    /// Read block range from Parquet file statistics
+    /// This reads only the metadata (file footer), not the actual data
+    fn read_block_range_from_parquet(&self, path: &Path) -> Result<Option<BlockRange>> {
+        // Only read finalized parquet files (not .tmp files) for statistics
+        if path.extension().and_then(|s| s.to_str()) != Some("parquet") {
+            return Ok(None);
+        }
+
+        let file = match File::open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Failed to open parquet file {:?}: {}", path, e);
+                return Ok(None);
+            }
+        };
+
+        let builder = match ParquetRecordBatchReaderBuilder::try_new(file) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("Failed to read parquet metadata from {:?}: {}", path, e);
+                return Ok(None);
+            }
+        };
+
+        let parquet_metadata = builder.metadata();
+        let arrow_schema = builder.schema();
+
+        // Find the _block_num column index
+        let block_num_col_idx = match arrow_schema.column_with_name("_block_num") {
+            Some((idx, _field)) => idx,
+            None => {
+                debug!("No _block_num column found in {:?}", path);
+                return Ok(None);
+            }
+        };
+
+        // Iterate through row groups and collect min/max statistics
+        let mut overall_min: Option<u64> = None;
+        let mut overall_max: Option<u64> = None;
+
+        for row_group_idx in 0..parquet_metadata.num_row_groups() {
+            let row_group_metadata = parquet_metadata.row_group(row_group_idx);
+
+            if block_num_col_idx < row_group_metadata.num_columns() {
+                let column_metadata = row_group_metadata.column(block_num_col_idx);
+
+                if let Some(stats) = column_metadata.statistics() {
+                    // Parquet stores UInt64 as Int64 at the physical level
+                    // We need to reinterpret the bytes
+                    if let Statistics::Int64(int_stats) = stats {
+                        if let (Some(&min_val), Some(&max_val)) =
+                            (int_stats.min_opt(), int_stats.max_opt())
+                        {
+                            // Reinterpret as unsigned
+                            let min_u64 = min_val as u64;
+                            let max_u64 = max_val as u64;
+
+                            overall_min = Some(overall_min.map_or(min_u64, |m| m.min(min_u64)));
+                            overall_max = Some(overall_max.map_or(max_u64, |m| m.max(max_u64)));
+                        }
+                    } else {
+                        debug!(
+                            "Unexpected statistics type for _block_num column in {:?}",
+                            path
+                        );
+                    }
+                }
+            }
+        }
+
+        if let (Some(start), Some(end)) = (overall_min, overall_max) {
+            debug!("Read block range from {:?}: {}-{}", path, start, end);
+            Ok(Some(BlockRange { start, end }))
+        } else {
+            debug!("No statistics found for _block_num in {:?}", path);
+            Ok(None)
+        }
+    }
+
     /// Parse filename to extract block range
     fn parse_filename(&self, path: &Path) -> Result<Option<BlockRange>> {
         let filename = match path.file_name().and_then(|n| n.to_str()) {
@@ -139,7 +220,10 @@ impl DataScanner {
             return Ok(None);
         }
 
-        debug!("Scanning for live streaming temp files in {:?}", self.data_dir);
+        debug!(
+            "Scanning for live streaming temp files in {:?}",
+            self.data_dir
+        );
 
         // Find the lowest block number in temp files (indicates live streaming start)
         let mut min_temp_block = None;
@@ -169,13 +253,17 @@ impl DataScanner {
             // Parse the block range from temp file
             if let Some(range) = self.parse_filename(&path)? {
                 debug!("Parsed range: {}-{}", range.start, range.end);
-                min_temp_block = Some(min_temp_block.map_or(range.start, |min: u64| min.min(range.start)));
+                min_temp_block =
+                    Some(min_temp_block.map_or(range.start, |min: u64| min.min(range.start)));
             } else {
                 debug!("Failed to parse range from: {}", filename);
             }
         }
 
-        debug!("Total temp files found: {}, min_temp_block: {:?}", temp_files_found, min_temp_block);
+        debug!(
+            "Total temp files found: {}, min_temp_block: {:?}",
+            temp_files_found, min_temp_block
+        );
 
         if let Some(min_temp) = min_temp_block {
             // Round down to segment boundary
@@ -223,7 +311,11 @@ impl DataScanner {
     /// Clean temp files that conflict with segments we're about to sync
     /// Only removes .parquet.tmp files for segments in the provided list
     /// This prevents deleting active live streaming temp files
-    pub fn clean_conflicting_temp_files(&self, segments: &[u64], segment_size: u64) -> Result<usize> {
+    pub fn clean_conflicting_temp_files(
+        &self,
+        segments: &[u64],
+        segment_size: u64,
+    ) -> Result<usize> {
         if !self.data_dir.exists() {
             return Ok(0);
         }
@@ -300,7 +392,10 @@ impl DataScanner {
         let mut incomplete_segments = Vec::new(); // For detailed logging
 
         if !self.data_dir.exists() {
-            info!("Data directory doesn't exist - all {} segments need syncing", total_segments);
+            info!(
+                "Data directory doesn't exist - all {} segments need syncing",
+                total_segments
+            );
             for segment_num in first_segment..=last_segment {
                 missing_segments.push(segment_num);
             }
@@ -386,7 +481,10 @@ impl DataScanner {
                     if let (Some(start), Some(end)) = (range_start, range_end) {
                         let block_start = start * segment_size;
                         let block_end = (end + 1) * segment_size - 1;
-                        ranges.push(format!("  segments {}-{} (blocks {}-{})", start, end, block_start, block_end));
+                        ranges.push(format!(
+                            "  segments {}-{} (blocks {}-{})",
+                            start, end, block_start, block_end
+                        ));
                     }
                     range_start = Some(seg);
                     range_end = Some(seg);
@@ -396,7 +494,10 @@ impl DataScanner {
             if let (Some(start), Some(end)) = (range_start, range_end) {
                 let block_start = start * segment_size;
                 let block_end = (end + 1) * segment_size - 1;
-                ranges.push(format!("  segments {}-{} (blocks {}-{})", start, end, block_start, block_end));
+                ranges.push(format!(
+                    "  segments {}-{} (blocks {}-{})",
+                    start, end, block_start, block_end
+                ));
             }
 
             for range in ranges {
@@ -405,7 +506,10 @@ impl DataScanner {
         }
 
         if missing_segments.is_empty() {
-            info!("All {} segments already synced - nothing to do", total_segments);
+            info!(
+                "All {} segments already synced - nothing to do",
+                total_segments
+            );
         } else {
             info!(
                 "Need to sync {} missing segments ({}% of range)",
@@ -435,30 +539,86 @@ impl DataScanner {
         Ok(analysis.missing_segments)
     }
 
-    /// Check if a completed parquet file exists for a specific segment
+    /// Check if completed parquet file(s) cover a specific segment
+    /// Now uses Parquet statistics instead of filename parsing
+    /// One or more files can cover a segment
     fn has_completed_segment(
         &self,
         data_type: &str,
         segment_start: u64,
         segment_end: u64,
     ) -> Result<bool> {
+        // Collect all ranges from completed files for this data type
+        let mut ranges = Vec::new();
+
         for entry in fs::read_dir(&self.data_dir)? {
             let entry = entry?;
+            let path = entry.path();
             let filename = entry.file_name();
             let filename_str = filename.to_string_lossy();
 
-            // Look for completed files matching this segment
-            // Format: {data_type}_{segment_start}-{segment_end}_from_*_to_*.parquet
-            if filename_str.starts_with(&format!(
-                "{}_{}-{}_from_",
-                data_type, segment_start, segment_end
-            )) && filename_str.ends_with(".parquet")
-                && !filename_str.ends_with(".parquet.tmp")
-            {
+            // Look for completed parquet files for this data type
+            // Support both old and new formats:
+            // - Old: {data_type}_{segment_start}-{segment_end}_from_*_to_*.parquet
+            // - New: {data_type}_from_*_to_*.parquet
+            let matches_format = (filename_str.starts_with(&format!("{}_from_", data_type))
+                || filename_str.starts_with(&format!("{}_", data_type)))
+                && filename_str.ends_with(".parquet")
+                && !filename_str.ends_with(".parquet.tmp");
+
+            if matches_format {
+                // Read block range from statistics
+                if let Some(range) = self.read_block_range_from_parquet(&path)? {
+                    // Only consider ranges that overlap with this segment
+                    if range.start <= segment_end && range.end >= segment_start {
+                        debug!(
+                            "File {} covers blocks {}-{} (overlaps segment {}-{})",
+                            filename_str, range.start, range.end, segment_start, segment_end
+                        );
+                        ranges.push(range);
+                    }
+                }
+            }
+        }
+
+        if ranges.is_empty() {
+            return Ok(false);
+        }
+
+        // Sort ranges by start block
+        ranges.sort_by_key(|r| r.start);
+
+        // Check if the union of ranges covers [segment_start, segment_end]
+        let mut covered_up_to = segment_start.saturating_sub(1);
+
+        for range in ranges {
+            // If there's a gap, segment is not complete
+            if range.start > covered_up_to + 1 {
+                debug!(
+                    "Gap found for segment {}-{}: covered up to {}, next range starts at {}",
+                    segment_start, segment_end, covered_up_to, range.start
+                );
+                return Ok(false);
+            }
+
+            // Extend coverage
+            covered_up_to = covered_up_to.max(range.end);
+
+            // If we've covered the entire segment, we're done
+            if covered_up_to >= segment_end {
+                debug!(
+                    "Segment {}-{} fully covered (up to {})",
+                    segment_start, segment_end, covered_up_to
+                );
                 return Ok(true);
             }
         }
 
+        // Check if we covered the entire segment
+        debug!(
+            "Segment {}-{} incomplete: only covered up to {}",
+            segment_start, segment_end, covered_up_to
+        );
         Ok(false)
     }
 
