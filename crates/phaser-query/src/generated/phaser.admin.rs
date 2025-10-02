@@ -25,6 +25,47 @@ pub struct SyncResponse {
     /// Whether the request was accepted
     #[prost(bool, tag = "3")]
     pub accepted: bool,
+    /// Gap analysis - existing data overview
+    #[prost(message, optional, tag = "4")]
+    pub gap_analysis: ::core::option::Option<GapAnalysis>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GapAnalysis {
+    /// Total segments in the requested range
+    #[prost(uint64, tag = "1")]
+    pub total_segments: u64,
+    /// Number of complete segments (all data types present)
+    #[prost(uint64, tag = "2")]
+    pub complete_segments: u64,
+    /// Number of missing or incomplete segments
+    #[prost(uint64, tag = "3")]
+    pub missing_segments: u64,
+    /// Completion percentage (0-100)
+    #[prost(double, tag = "4")]
+    pub completion_percentage: f64,
+    /// Number of stale temp files cleaned
+    #[prost(uint64, tag = "5")]
+    pub cleaned_temp_files: u64,
+    /// Segments that need syncing
+    #[prost(uint64, repeated, tag = "6")]
+    pub segments_to_sync: ::prost::alloc::vec::Vec<u64>,
+    /// Incomplete segments with details
+    #[prost(message, repeated, tag = "7")]
+    pub incomplete_details: ::prost::alloc::vec::Vec<IncompleteSegment>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IncompleteSegment {
+    /// Segment number
+    #[prost(uint64, tag = "1")]
+    pub segment_num: u64,
+    /// Block range for this segment
+    #[prost(uint64, tag = "2")]
+    pub from_block: u64,
+    #[prost(uint64, tag = "3")]
+    pub to_block: u64,
+    /// Missing data types (e.g., "blocks", "txs", "logs")
+    #[prost(string, repeated, tag = "4")]
+    pub missing_data_types: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SyncStatusRequest {
@@ -66,6 +107,9 @@ pub struct SyncStatusResponse {
     pub from_block: u64,
     #[prost(uint64, tag = "11")]
     pub to_block: u64,
+    /// Gap analysis from when job started
+    #[prost(message, optional, tag = "12")]
+    pub gap_analysis: ::core::option::Option<GapAnalysis>,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ListSyncJobsRequest {
@@ -152,6 +196,33 @@ pub struct WorkerProgress {
     /// Number of parquet files created
     #[prost(uint32, tag = "9")]
     pub files_created: u32,
+    /// When this worker started (Unix timestamp in seconds)
+    #[prost(int64, tag = "10")]
+    pub started_at: i64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AnalyzeGapsRequest {
+    /// Chain ID to analyze
+    #[prost(uint64, tag = "1")]
+    pub chain_id: u64,
+    /// Bridge name
+    #[prost(string, tag = "2")]
+    pub bridge_name: ::prost::alloc::string::String,
+    /// Starting block number (inclusive)
+    #[prost(uint64, tag = "3")]
+    pub from_block: u64,
+    /// Ending block number (inclusive)
+    #[prost(uint64, tag = "4")]
+    pub to_block: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AnalyzeGapsResponse {
+    /// Gap analysis for the requested range
+    #[prost(message, optional, tag = "1")]
+    pub gap_analysis: ::core::option::Option<GapAnalysis>,
+    /// Message summarizing the analysis
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -407,6 +478,31 @@ pub mod sync_service_client {
                 );
             self.inner.server_streaming(req, path, codec).await
         }
+        /// Analyze gaps in existing data without starting a sync job
+        pub async fn analyze_gaps(
+            &mut self,
+            request: impl tonic::IntoRequest<super::AnalyzeGapsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::AnalyzeGapsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/phaser.admin.SyncService/AnalyzeGaps",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("phaser.admin.SyncService", "AnalyzeGaps"));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -463,6 +559,14 @@ pub mod sync_service_server {
             request: tonic::Request<super::SyncProgressRequest>,
         ) -> std::result::Result<
             tonic::Response<Self::StreamSyncProgressStream>,
+            tonic::Status,
+        >;
+        /// Analyze gaps in existing data without starting a sync job
+        async fn analyze_gaps(
+            &self,
+            request: tonic::Request<super::AnalyzeGapsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::AnalyzeGapsResponse>,
             tonic::Status,
         >;
     }
@@ -764,6 +868,51 @@ pub mod sync_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/phaser.admin.SyncService/AnalyzeGaps" => {
+                    #[allow(non_camel_case_types)]
+                    struct AnalyzeGapsSvc<T: SyncService>(pub Arc<T>);
+                    impl<
+                        T: SyncService,
+                    > tonic::server::UnaryService<super::AnalyzeGapsRequest>
+                    for AnalyzeGapsSvc<T> {
+                        type Response = super::AnalyzeGapsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::AnalyzeGapsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SyncService>::analyze_gaps(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = AnalyzeGapsSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

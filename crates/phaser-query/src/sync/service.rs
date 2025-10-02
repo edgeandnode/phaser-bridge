@@ -11,6 +11,37 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
+use crate::proto::admin::{GapAnalysis as ProtoGapAnalysis, IncompleteSegment};
+use crate::sync::data_scanner::GapAnalysis as DataGapAnalysis;
+
+/// Convert internal GapAnalysis to proto
+fn gap_analysis_to_proto(analysis: &DataGapAnalysis, segment_size: u64) -> ProtoGapAnalysis {
+    let incomplete_details = analysis
+        .incomplete_segments
+        .iter()
+        .map(|(segment_num, missing_types)| {
+            let from_block = segment_num * segment_size;
+            let to_block = from_block + segment_size - 1;
+            IncompleteSegment {
+                segment_num: *segment_num,
+                from_block,
+                to_block,
+                missing_data_types: missing_types.clone(),
+            }
+        })
+        .collect();
+
+    ProtoGapAnalysis {
+        total_segments: analysis.total_segments,
+        complete_segments: analysis.complete_count() as u64,
+        missing_segments: analysis.missing_count() as u64,
+        completion_percentage: analysis.completion_percentage(),
+        cleaned_temp_files: analysis.cleaned_temp_files as u64,
+        segments_to_sync: analysis.missing_segments.clone(),
+        incomplete_details,
+    }
+}
+
 /// Job state for tracking sync progress
 #[derive(Debug, Clone)]
 struct SyncJobState {
@@ -25,19 +56,22 @@ struct SyncJobState {
     active_workers: u32,
     error: Option<String>,
     progress_tracker: ProgressTracker,
+    gap_analysis: Option<DataGapAnalysis>,
 }
 
 /// Server implementation for the sync admin service
 pub struct SyncServer {
     config: Arc<PhaserConfig>,
     jobs: Arc<RwLock<HashMap<String, SyncJobState>>>,
+    live_state: Arc<crate::LiveStreamingState>,
 }
 
 impl SyncServer {
-    pub fn new(config: Arc<PhaserConfig>) -> Self {
+    pub fn new(config: Arc<PhaserConfig>, live_state: Arc<crate::LiveStreamingState>) -> Self {
         Self {
             config,
             jobs: Arc::new(RwLock::new(HashMap::new())),
+            live_state,
         }
     }
 
@@ -67,6 +101,7 @@ impl SyncServer {
         from_block: u64,
         to_block: u64,
         progress_tracker: ProgressTracker,
+        historical_boundary: Option<u64>,
     ) -> Result<()> {
         // Update status to RUNNING
         {
@@ -88,13 +123,45 @@ impl SyncServer {
         let data_dir = config.bridge_data_dir(chain_id, &bridge_name);
         let scanner = DataScanner::new(data_dir.clone());
 
-        let missing_segments = scanner
-            .find_missing_segments(from_block, to_block, segment_size)
-            .map_err(|e| anyhow::anyhow!("Failed to find missing segments: {}", e))?;
+        // Use boundary from LiveStreamingState (already computed in start_sync)
+        // This is more reliable than scanning temp files
 
-        let total_segments = missing_segments.len() as u64;
+        // Analyze what needs syncing
+        let mut analysis = scanner
+            .analyze_sync_range(from_block, to_block, segment_size)
+            .map_err(|e| anyhow::anyhow!("Failed to analyze sync range: {}", e))?;
 
-        if total_segments == 0 {
+        // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
+        let segments_to_clean: Vec<u64> = if let Some(boundary) = historical_boundary {
+            let live_segment = (boundary + 1) / segment_size;
+            analysis
+                .missing_segments
+                .iter()
+                .filter(|&seg| *seg < live_segment)
+                .copied()
+                .collect()
+        } else {
+            analysis.missing_segments.clone()
+        };
+
+        // Clean only temp files that conflict with segments we're about to sync (excluding live sync segments)
+        info!("Cleaning conflicting temp files in {:?}", data_dir);
+        let cleaned_count = scanner
+            .clean_conflicting_temp_files(&segments_to_clean, segment_size)
+            .map_err(|e| anyhow::anyhow!("Failed to clean temp files: {}", e))?;
+
+        analysis.cleaned_temp_files = cleaned_count;
+
+        // Log summary for CLI/API consumers
+        info!(
+            "Gap analysis: {}/{} segments complete ({:.1}%), {} need syncing",
+            analysis.complete_count(),
+            analysis.total_segments,
+            analysis.completion_percentage(),
+            analysis.missing_count()
+        );
+
+        if !analysis.needs_sync() {
             info!(
                 "All segments already synced for range {}-{}",
                 from_block, to_block
@@ -108,6 +175,9 @@ impl SyncServer {
             }
             return Ok(());
         }
+
+        let missing_segments = analysis.missing_segments;
+        let total_segments = missing_segments.len() as u64;
 
         info!(
             "Found {} segments to sync ({} blocks per segment)",
@@ -162,7 +232,7 @@ impl SyncServer {
                         worker_id, segment_num, segment_from, segment_to
                     );
 
-                    // Create and run worker for this segment with timeout
+                    // Create and run worker for this segment
                     let mut worker = SyncWorker::new(
                         worker_id,
                         bridge_endpoint.clone(),
@@ -176,16 +246,11 @@ impl SyncServer {
                     )
                     .with_progress_tracker(progress_tracker.clone());
 
-                    // Add 10 minute timeout per segment
-                    let result =
-                        tokio::time::timeout(std::time::Duration::from_secs(600), worker.run())
-                            .await;
-
-                    match result {
-                        Ok(Ok(())) => {
+                    match worker.run().await {
+                        Ok(()) => {
                             info!("Worker {} completed segment {}", worker_id, segment_num);
                         }
-                        Ok(Err(e)) => {
+                        Err(e) => {
                             error!(
                                 "Worker {} failed on segment {}: {}",
                                 worker_id, segment_num, e
@@ -194,14 +259,6 @@ impl SyncServer {
                             failed_segments.lock().await.push(segment_num);
 
                             // Continue to next segment instead of stopping worker
-                        }
-                        Err(_) => {
-                            error!(
-                                "Worker {} timeout on segment {} after 10 minutes",
-                                worker_id, segment_num
-                            );
-                            worker_errors += 1;
-                            failed_segments.lock().await.push(segment_num);
                         }
                     }
                 }
@@ -304,31 +361,31 @@ impl SyncService for SyncServer {
             ));
         }
 
-        // Get data directory for this bridge to scan for existing data
-        let data_dir = self.config.bridge_data_dir(req.chain_id, &req.bridge_name);
-        let scanner = DataScanner::new(data_dir);
+        // Wait for live streaming to initialize (if it's running)
+        // This gives us the exact boundary where historical sync should stop
+        info!("Waiting for live streaming boundary (timeout: 10 seconds)...");
+        let historical_boundary = self
+            .live_state
+            .wait_for_boundary(req.chain_id, &req.bridge_name, 10)
+            .await;
 
-        // Find where live sync data starts (if any)
-        let historical_boundary = scanner
-            .find_historical_boundary(self.config.segment_size)
-            .map_err(|e| Status::internal(format!("Failed to scan existing data: {}", e)))?;
+        // Determine final to_block based on live streaming boundary
+        let to_block = if let Some(boundary_block) = historical_boundary {
+            // Live streaming has started - historical sync goes right up to where it started
+            let safe_boundary = boundary_block.saturating_sub(1);
 
-        // Determine final to_block
-        let to_block = if let Some(boundary) = historical_boundary {
-            // Live sync data detected, ensure we don't overlap
-            if req.to_block > boundary {
+            if req.to_block > safe_boundary {
                 info!(
-                    "Live sync detected at block {}. Adjusting to_block from {} to {}",
-                    boundary + 1,
-                    req.to_block,
-                    boundary
+                    "Live streaming detected at block {}. Adjusting to_block from {} to {}",
+                    boundary_block, req.to_block, safe_boundary
                 );
-                boundary
+                safe_boundary
             } else {
                 req.to_block
             }
         } else {
-            // No live sync data, use requested to_block
+            // No live streaming detected - use full requested range
+            info!("No live streaming boundary detected, using full requested range");
             req.to_block
         };
 
@@ -346,6 +403,36 @@ impl SyncService for SyncServer {
         // Generate job ID
         let job_id = Uuid::new_v4().to_string();
 
+        // Perform gap analysis before starting job
+        let data_dir = self.config.bridge_data_dir(req.chain_id, &req.bridge_name);
+        let scanner = DataScanner::new(data_dir.clone());
+
+        // Analyze what needs syncing
+        let mut gap_analysis = scanner
+            .analyze_sync_range(req.from_block, to_block, self.config.segment_size)
+            .map_err(|e| Status::internal(format!("Failed to analyze sync range: {}", e)))?;
+
+        // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
+        let segments_to_clean: Vec<u64> = if let Some(boundary_block) = historical_boundary {
+            let live_segment = boundary_block / self.config.segment_size;
+            gap_analysis
+                .missing_segments
+                .iter()
+                .filter(|&seg| *seg < live_segment)
+                .copied()
+                .collect()
+        } else {
+            // No live streaming - safe to clean all missing segments
+            gap_analysis.missing_segments.clone()
+        };
+
+        // Clean only temp files that conflict with segments we're about to sync (excluding live sync segments)
+        let cleaned_count = scanner
+            .clean_conflicting_temp_files(&segments_to_clean, self.config.segment_size)
+            .map_err(|e| Status::internal(format!("Failed to clean temp files: {}", e)))?;
+
+        gap_analysis.cleaned_temp_files = cleaned_count;
+
         // Create progress tracker
         let progress_tracker = Arc::new(RwLock::new(HashMap::new()));
 
@@ -362,6 +449,7 @@ impl SyncService for SyncServer {
             active_workers: 0,
             error: None,
             progress_tracker: progress_tracker.clone(),
+            gap_analysis: Some(gap_analysis.clone()),
         };
 
         // Store job state
@@ -390,6 +478,7 @@ impl SyncService for SyncServer {
                 from_block,
                 to_block,
                 progress_tracker,
+                historical_boundary,
             )
             .await
             {
@@ -399,13 +488,26 @@ impl SyncService for SyncServer {
 
         info!("Created sync job {}", job_id);
 
-        Ok(Response::new(SyncResponse {
-            job_id,
-            message: format!(
+        let message = if to_block != req.to_block {
+            format!(
+                "Sync job created for blocks {}-{} on chain {} via bridge '{}' (adjusted from {} to avoid live sync overlap)",
+                req.from_block, to_block, req.chain_id, req.bridge_name, req.to_block
+            )
+        } else {
+            format!(
                 "Sync job created for blocks {}-{} on chain {} via bridge '{}'",
                 req.from_block, to_block, req.chain_id, req.bridge_name
-            ),
+            )
+        };
+
+        Ok(Response::new(SyncResponse {
+            job_id,
+            message,
             accepted: true,
+            gap_analysis: Some(gap_analysis_to_proto(
+                &gap_analysis,
+                self.config.segment_size,
+            )),
         }))
     }
 
@@ -464,6 +566,10 @@ impl SyncService for SyncServer {
             bridge_name: job.bridge_name.clone(),
             from_block: job.from_block,
             to_block: job.to_block,
+            gap_analysis: job
+                .gap_analysis
+                .as_ref()
+                .map(|ga| gap_analysis_to_proto(ga, self.config.segment_size)),
         }))
     }
 
@@ -497,6 +603,10 @@ impl SyncService for SyncServer {
                 bridge_name: job.bridge_name.clone(),
                 from_block: job.from_block,
                 to_block: job.to_block,
+                gap_analysis: job
+                    .gap_analysis
+                    .as_ref()
+                    .map(|ga| gap_analysis_to_proto(ga, self.config.segment_size)),
             })
             .collect();
 
@@ -534,6 +644,80 @@ impl SyncService for SyncServer {
         }))
     }
 
+    async fn analyze_gaps(
+        &self,
+        request: Request<AnalyzeGapsRequest>,
+    ) -> Result<Response<AnalyzeGapsResponse>, Status> {
+        let req = request.into_inner();
+
+        // Verify bridge is configured
+        let _bridge = self
+            .config
+            .get_bridge(req.chain_id, &req.bridge_name)
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "Bridge '{}' for chain {} not found in configuration",
+                    req.bridge_name, req.chain_id
+                ))
+            })?;
+
+        // Perform gap analysis
+        let data_dir = self.config.bridge_data_dir(req.chain_id, &req.bridge_name);
+        let scanner = DataScanner::new(data_dir.clone());
+
+        // Analyze what needs syncing
+        let mut gap_analysis = scanner
+            .analyze_sync_range(req.from_block, req.to_block, self.config.segment_size)
+            .map_err(|e| Status::internal(format!("Failed to analyze sync range: {}", e)))?;
+
+        // Get historical boundary from LiveStreamingState to avoid cleaning live streaming temp files
+        let historical_boundary = self
+            .live_state
+            .get_boundary(req.chain_id, &req.bridge_name)
+            .await;
+
+        // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
+        let segments_to_clean: Vec<u64> = if let Some(boundary_block) = historical_boundary {
+            let live_segment = boundary_block / self.config.segment_size;
+            gap_analysis
+                .missing_segments
+                .iter()
+                .filter(|&seg| *seg < live_segment)
+                .copied()
+                .collect()
+        } else {
+            // No live streaming - safe to clean all missing segments
+            gap_analysis.missing_segments.clone()
+        };
+
+        // Clean only temp files that conflict with segments we're analyzing (excluding live sync segments)
+        let cleaned_count = scanner
+            .clean_conflicting_temp_files(&segments_to_clean, self.config.segment_size)
+            .map_err(|e| Status::internal(format!("Failed to clean temp files: {}", e)))?;
+
+        gap_analysis.cleaned_temp_files = cleaned_count;
+
+        let message = if gap_analysis.needs_sync() {
+            format!(
+                "{}/{} segments complete ({:.1}%), {} need syncing",
+                gap_analysis.complete_count(),
+                gap_analysis.total_segments,
+                gap_analysis.completion_percentage(),
+                gap_analysis.missing_count()
+            )
+        } else {
+            format!("All {} segments complete", gap_analysis.total_segments)
+        };
+
+        Ok(Response::new(AnalyzeGapsResponse {
+            gap_analysis: Some(gap_analysis_to_proto(
+                &gap_analysis,
+                self.config.segment_size,
+            )),
+            message,
+        }))
+    }
+
     type StreamSyncProgressStream =
         std::pin::Pin<Box<dyn futures::Stream<Item = Result<SyncProgressUpdate, Status>> + Send>>;
 
@@ -562,6 +746,38 @@ impl SyncService for SyncServer {
                 let update = {
                     let jobs_lock = jobs.read().await;
                     if let Some(job) = jobs_lock.get(&job_id) {
+                        // Read worker progress
+                        let progress_lock = job.progress_tracker.read().await;
+                        let workers: Vec<WorkerProgress> = progress_lock
+                            .values()
+                            .map(|p| {
+                                let started_at = p.started_at
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64;
+
+                                let elapsed = p.started_at.elapsed().unwrap_or_default().as_secs();
+                                let rate = if elapsed > 0 {
+                                    p.blocks_processed as f64 / elapsed as f64
+                                } else {
+                                    0.0
+                                };
+
+                                WorkerProgress {
+                                    worker_id: p.worker_id,
+                                    stage: p.current_phase.clone(),
+                                    from_block: p.from_block,
+                                    to_block: p.to_block,
+                                    current_block: p.current_block,
+                                    blocks_processed: p.blocks_processed,
+                                    rate,
+                                    bytes_written: p.bytes_written,
+                                    files_created: p.files_created,
+                                    started_at,
+                                }
+                            })
+                            .collect();
+
                         Some(SyncProgressUpdate {
                             job_id: job.job_id.clone(),
                             status: job.status,
@@ -569,7 +785,7 @@ impl SyncService for SyncServer {
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap()
                                 .as_secs() as i64,
-                            workers: vec![], // TODO: Actual worker progress
+                            workers,
                             total_blocks_synced: job.blocks_synced,
                             total_blocks: job.to_block - job.from_block + 1,
                             overall_rate: 0.0,

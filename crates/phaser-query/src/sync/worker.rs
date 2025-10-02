@@ -20,6 +20,11 @@ pub struct WorkerProgress {
     pub blocks_completed: bool,
     pub transactions_completed: bool,
     pub logs_completed: bool,
+    pub started_at: std::time::SystemTime,
+    pub current_block: u64,
+    pub blocks_processed: u64,
+    pub bytes_written: u64,
+    pub files_created: u32,
 }
 
 pub type ProgressTracker = Arc<RwLock<HashMap<u32, WorkerProgress>>>;
@@ -75,9 +80,20 @@ impl SyncWorker {
         blocks_done: bool,
         txs_done: bool,
         logs_done: bool,
+        current_block: u64,
+        blocks_processed: u64,
+        bytes_written: u64,
+        files_created: u32,
     ) {
         if let Some(tracker) = &self.progress_tracker {
             let mut tracker_lock = tracker.write().await;
+
+            // Get existing started_at or use current time for new worker
+            let started_at = tracker_lock
+                .get(&self.worker_id)
+                .map(|p| p.started_at)
+                .unwrap_or_else(std::time::SystemTime::now);
+
             tracker_lock.insert(
                 self.worker_id,
                 WorkerProgress {
@@ -88,6 +104,11 @@ impl SyncWorker {
                     blocks_completed: blocks_done,
                     transactions_completed: txs_done,
                     logs_completed: logs_done,
+                    started_at,
+                    current_block,
+                    blocks_processed,
+                    bytes_written,
+                    files_created,
                 },
             );
         }
@@ -100,7 +121,8 @@ impl SyncWorker {
         );
 
         // Initialize progress
-        self.update_progress("blocks", false, false, false).await;
+        self.update_progress("blocks", false, false, false, self.from_block, 0, 0, 0)
+            .await;
 
         // Connect to bridge via Arrow Flight
         let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
@@ -110,21 +132,50 @@ impl SyncWorker {
         info!("Worker {} connected to bridge", self.worker_id);
 
         // Sync blocks, transactions, and logs
-        self.sync_blocks(&mut client).await?;
-        self.update_progress("transactions", true, false, false)
-            .await;
+        let (blocks_processed, blocks_bytes) = self.sync_blocks(&mut client).await?;
+        self.update_progress(
+            "transactions",
+            true,
+            false,
+            false,
+            self.to_block,
+            blocks_processed,
+            blocks_bytes,
+            1,
+        )
+        .await;
 
-        self.sync_transactions(&mut client).await?;
-        self.update_progress("logs", true, true, false).await;
+        let (txs_processed, txs_bytes) = self.sync_transactions(&mut client).await?;
+        self.update_progress(
+            "logs",
+            true,
+            true,
+            false,
+            self.to_block,
+            blocks_processed + txs_processed,
+            blocks_bytes + txs_bytes,
+            2,
+        )
+        .await;
 
-        self.sync_logs(&mut client).await?;
-        self.update_progress("completed", true, true, true).await;
+        let (logs_processed, logs_bytes) = self.sync_logs(&mut client).await?;
+        self.update_progress(
+            "completed",
+            true,
+            true,
+            true,
+            self.to_block,
+            blocks_processed + txs_processed + logs_processed,
+            blocks_bytes + txs_bytes + logs_bytes,
+            3,
+        )
+        .await;
 
         info!("Worker {} completed sync successfully", self.worker_id);
         Ok(())
     }
 
-    async fn sync_blocks(&mut self, client: &mut FlightBridgeClient) -> Result<()> {
+    async fn sync_blocks(&mut self, client: &mut FlightBridgeClient) -> Result<(u64, u64)> {
         info!(
             "Worker {} syncing blocks {}-{}",
             self.worker_id, self.from_block, self.to_block
@@ -148,7 +199,8 @@ impl SyncWorker {
             .await
             .context("Failed to subscribe to block stream")?;
 
-        let mut blocks_processed = 0u64;
+        let mut batches_processed = 0u64;
+        let mut bytes_written = 0u64;
         while let Some(batch_result) = stream.next().await {
             let batch = batch_result.context("Failed to receive block batch")?;
 
@@ -158,25 +210,28 @@ impl SyncWorker {
                 batch.num_rows()
             );
 
+            let batch_bytes = batch.get_array_memory_size() as u64;
+            bytes_written += batch_bytes;
+
             // Write Arrow RecordBatch directly to parquet
             writer
                 .write_batch(batch)
                 .await
                 .context("Failed to write block batch")?;
 
-            blocks_processed += 1;
+            batches_processed += 1;
         }
 
         writer.finalize_current_file()?;
 
         info!(
-            "Worker {} completed block sync ({} batches)",
-            self.worker_id, blocks_processed
+            "Worker {} completed block sync ({} batches, {} bytes)",
+            self.worker_id, batches_processed, bytes_written
         );
-        Ok(())
+        Ok((batches_processed, bytes_written))
     }
 
-    async fn sync_transactions(&mut self, client: &mut FlightBridgeClient) -> Result<()> {
+    async fn sync_transactions(&mut self, client: &mut FlightBridgeClient) -> Result<(u64, u64)> {
         info!(
             "Worker {} syncing transactions {}-{}",
             self.worker_id, self.from_block, self.to_block
@@ -204,6 +259,7 @@ impl SyncWorker {
             .context("Failed to subscribe to transaction stream")?;
 
         let mut batches_processed = 0u64;
+        let mut bytes_written = 0u64;
         while let Some(batch_result) = stream.next().await {
             let batch = batch_result.context("Failed to receive transaction batch")?;
 
@@ -212,6 +268,9 @@ impl SyncWorker {
                 self.worker_id,
                 batch.num_rows()
             );
+
+            let batch_bytes = batch.get_array_memory_size() as u64;
+            bytes_written += batch_bytes;
 
             // Write Arrow RecordBatch directly to parquet
             writer
@@ -225,13 +284,13 @@ impl SyncWorker {
         writer.finalize_current_file()?;
 
         info!(
-            "Worker {} completed transaction sync ({} batches)",
-            self.worker_id, batches_processed
+            "Worker {} completed transaction sync ({} batches, {} bytes)",
+            self.worker_id, batches_processed, bytes_written
         );
-        Ok(())
+        Ok((batches_processed, bytes_written))
     }
 
-    async fn sync_logs(&mut self, client: &mut FlightBridgeClient) -> Result<()> {
+    async fn sync_logs(&mut self, client: &mut FlightBridgeClient) -> Result<(u64, u64)> {
         info!(
             "Worker {} syncing logs {}-{}",
             self.worker_id, self.from_block, self.to_block
@@ -256,6 +315,7 @@ impl SyncWorker {
             .context("Failed to subscribe to log stream")?;
 
         let mut batches_processed = 0u64;
+        let mut bytes_written = 0u64;
         while let Some(batch_result) = stream.next().await {
             let batch = batch_result.context("Failed to receive log batch")?;
 
@@ -264,6 +324,9 @@ impl SyncWorker {
                 self.worker_id,
                 batch.num_rows()
             );
+
+            let batch_bytes = batch.get_array_memory_size() as u64;
+            bytes_written += batch_bytes;
 
             // Write Arrow RecordBatch directly to parquet
             writer
@@ -277,9 +340,9 @@ impl SyncWorker {
         writer.finalize_current_file()?;
 
         info!(
-            "Worker {} completed log sync ({} batches)",
-            self.worker_id, batches_processed
+            "Worker {} completed log sync ({} batches, {} bytes)",
+            self.worker_id, batches_processed, bytes_written
         );
-        Ok(())
+        Ok((batches_processed, bytes_written))
     }
 }

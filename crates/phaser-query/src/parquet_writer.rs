@@ -28,8 +28,6 @@ struct CurrentFile {
     row_count: usize,
     start_block: u64,
     end_block: u64,
-    segment_start: u64,
-    segment_end: u64,
 }
 
 impl ParquetWriter {
@@ -125,18 +123,13 @@ impl ParquetWriter {
     }
 
     fn start_new_file(&mut self, block_num: u64, schema: arrow_schema::SchemaRef) -> Result<()> {
-        // Calculate segment boundaries
-        let segment_start = (block_num / self.segment_size) * self.segment_size;
-        let segment_end = segment_start + self.segment_size - 1;
-
-        // Create temporary filename showing the actual range we'll write
-        // Format: {topic}_from_{actual_start}_to_{segment_end}.parquet.tmp
-        // Live sync starts mid-segment and writes to segment boundary
-        // Historical sync starts at segment boundary
-        let filename = format!(
-            "{}_from_{}_to_{}.parquet.tmp",
-            self.data_type, block_num, segment_end
-        );
+        // Create temporary filename - will be renamed with actual range when finalized
+        // Format: {data_type}_temp_{timestamp}.parquet.tmp
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let filename = format!("{}_{}.parquet.tmp", self.data_type, timestamp);
         let temp_path = self.data_dir.join(filename);
 
         info!(
@@ -156,8 +149,6 @@ impl ParquetWriter {
             row_count: 0,
             start_block: block_num,
             end_block: block_num,
-            segment_start,
-            segment_end,
         });
 
         Ok(())
@@ -189,6 +180,12 @@ impl ParquetWriter {
             // Default to SNAPPY if no config
             builder = builder.set_compression(Compression::SNAPPY);
         }
+
+        // Always enable statistics for the block number column (_block_num)
+        // This allows us to query min/max block ranges from parquet metadata
+        // without reading the entire file
+        builder =
+            builder.set_column_statistics_enabled("_block_num".into(), EnabledStatistics::Page);
 
         Ok(builder.build())
     }
@@ -235,14 +232,10 @@ impl ParquetWriter {
             current.writer.close()?;
 
             // Build final filename with actual block range
-            // Format: {topic}_{segment_start}-{segment_end}_from_{actual_start}_to_{actual_end}.parquet
+            // Format: {data_type}_from_{start}_to_{end}.parquet
             let final_filename = format!(
-                "{}_{}-{}_from_{}_to_{}.parquet",
-                self.data_type,
-                current.segment_start,
-                current.segment_end,
-                current.start_block,
-                current.end_block
+                "{}_from_{}_to_{}.parquet",
+                self.data_type, current.start_block, current.end_block
             );
             let final_path = self.data_dir.join(final_filename);
 

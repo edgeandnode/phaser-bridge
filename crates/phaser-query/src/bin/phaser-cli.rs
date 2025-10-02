@@ -58,6 +58,29 @@ enum Commands {
         /// Job ID to cancel
         job_id: String,
     },
+    /// Analyze gaps in existing data without starting a sync
+    Analyze {
+        /// Chain ID
+        #[clap(short, long)]
+        chain_id: u64,
+
+        /// Bridge name
+        #[clap(short, long)]
+        bridge: String,
+
+        /// Starting block number (inclusive)
+        #[clap(short, long)]
+        from: u64,
+
+        /// Ending block number (inclusive)
+        #[clap(short, long)]
+        to: u64,
+    },
+    /// Stream live progress updates for a sync job
+    Progress {
+        /// Job ID to monitor
+        job_id: String,
+    },
 }
 
 #[tokio::main]
@@ -87,6 +110,47 @@ async fn main() -> Result<()> {
                 println!("✓ Sync job started");
                 println!("  Job ID: {}", resp.job_id);
                 println!("  {}", resp.message);
+
+                // Show gap analysis if available
+                if let Some(gap) = resp.gap_analysis {
+                    println!("\nGap Analysis:");
+                    if gap.cleaned_temp_files > 0 {
+                        println!("  Cleaned {} stale temp files", gap.cleaned_temp_files);
+                    }
+                    println!("  Total segments: {}", gap.total_segments);
+                    println!(
+                        "  Complete: {} ({:.1}%)",
+                        gap.complete_segments, gap.completion_percentage
+                    );
+                    println!("  Missing: {}", gap.missing_segments);
+
+                    if !gap.incomplete_details.is_empty() && gap.incomplete_details.len() <= 10 {
+                        println!("\n  Incomplete segments:");
+                        for detail in &gap.incomplete_details {
+                            println!(
+                                "    Segment {} (blocks {}-{}): missing {}",
+                                detail.segment_num,
+                                detail.from_block,
+                                detail.to_block,
+                                detail.missing_data_types.join(", ")
+                            );
+                        }
+                    } else if gap.incomplete_details.len() > 10 {
+                        println!(
+                            "\n  {} incomplete segments (showing first 5):",
+                            gap.incomplete_details.len()
+                        );
+                        for detail in gap.incomplete_details.iter().take(5) {
+                            println!(
+                                "    Segment {} (blocks {}-{}): missing {}",
+                                detail.segment_num,
+                                detail.from_block,
+                                detail.to_block,
+                                detail.missing_data_types.join(", ")
+                            );
+                        }
+                    }
+                }
             } else {
                 println!("✗ Sync job rejected");
                 println!("  {}", resp.message);
@@ -277,7 +341,140 @@ async fn main() -> Result<()> {
                 println!("✗ {}", resp.message);
             }
         }
+        Commands::Analyze {
+            chain_id,
+            bridge,
+            from,
+            to,
+        } => {
+            let request = tonic::Request::new(AnalyzeGapsRequest {
+                chain_id,
+                bridge_name: bridge,
+                from_block: from,
+                to_block: to,
+            });
+
+            let response = client.analyze_gaps(request).await?;
+            let resp = response.into_inner();
+
+            println!("{}", resp.message);
+
+            if let Some(gap) = resp.gap_analysis {
+                println!("\nGap Analysis:");
+                if gap.cleaned_temp_files > 0 {
+                    println!("  Cleaned {} stale temp files", gap.cleaned_temp_files);
+                }
+                println!("  Total segments: {}", gap.total_segments);
+                println!(
+                    "  Complete: {} ({:.1}%)",
+                    gap.complete_segments, gap.completion_percentage
+                );
+                println!("  Missing: {}", gap.missing_segments);
+
+                if !gap.incomplete_details.is_empty() {
+                    println!("\n  Incomplete segments:");
+                    for detail in &gap.incomplete_details {
+                        println!(
+                            "    Segment {} (blocks {}-{}): missing {}",
+                            detail.segment_num,
+                            detail.from_block,
+                            detail.to_block,
+                            detail.missing_data_types.join(", ")
+                        );
+                    }
+                }
+
+                if gap.missing_segments > 0 && gap.segments_to_sync.len() <= 20 {
+                    println!("\n  Segments to sync: {:?}", gap.segments_to_sync);
+                }
+            }
+        }
+        Commands::Progress { job_id } => {
+            use futures::StreamExt;
+
+            let request = tonic::Request::new(SyncProgressRequest {
+                job_id: job_id.clone(),
+            });
+
+            let mut stream = client.stream_sync_progress(request).await?.into_inner();
+
+            println!("Streaming progress for job {}...\n", job_id);
+
+            while let Some(update) = stream.next().await {
+                let update = update?;
+
+                let status_str = match SyncStatus::try_from(update.status) {
+                    Ok(SyncStatus::Pending) => "PENDING",
+                    Ok(SyncStatus::Running) => "RUNNING",
+                    Ok(SyncStatus::Completed) => "COMPLETED",
+                    Ok(SyncStatus::Failed) => "FAILED",
+                    Ok(SyncStatus::Cancelled) => "CANCELLED",
+                    _ => "UNKNOWN",
+                };
+
+                let percent = if update.total_blocks > 0 {
+                    (update.total_blocks_synced as f64 / update.total_blocks as f64) * 100.0
+                } else {
+                    0.0
+                };
+
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!(
+                    "Status: {} | Progress: {}/{} blocks ({:.1}%)",
+                    status_str, update.total_blocks_synced, update.total_blocks, percent
+                );
+                println!(
+                    "Rate: {:.1} blocks/sec | Bytes: {:.2} GB",
+                    update.overall_rate,
+                    update.total_bytes_written as f64 / 1_000_000_000.0
+                );
+
+                if !update.workers.is_empty() {
+                    println!("\nActive Workers: {}", update.workers.len());
+                    for worker in &update.workers {
+                        let elapsed = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64
+                            - worker.started_at;
+
+                        println!(
+                            "  Worker {}: {} | blocks {}-{} | {:.1} blocks/sec | {} elapsed",
+                            worker.worker_id,
+                            worker.stage,
+                            worker.from_block,
+                            worker.to_block,
+                            worker.rate,
+                            format_duration(elapsed as u64)
+                        );
+                    }
+                }
+
+                println!();
+
+                // Check if job is finished
+                if status_str == "COMPLETED" || status_str == "FAILED" || status_str == "CANCELLED"
+                {
+                    println!("Job finished with status: {}", status_str);
+                    break;
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+fn format_duration(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+
+    if hours > 0 {
+        format!("{}h{}m{}s", hours, minutes, secs)
+    } else if minutes > 0 {
+        format!("{}m{}s", minutes, secs)
+    } else {
+        format!("{}s", secs)
+    }
 }

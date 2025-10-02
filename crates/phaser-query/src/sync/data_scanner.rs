@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use std::fs;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::file::statistics::Statistics;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
@@ -8,6 +10,37 @@ use tracing::{debug, info, warn};
 pub struct BlockRange {
     pub start: u64,
     pub end: u64,
+}
+
+/// Analysis of what segments need syncing
+#[derive(Debug, Clone)]
+pub struct GapAnalysis {
+    pub total_segments: u64,
+    pub complete_segments: Vec<u64>,
+    pub missing_segments: Vec<u64>,
+    pub incomplete_segments: Vec<(u64, Vec<String>)>, // (segment_num, missing data types)
+    pub cleaned_temp_files: usize,
+}
+
+impl GapAnalysis {
+    pub fn complete_count(&self) -> usize {
+        self.complete_segments.len()
+    }
+
+    pub fn missing_count(&self) -> usize {
+        self.missing_segments.len()
+    }
+
+    pub fn completion_percentage(&self) -> f64 {
+        if self.total_segments == 0 {
+            return 100.0;
+        }
+        (self.complete_count() as f64 / self.total_segments as f64) * 100.0
+    }
+
+    pub fn needs_sync(&self) -> bool {
+        !self.missing_segments.is_empty()
+    }
 }
 
 /// Scanner for detecting existing blockchain data
@@ -51,6 +84,85 @@ impl DataScanner {
             self.data_dir
         );
         Ok(ranges)
+    }
+
+    /// Read block range from Parquet file statistics
+    /// This reads only the metadata (file footer), not the actual data
+    fn read_block_range_from_parquet(&self, path: &Path) -> Result<Option<BlockRange>> {
+        // Only read finalized parquet files (not .tmp files) for statistics
+        if path.extension().and_then(|s| s.to_str()) != Some("parquet") {
+            return Ok(None);
+        }
+
+        let file = match File::open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Failed to open parquet file {:?}: {}", path, e);
+                return Ok(None);
+            }
+        };
+
+        let builder = match ParquetRecordBatchReaderBuilder::try_new(file) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("Failed to read parquet metadata from {:?}: {}", path, e);
+                return Ok(None);
+            }
+        };
+
+        let parquet_metadata = builder.metadata();
+        let arrow_schema = builder.schema();
+
+        // Find the _block_num column index
+        let block_num_col_idx = match arrow_schema.column_with_name("_block_num") {
+            Some((idx, _field)) => idx,
+            None => {
+                debug!("No _block_num column found in {:?}", path);
+                return Ok(None);
+            }
+        };
+
+        // Iterate through row groups and collect min/max statistics
+        let mut overall_min: Option<u64> = None;
+        let mut overall_max: Option<u64> = None;
+
+        for row_group_idx in 0..parquet_metadata.num_row_groups() {
+            let row_group_metadata = parquet_metadata.row_group(row_group_idx);
+
+            if block_num_col_idx < row_group_metadata.num_columns() {
+                let column_metadata = row_group_metadata.column(block_num_col_idx);
+
+                if let Some(stats) = column_metadata.statistics() {
+                    // Parquet stores UInt64 as Int64 at the physical level
+                    // We need to reinterpret the bytes
+                    if let Statistics::Int64(int_stats) = stats {
+                        if let (Some(&min_val), Some(&max_val)) =
+                            (int_stats.min_opt(), int_stats.max_opt())
+                        {
+                            // Reinterpret as unsigned
+                            let min_u64 = min_val as u64;
+                            let max_u64 = max_val as u64;
+
+                            overall_min = Some(overall_min.map_or(min_u64, |m| m.min(min_u64)));
+                            overall_max = Some(overall_max.map_or(max_u64, |m| m.max(max_u64)));
+                        }
+                    } else {
+                        debug!(
+                            "Unexpected statistics type for _block_num column in {:?}",
+                            path
+                        );
+                    }
+                }
+            }
+        }
+
+        if let (Some(start), Some(end)) = (overall_min, overall_max) {
+            debug!("Read block range from {:?}: {}-{}", path, start, end);
+            Ok(Some(BlockRange { start, end }))
+        } else {
+            debug!("No statistics found for _block_num in {:?}", path);
+            Ok(None)
+        }
     }
 
     /// Parse filename to extract block range
@@ -100,51 +212,74 @@ impl DataScanner {
         Ok(None)
     }
 
-    /// Find the first gap in block coverage or the start of live sync data
+    /// Find where live streaming data starts by detecting temp files
     /// Returns the block number where historical sync can safely backfill up to
     pub fn find_historical_boundary(&self, segment_size: u64) -> Result<Option<u64>> {
-        let ranges = self.scan_existing_ranges()?;
-
-        if ranges.is_empty() {
+        if !self.data_dir.exists() {
             info!("No existing data found, historical sync can start from genesis");
             return Ok(None);
         }
 
-        // Check for the first gap or find where continuous data starts
-        let mut expected_start = 0u64;
+        debug!(
+            "Scanning for live streaming temp files in {:?}",
+            self.data_dir
+        );
 
-        for range in &ranges {
-            if range.start > expected_start {
-                // Found a gap! Historical sync should backfill up to range.start - 1
-                info!(
-                    "Found gap in data: blocks {} to {} are missing. Historical sync can backfill up to {}",
-                    expected_start,
-                    range.start - 1,
-                    range.start - 1
-                );
-                return Ok(Some(range.start - 1));
+        // Find the lowest block number in temp files (indicates live streaming start)
+        let mut min_temp_block = None;
+        let mut temp_files_found = 0;
+
+        for entry in fs::read_dir(&self.data_dir).context("Failed to read data directory")? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if !path.is_file() {
+                continue;
             }
 
-            // Update expected start to after this range
-            expected_start = range.end + 1;
-        }
+            let filename = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name,
+                None => continue,
+            };
 
-        // No gaps found, but we should find the last contiguous segment boundary
-        // The last range.end might be in the middle of a segment
-        // Round down to the previous segment boundary
-        if let Some(last_range) = ranges.last() {
-            let last_segment_boundary = (last_range.end / segment_size) * segment_size;
-            if last_segment_boundary > 0 {
-                info!(
-                    "Found continuous data up to block {}. Historical sync can backfill up to segment boundary {}",
-                    last_range.end,
-                    last_segment_boundary - 1
-                );
-                return Ok(Some(last_segment_boundary - 1));
+            // Only look at temp files
+            if !filename.ends_with(".parquet.tmp") {
+                continue;
+            }
+
+            temp_files_found += 1;
+            debug!("Found temp file: {}", filename);
+
+            // Parse the block range from temp file
+            if let Some(range) = self.parse_filename(&path)? {
+                debug!("Parsed range: {}-{}", range.start, range.end);
+                min_temp_block =
+                    Some(min_temp_block.map_or(range.start, |min: u64| min.min(range.start)));
+            } else {
+                debug!("Failed to parse range from: {}", filename);
             }
         }
 
-        info!("No clear boundary found for historical sync");
+        debug!(
+            "Total temp files found: {}, min_temp_block: {:?}",
+            temp_files_found, min_temp_block
+        );
+
+        if let Some(min_temp) = min_temp_block {
+            // Round down to segment boundary
+            let segment_boundary = (min_temp / segment_size) * segment_size;
+            if segment_boundary > 0 {
+                let boundary = segment_boundary.saturating_sub(1);
+                info!(
+                    "Found live streaming temp files starting at block {}. Historical sync can backfill up to {}",
+                    min_temp,
+                    boundary
+                );
+                return Ok(Some(boundary));
+            }
+        }
+
+        info!("No live streaming temp files found, no boundary needed");
         Ok(None)
     }
 
@@ -173,29 +308,104 @@ impl DataScanner {
         Ok(summary)
     }
 
-    /// Find and clean incomplete segments, returning which ones need to be synced
-    /// This method:
-    /// 1. Finds .tmp files (incomplete segments)
-    /// 2. Deletes them (they're partial/corrupted)
-    /// 3. Returns segment numbers that need to be synced
-    pub fn find_missing_segments(
+    /// Clean temp files that conflict with segments we're about to sync
+    /// Only removes .parquet.tmp files for segments in the provided list
+    /// This prevents deleting active live streaming temp files
+    pub fn clean_conflicting_temp_files(
+        &self,
+        segments: &[u64],
+        segment_size: u64,
+    ) -> Result<usize> {
+        if !self.data_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut cleaned_count = 0;
+
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let filename = entry.file_name();
+            let filename_str = filename.to_string_lossy();
+
+            // Only process temp files
+            if !filename_str.ends_with(".parquet.tmp") {
+                continue;
+            }
+
+            // Parse the temp file to see what segment it covers
+            if let Some(range) = self.parse_filename(&path)? {
+                let file_segment = range.start / segment_size;
+
+                // Only delete if this temp file is for a segment we're about to sync
+                if segments.contains(&file_segment) {
+                    info!(
+                        "Cleaning conflicting temp file for segment {} (blocks {}-{}): {}",
+                        file_segment,
+                        range.start,
+                        range.end,
+                        path.display()
+                    );
+
+                    if let Err(e) = fs::remove_file(&path) {
+                        warn!("Failed to remove temp file {}: {}", path.display(), e);
+                    } else {
+                        cleaned_count += 1;
+                    }
+                } else {
+                    debug!(
+                        "Preserving non-conflicting temp file for segment {}: {}",
+                        file_segment,
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        if cleaned_count > 0 {
+            info!("Cleaned {} conflicting temp files", cleaned_count);
+        }
+
+        Ok(cleaned_count)
+    }
+
+    /// Analyze sync range and find gaps
+    /// Returns detailed analysis of what needs syncing
+    pub fn analyze_sync_range(
         &self,
         from_block: u64,
         to_block: u64,
         segment_size: u64,
-    ) -> Result<Vec<u64>> {
+    ) -> Result<GapAnalysis> {
         // Calculate total segments in the requested range
         let first_segment = from_block / segment_size;
         let last_segment = to_block / segment_size;
+        let total_segments = last_segment - first_segment + 1;
+
+        info!(
+            "Analyzing sync range: blocks {}-{} ({} segments)",
+            from_block, to_block, total_segments
+        );
 
         let mut missing_segments = Vec::new();
+        let mut complete_segments = Vec::new();
+        let mut incomplete_segments = Vec::new(); // For detailed logging
 
         if !self.data_dir.exists() {
-            // No data directory means all segments are missing
+            info!(
+                "Data directory doesn't exist - all {} segments need syncing",
+                total_segments
+            );
             for segment_num in first_segment..=last_segment {
                 missing_segments.push(segment_num);
             }
-            return Ok(missing_segments);
+            return Ok(GapAnalysis {
+                total_segments,
+                complete_segments: Vec::new(),
+                missing_segments,
+                incomplete_segments: Vec::new(),
+                cleaned_temp_files: 0,
+            });
         }
 
         for segment_num in first_segment..=last_segment {
@@ -209,48 +419,206 @@ impl DataScanner {
                 self.has_completed_segment("transactions", segment_start, segment_end)?;
             let logs_complete = self.has_completed_segment("logs", segment_start, segment_end)?;
 
-            if !blocks_complete || !txs_complete || !logs_complete {
+            if blocks_complete && txs_complete && logs_complete {
+                complete_segments.push(segment_num);
+                debug!(
+                    "Segment {} (blocks {}-{}) is complete",
+                    segment_num, segment_start, segment_end
+                );
+            } else {
+                // Track what's missing for better logging
+                let mut missing_parts = Vec::new();
+                if !blocks_complete {
+                    missing_parts.push("blocks");
+                }
+                if !txs_complete {
+                    missing_parts.push("txs");
+                }
+                if !logs_complete {
+                    missing_parts.push("logs");
+                }
+
+                info!(
+                    "Segment {} (blocks {}-{}) incomplete - missing: {}",
+                    segment_num,
+                    segment_start,
+                    segment_end,
+                    missing_parts.join(", ")
+                );
+
                 // Clean any temp files for this segment
                 self.clean_temp_files_for_segment(segment_start, segment_end)?;
                 missing_segments.push(segment_num);
+                incomplete_segments.push((
+                    segment_num,
+                    missing_parts.into_iter().map(|s| s.to_string()).collect(),
+                ));
             }
         }
 
-        info!(
-            "Found {} missing segments out of {} total segments in range {}-{}",
-            missing_segments.len(),
-            (last_segment - first_segment + 1),
-            from_block,
-            to_block
-        );
+        // Summary of gap analysis
+        if complete_segments.is_empty() {
+            info!("No existing segments found - full sync required");
+        } else {
+            info!(
+                "Found {} complete segments that overlap with requested range:",
+                complete_segments.len()
+            );
+            // Log ranges of complete segments
+            let mut ranges = Vec::new();
+            let mut range_start = None;
+            let mut range_end = None;
 
-        Ok(missing_segments)
+            for &seg in &complete_segments {
+                if range_start.is_none() {
+                    range_start = Some(seg);
+                    range_end = Some(seg);
+                } else if range_end == Some(seg - 1) {
+                    // Consecutive
+                    range_end = Some(seg);
+                } else {
+                    // Gap found, log previous range
+                    if let (Some(start), Some(end)) = (range_start, range_end) {
+                        let block_start = start * segment_size;
+                        let block_end = (end + 1) * segment_size - 1;
+                        ranges.push(format!(
+                            "  segments {}-{} (blocks {}-{})",
+                            start, end, block_start, block_end
+                        ));
+                    }
+                    range_start = Some(seg);
+                    range_end = Some(seg);
+                }
+            }
+            // Log final range
+            if let (Some(start), Some(end)) = (range_start, range_end) {
+                let block_start = start * segment_size;
+                let block_end = (end + 1) * segment_size - 1;
+                ranges.push(format!(
+                    "  segments {}-{} (blocks {}-{})",
+                    start, end, block_start, block_end
+                ));
+            }
+
+            for range in ranges {
+                info!("{}", range);
+            }
+        }
+
+        if missing_segments.is_empty() {
+            info!(
+                "All {} segments already synced - nothing to do",
+                total_segments
+            );
+        } else {
+            info!(
+                "Need to sync {} missing segments ({}% of range)",
+                missing_segments.len(),
+                (missing_segments.len() as f64 / total_segments as f64 * 100.0) as u32
+            );
+        }
+
+        Ok(GapAnalysis {
+            total_segments,
+            complete_segments,
+            missing_segments,
+            incomplete_segments,
+            cleaned_temp_files: 0, // Will be filled in by caller
+        })
     }
 
-    /// Check if a completed parquet file exists for a specific segment
+    /// Legacy method - kept for backward compatibility
+    /// Use analyze_sync_range() for detailed analysis
+    pub fn find_missing_segments(
+        &self,
+        from_block: u64,
+        to_block: u64,
+        segment_size: u64,
+    ) -> Result<Vec<u64>> {
+        let analysis = self.analyze_sync_range(from_block, to_block, segment_size)?;
+        Ok(analysis.missing_segments)
+    }
+
+    /// Check if completed parquet file(s) cover a specific segment
+    /// Now uses Parquet statistics instead of filename parsing
+    /// One or more files can cover a segment
     fn has_completed_segment(
         &self,
         data_type: &str,
         segment_start: u64,
         segment_end: u64,
     ) -> Result<bool> {
+        // Collect all ranges from completed files for this data type
+        let mut ranges = Vec::new();
+
         for entry in fs::read_dir(&self.data_dir)? {
             let entry = entry?;
+            let path = entry.path();
             let filename = entry.file_name();
             let filename_str = filename.to_string_lossy();
 
-            // Look for completed files matching this segment
-            // Format: {data_type}_{segment_start}-{segment_end}_from_*_to_*.parquet
-            if filename_str.starts_with(&format!(
-                "{}_{}-{}_from_",
-                data_type, segment_start, segment_end
-            )) && filename_str.ends_with(".parquet")
-                && !filename_str.ends_with(".parquet.tmp")
-            {
+            // Look for completed parquet files for this data type
+            // Support both old and new formats:
+            // - Old: {data_type}_{segment_start}-{segment_end}_from_*_to_*.parquet
+            // - New: {data_type}_from_*_to_*.parquet
+            let matches_format = (filename_str.starts_with(&format!("{}_from_", data_type))
+                || filename_str.starts_with(&format!("{}_", data_type)))
+                && filename_str.ends_with(".parquet")
+                && !filename_str.ends_with(".parquet.tmp");
+
+            if matches_format {
+                // Read block range from statistics
+                if let Some(range) = self.read_block_range_from_parquet(&path)? {
+                    // Only consider ranges that overlap with this segment
+                    if range.start <= segment_end && range.end >= segment_start {
+                        debug!(
+                            "File {} covers blocks {}-{} (overlaps segment {}-{})",
+                            filename_str, range.start, range.end, segment_start, segment_end
+                        );
+                        ranges.push(range);
+                    }
+                }
+            }
+        }
+
+        if ranges.is_empty() {
+            return Ok(false);
+        }
+
+        // Sort ranges by start block
+        ranges.sort_by_key(|r| r.start);
+
+        // Check if the union of ranges covers [segment_start, segment_end]
+        let mut covered_up_to = segment_start.saturating_sub(1);
+
+        for range in ranges {
+            // If there's a gap, segment is not complete
+            if range.start > covered_up_to + 1 {
+                debug!(
+                    "Gap found for segment {}-{}: covered up to {}, next range starts at {}",
+                    segment_start, segment_end, covered_up_to, range.start
+                );
+                return Ok(false);
+            }
+
+            // Extend coverage
+            covered_up_to = covered_up_to.max(range.end);
+
+            // If we've covered the entire segment, we're done
+            if covered_up_to >= segment_end {
+                debug!(
+                    "Segment {}-{} fully covered (up to {})",
+                    segment_start, segment_end, covered_up_to
+                );
                 return Ok(true);
             }
         }
 
+        // Check if we covered the entire segment
+        debug!(
+            "Segment {}-{} incomplete: only covered up to {}",
+            segment_start, segment_end, covered_up_to
+        );
         Ok(false)
     }
 

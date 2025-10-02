@@ -18,6 +18,9 @@ service SyncService {
 
   // Stream real-time progress updates for a sync job
   rpc StreamSyncProgress(SyncProgressRequest) returns (stream SyncProgressUpdate);
+
+  // Analyze gaps in existing data without starting a sync job
+  rpc AnalyzeGaps(AnalyzeGapsRequest) returns (AnalyzeGapsResponse);
 }
 
 message SyncRequest {
@@ -43,6 +46,44 @@ message SyncResponse {
 
   // Whether the request was accepted
   bool accepted = 3;
+
+  // Gap analysis - existing data overview
+  GapAnalysis gap_analysis = 4;
+}
+
+message GapAnalysis {
+  // Total segments in the requested range
+  uint64 total_segments = 1;
+
+  // Number of complete segments (all data types present)
+  uint64 complete_segments = 2;
+
+  // Number of missing or incomplete segments
+  uint64 missing_segments = 3;
+
+  // Completion percentage (0-100)
+  double completion_percentage = 4;
+
+  // Number of stale temp files cleaned
+  uint64 cleaned_temp_files = 5;
+
+  // Segments that need syncing
+  repeated uint64 segments_to_sync = 6;
+
+  // Incomplete segments with details
+  repeated IncompleteSegment incomplete_details = 7;
+}
+
+message IncompleteSegment {
+  // Segment number
+  uint64 segment_num = 1;
+
+  // Block range for this segment
+  uint64 from_block = 2;
+  uint64 to_block = 3;
+
+  // Missing data types (e.g., "blocks", "txs", "logs")
+  repeated string missing_data_types = 4;
 }
 
 message SyncStatusRequest {
@@ -81,6 +122,9 @@ message SyncStatusResponse {
   // Block range
   uint64 from_block = 10;
   uint64 to_block = 11;
+
+  // Gap analysis from when job started
+  GapAnalysis gap_analysis = 12;
 }
 
 message ListSyncJobsRequest {
@@ -154,6 +198,31 @@ message WorkerProgress {
 
   // Number of parquet files created
   uint32 files_created = 9;
+
+  // When this worker started (Unix timestamp in seconds)
+  int64 started_at = 10;
+}
+
+message AnalyzeGapsRequest {
+  // Chain ID to analyze
+  uint64 chain_id = 1;
+
+  // Bridge name
+  string bridge_name = 2;
+
+  // Starting block number (inclusive)
+  uint64 from_block = 3;
+
+  // Ending block number (inclusive)
+  uint64 to_block = 4;
+}
+
+message AnalyzeGapsResponse {
+  // Gap analysis for the requested range
+  GapAnalysis gap_analysis = 1;
+
+  // Message summarizing the analysis
+  string message = 2;
 }
 
 enum SyncStatus {

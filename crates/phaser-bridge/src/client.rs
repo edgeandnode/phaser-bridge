@@ -68,7 +68,12 @@ impl FlightBridgeClient {
             }
         } else {
             // TCP connection
-            Channel::from_shared(endpoint.clone())?.connect().await?
+            let uri = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+                endpoint.clone()
+            } else {
+                format!("http://{}", endpoint)
+            };
+            Channel::from_shared(uri)?.connect().await?
         };
 
         let client = FlightClient::new(channel);
