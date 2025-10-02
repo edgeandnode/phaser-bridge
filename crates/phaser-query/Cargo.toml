@@ -51,6 +51,9 @@ uuid = { version = "1.18", features = ["v4"] }
 tokio-stream = "0.1"
 alloy-consensus.workspace = true
 alloy-rlp.workspace = true
+chrono = "0.4.42"
+ratatui = "0.29.0"
+crossterm = "0.29.0"
 
 [build-dependencies]
 tonic-build = "0.13"
