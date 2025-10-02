@@ -1,7 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
-use phaser_query::{streaming_with_writer::StreamingServiceWithWriter, PhaserConfig, PhaserQuery};
+use phaser_query::{streaming_with_writer::StreamingServiceWithWriter, LiveStreamingState, PhaserConfig, PhaserQuery};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber;
 
@@ -85,6 +86,9 @@ async fn main() -> Result<()> {
     let phaser = PhaserQuery::new(config.clone()).await?;
     info!("Initialized phaser-query with catalog");
 
+    // Create shared live streaming state
+    let live_state = Arc::new(LiveStreamingState::new());
+
     // Start services based on flags
     let mut handles = vec![];
 
@@ -115,9 +119,10 @@ async fn main() -> Result<()> {
         let config_clone = config.clone();
         let catalog = phaser.catalog.clone();
         let bridge_clone = bridge.clone();
+        let live_state_clone = live_state.clone();
 
         let handle = tokio::spawn(async move {
-            if let Err(e) = start_streaming_service(config_clone, catalog, bridge_clone).await {
+            if let Err(e) = start_streaming_service(config_clone, catalog, bridge_clone, live_state_clone).await {
                 error!("Streaming service error: {}", e);
             }
         });
@@ -147,9 +152,10 @@ async fn main() -> Result<()> {
         let config_clone = config.clone();
         let catalog = phaser.catalog.clone();
         let bridge_clone = bridge.clone();
+        let live_state_clone = live_state.clone();
 
         let handle = tokio::spawn(async move {
-            if let Err(e) = start_trie_streaming_service(config_clone, catalog, bridge_clone).await
+            if let Err(e) = start_trie_streaming_service(config_clone, catalog, bridge_clone, live_state_clone).await
             {
                 error!("Trie streaming service error: {}", e);
             }
@@ -182,9 +188,10 @@ async fn main() -> Result<()> {
         );
 
         let config_clone = config.clone();
+        let live_state_clone = live_state.clone();
 
         let handle = tokio::spawn(async move {
-            if let Err(e) = start_sync_admin_server(config_clone).await {
+            if let Err(e) = start_sync_admin_server(config_clone, live_state_clone).await {
                 error!("Sync admin server error: {}", e);
             }
         });
@@ -213,6 +220,7 @@ async fn start_streaming_service(
     config: PhaserConfig,
     catalog: std::sync::Arc<phaser_query::catalog::RocksDbCatalog>,
     bridge: phaser_query::BridgeConfig,
+    live_state: Arc<LiveStreamingState>,
 ) -> Result<()> {
     let data_dir = config.bridge_data_dir(bridge.chain_id, &bridge.name);
 
@@ -221,6 +229,9 @@ async fn start_streaming_service(
         data_dir.clone(),
         config.max_file_size_mb,
         config.segment_size,
+        bridge.chain_id,
+        bridge.name.clone(),
+        live_state,
     )
     .await?;
 
@@ -253,6 +264,7 @@ async fn start_trie_streaming_service(
     config: PhaserConfig,
     catalog: std::sync::Arc<phaser_query::catalog::RocksDbCatalog>,
     bridge: phaser_query::BridgeConfig,
+    live_state: Arc<LiveStreamingState>,
 ) -> Result<()> {
     let data_dir = config.bridge_data_dir(bridge.chain_id, &bridge.name);
 
@@ -262,6 +274,9 @@ async fn start_trie_streaming_service(
         data_dir,
         config.max_file_size_mb,
         config.segment_size,
+        bridge.chain_id,
+        bridge.name.clone(),
+        live_state,
     )
     .await?;
 
@@ -288,10 +303,10 @@ async fn start_rpc_server(
     Ok(())
 }
 
-async fn start_sync_admin_server(config: PhaserConfig) -> Result<()> {
+async fn start_sync_admin_server(config: PhaserConfig, live_state: Arc<LiveStreamingState>) -> Result<()> {
     use phaser_query::sync::SyncServer;
 
-    let server = SyncServer::new(std::sync::Arc::new(config.clone()));
+    let server = SyncServer::new(Arc::new(config.clone()), live_state);
     server.start(config.sync_admin_port).await?;
 
     Ok(())

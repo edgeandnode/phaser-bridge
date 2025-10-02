@@ -63,13 +63,15 @@ struct SyncJobState {
 pub struct SyncServer {
     config: Arc<PhaserConfig>,
     jobs: Arc<RwLock<HashMap<String, SyncJobState>>>,
+    live_state: Arc<crate::LiveStreamingState>,
 }
 
 impl SyncServer {
-    pub fn new(config: Arc<PhaserConfig>) -> Self {
+    pub fn new(config: Arc<PhaserConfig>, live_state: Arc<crate::LiveStreamingState>) -> Self {
         Self {
             config,
             jobs: Arc::new(RwLock::new(HashMap::new())),
+            live_state,
         }
     }
 
@@ -120,15 +122,31 @@ impl SyncServer {
         let data_dir = config.bridge_data_dir(chain_id, &bridge_name);
         let scanner = DataScanner::new(data_dir.clone());
 
+        // Check for live sync boundary
+        let historical_boundary = scanner
+            .find_historical_boundary(segment_size)
+            .map_err(|e| anyhow::anyhow!("Failed to scan existing data: {}", e))?;
+
         // Analyze what needs syncing
         let mut analysis = scanner
             .analyze_sync_range(from_block, to_block, segment_size)
             .map_err(|e| anyhow::anyhow!("Failed to analyze sync range: {}", e))?;
 
-        // Clean only temp files that conflict with segments we're about to sync
+        // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
+        let segments_to_clean: Vec<u64> = if let Some(boundary) = historical_boundary {
+            let live_segment = (boundary + 1) / segment_size;
+            analysis.missing_segments.iter()
+                .filter(|&seg| *seg < live_segment)
+                .copied()
+                .collect()
+        } else {
+            analysis.missing_segments.clone()
+        };
+
+        // Clean only temp files that conflict with segments we're about to sync (excluding live sync segments)
         info!("Cleaning conflicting temp files in {:?}", data_dir);
         let cleaned_count = scanner
-            .clean_conflicting_temp_files(&analysis.missing_segments, segment_size)
+            .clean_conflicting_temp_files(&segments_to_clean, segment_size)
             .map_err(|e| anyhow::anyhow!("Failed to clean temp files: {}", e))?;
 
         analysis.cleaned_temp_files = cleaned_count;
@@ -342,31 +360,33 @@ impl SyncService for SyncServer {
             ));
         }
 
-        // Get data directory for this bridge to scan for existing data
-        let data_dir = self.config.bridge_data_dir(req.chain_id, &req.bridge_name);
-        let scanner = DataScanner::new(data_dir);
+        // Wait for live streaming to initialize (if it's running)
+        // This gives us the exact boundary where historical sync should stop
+        info!("Waiting for live streaming boundary (timeout: 10 seconds)...");
+        let historical_boundary = self
+            .live_state
+            .wait_for_boundary(req.chain_id, &req.bridge_name, 10)
+            .await;
 
-        // Find where live sync data starts (if any)
-        let historical_boundary = scanner
-            .find_historical_boundary(self.config.segment_size)
-            .map_err(|e| Status::internal(format!("Failed to scan existing data: {}", e)))?;
+        // Determine final to_block based on live streaming boundary
+        let to_block = if let Some(boundary_block) = historical_boundary {
+            // Live streaming has started - historical sync goes right up to where it started
+            let safe_boundary = boundary_block.saturating_sub(1);
 
-        // Determine final to_block
-        let to_block = if let Some(boundary) = historical_boundary {
-            // Live sync data detected, ensure we don't overlap
-            if req.to_block > boundary {
+            if req.to_block > safe_boundary {
                 info!(
-                    "Live sync detected at block {}. Adjusting to_block from {} to {}",
-                    boundary + 1,
+                    "Live streaming detected at block {}. Adjusting to_block from {} to {}",
+                    boundary_block,
                     req.to_block,
-                    boundary
+                    safe_boundary
                 );
-                boundary
+                safe_boundary
             } else {
                 req.to_block
             }
         } else {
-            // No live sync data, use requested to_block
+            // No live streaming detected - use full requested range
+            info!("No live streaming boundary detected, using full requested range");
             req.to_block
         };
 
@@ -393,9 +413,21 @@ impl SyncService for SyncServer {
             .analyze_sync_range(req.from_block, to_block, self.config.segment_size)
             .map_err(|e| Status::internal(format!("Failed to analyze sync range: {}", e)))?;
 
-        // Clean only temp files that conflict with segments we're about to sync
+        // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
+        let segments_to_clean: Vec<u64> = if let Some(boundary_block) = historical_boundary {
+            let live_segment = boundary_block / self.config.segment_size;
+            gap_analysis.missing_segments.iter()
+                .filter(|&seg| *seg < live_segment)
+                .copied()
+                .collect()
+        } else {
+            // No live streaming - safe to clean all missing segments
+            gap_analysis.missing_segments.clone()
+        };
+
+        // Clean only temp files that conflict with segments we're about to sync (excluding live sync segments)
         let cleaned_count = scanner
-            .clean_conflicting_temp_files(&gap_analysis.missing_segments, self.config.segment_size)
+            .clean_conflicting_temp_files(&segments_to_clean, self.config.segment_size)
             .map_err(|e| Status::internal(format!("Failed to clean temp files: {}", e)))?;
 
         gap_analysis.cleaned_temp_files = cleaned_count;
@@ -454,12 +486,21 @@ impl SyncService for SyncServer {
 
         info!("Created sync job {}", job_id);
 
-        Ok(Response::new(SyncResponse {
-            job_id,
-            message: format!(
+        let message = if to_block != req.to_block {
+            format!(
+                "Sync job created for blocks {}-{} on chain {} via bridge '{}' (adjusted from {} to avoid live sync overlap)",
+                req.from_block, to_block, req.chain_id, req.bridge_name, req.to_block
+            )
+        } else {
+            format!(
                 "Sync job created for blocks {}-{} on chain {} via bridge '{}'",
                 req.from_block, to_block, req.chain_id, req.bridge_name
-            ),
+            )
+        };
+
+        Ok(Response::new(SyncResponse {
+            job_id,
+            message,
             accepted: true,
             gap_analysis: Some(gap_analysis_to_proto(&gap_analysis, self.config.segment_size)),
         }))
@@ -618,10 +659,26 @@ impl SyncService for SyncServer {
             .analyze_sync_range(req.from_block, req.to_block, self.config.segment_size)
             .map_err(|e| Status::internal(format!("Failed to analyze sync range: {}", e)))?;
 
-        // Clean only temp files that conflict with segments we're analyzing
-        // (For analyze-only, we just report the count but don't delete unless user starts sync)
+        // Find historical boundary to avoid cleaning live streaming temp files
+        let historical_boundary = scanner
+            .find_historical_boundary(self.config.segment_size)
+            .map_err(|e| Status::internal(format!("Failed to find historical boundary: {}", e)))?;
+
+        // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
+        let segments_to_clean: Vec<u64> = if let Some(boundary_block) = historical_boundary {
+            let live_segment = boundary_block / self.config.segment_size;
+            gap_analysis.missing_segments.iter()
+                .filter(|&seg| *seg < live_segment)
+                .copied()
+                .collect()
+        } else {
+            // No live streaming - safe to clean all missing segments
+            gap_analysis.missing_segments.clone()
+        };
+
+        // Clean only temp files that conflict with segments we're analyzing (excluding live sync segments)
         let cleaned_count = scanner
-            .clean_conflicting_temp_files(&gap_analysis.missing_segments, self.config.segment_size)
+            .clean_conflicting_temp_files(&segments_to_clean, self.config.segment_size)
             .map_err(|e| Status::internal(format!("Failed to clean temp files: {}", e)))?;
 
         gap_analysis.cleaned_temp_files = cleaned_count;

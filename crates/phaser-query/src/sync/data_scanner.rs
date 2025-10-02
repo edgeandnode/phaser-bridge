@@ -131,51 +131,67 @@ impl DataScanner {
         Ok(None)
     }
 
-    /// Find the first gap in block coverage or the start of live sync data
+    /// Find where live streaming data starts by detecting temp files
     /// Returns the block number where historical sync can safely backfill up to
     pub fn find_historical_boundary(&self, segment_size: u64) -> Result<Option<u64>> {
-        let ranges = self.scan_existing_ranges()?;
-
-        if ranges.is_empty() {
+        if !self.data_dir.exists() {
             info!("No existing data found, historical sync can start from genesis");
             return Ok(None);
         }
 
-        // Check for the first gap or find where continuous data starts
-        let mut expected_start = 0u64;
+        debug!("Scanning for live streaming temp files in {:?}", self.data_dir);
 
-        for range in &ranges {
-            if range.start > expected_start {
-                // Found a gap! Historical sync should backfill up to range.start - 1
-                info!(
-                    "Found gap in data: blocks {} to {} are missing. Historical sync can backfill up to {}",
-                    expected_start,
-                    range.start - 1,
-                    range.start - 1
-                );
-                return Ok(Some(range.start - 1));
+        // Find the lowest block number in temp files (indicates live streaming start)
+        let mut min_temp_block = None;
+        let mut temp_files_found = 0;
+
+        for entry in fs::read_dir(&self.data_dir).context("Failed to read data directory")? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if !path.is_file() {
+                continue;
             }
 
-            // Update expected start to after this range
-            expected_start = range.end + 1;
-        }
+            let filename = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name,
+                None => continue,
+            };
 
-        // No gaps found, but we should find the last contiguous segment boundary
-        // The last range.end might be in the middle of a segment
-        // Round down to the previous segment boundary
-        if let Some(last_range) = ranges.last() {
-            let last_segment_boundary = (last_range.end / segment_size) * segment_size;
-            if last_segment_boundary > 0 {
-                info!(
-                    "Found continuous data up to block {}. Historical sync can backfill up to segment boundary {}",
-                    last_range.end,
-                    last_segment_boundary - 1
-                );
-                return Ok(Some(last_segment_boundary - 1));
+            // Only look at temp files
+            if !filename.ends_with(".parquet.tmp") {
+                continue;
+            }
+
+            temp_files_found += 1;
+            debug!("Found temp file: {}", filename);
+
+            // Parse the block range from temp file
+            if let Some(range) = self.parse_filename(&path)? {
+                debug!("Parsed range: {}-{}", range.start, range.end);
+                min_temp_block = Some(min_temp_block.map_or(range.start, |min: u64| min.min(range.start)));
+            } else {
+                debug!("Failed to parse range from: {}", filename);
             }
         }
 
-        info!("No clear boundary found for historical sync");
+        debug!("Total temp files found: {}, min_temp_block: {:?}", temp_files_found, min_temp_block);
+
+        if let Some(min_temp) = min_temp_block {
+            // Round down to segment boundary
+            let segment_boundary = (min_temp / segment_size) * segment_size;
+            if segment_boundary > 0 {
+                let boundary = segment_boundary.saturating_sub(1);
+                info!(
+                    "Found live streaming temp files starting at block {}. Historical sync can backfill up to {}",
+                    min_temp,
+                    boundary
+                );
+                return Ok(Some(boundary));
+            }
+        }
+
+        info!("No live streaming temp files found, no boundary needed");
         Ok(None)
     }
 

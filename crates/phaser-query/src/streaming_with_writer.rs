@@ -21,6 +21,9 @@ pub struct StreamingServiceWithWriter {
     max_file_size_mb: u64,
     segment_size: u64,
     db: Option<Arc<DB>>,
+    chain_id: u64,
+    bridge_name: String,
+    live_state: Option<Arc<crate::LiveStreamingState>>,
 }
 
 impl StreamingServiceWithWriter {
@@ -29,6 +32,9 @@ impl StreamingServiceWithWriter {
         data_dir: PathBuf,
         max_file_size_mb: u64,
         segment_size: u64,
+        chain_id: u64,
+        bridge_name: String,
+        live_state: Arc<crate::LiveStreamingState>,
     ) -> Result<Self> {
         let mut bridges = Vec::new();
 
@@ -47,6 +53,9 @@ impl StreamingServiceWithWriter {
             max_file_size_mb,
             segment_size,
             db: None,
+            chain_id,
+            bridge_name,
+            live_state: Some(live_state),
         })
     }
 
@@ -93,33 +102,54 @@ impl StreamingServiceWithWriter {
             + Unpin
             + 'static,
         sender: mpsc::Sender<RecordBatch>,
+        live_state: Option<Arc<crate::LiveStreamingState>>,
+        chain_id: u64,
+        bridge_name: String,
     ) {
         let stream_name = format!("{:?}", stream_type).to_lowercase();
+        let mut first_block_received = false;
 
         tokio::spawn(async move {
             while let Some(batch_result) = stream.next().await {
                 match batch_result {
                     Ok(batch) => {
                         // Special logging for blocks to show block number
-                        if matches!(stream_type, StreamType::Blocks) {
+                        let block_number = if matches!(stream_type, StreamType::Blocks) {
+                            let block_num = batch
+                                .column(0)
+                                .as_any()
+                                .downcast_ref::<UInt64Array>()
+                                .and_then(|a| if a.len() > 0 { Some(a.value(0)) } else { None })
+                                .unwrap_or(0);
+
                             info!(
                                 "Received {} batch with {} rows, block #{}",
                                 stream_name,
                                 batch.num_rows(),
-                                batch
-                                    .column(0)
-                                    .as_any()
-                                    .downcast_ref::<UInt64Array>()
-                                    .and_then(|a| if a.len() > 0 { Some(a.value(0)) } else { None })
-                                    .unwrap_or(0)
+                                block_num
                             );
+
+                            // Set live streaming boundary on first block
+                            if !first_block_received && block_num > 0 {
+                                if let Some(ref state) = live_state {
+                                    info!(
+                                        "Live streaming started for chain {} bridge '{}' at block {}",
+                                        chain_id, bridge_name, block_num
+                                    );
+                                    state.set_boundary(chain_id, &bridge_name, block_num).await;
+                                    first_block_received = true;
+                                }
+                            }
+
+                            Some(block_num)
                         } else {
                             info!(
                                 "Received {} batch with {} rows",
                                 stream_name,
                                 batch.num_rows()
                             );
-                        }
+                            None
+                        };
 
                         if let Err(e) = sender.send(batch).await {
                             error!("Failed to send {} batch to writer: {}", stream_name, e);
@@ -179,19 +209,40 @@ impl StreamingServiceWithWriter {
             let blocks_descriptor = BlockchainDescriptor::live(StreamType::Blocks, None);
             info!("Subscribing to blocks from bridge");
             let blocks_stream = bridge.subscribe(&blocks_descriptor).await?;
-            Self::spawn_stream_processor(StreamType::Blocks, blocks_stream, blocks_tx.clone());
+            Self::spawn_stream_processor(
+                StreamType::Blocks,
+                blocks_stream,
+                blocks_tx.clone(),
+                self.live_state.clone(),
+                self.chain_id,
+                self.bridge_name.clone(),
+            );
 
             // Subscribe to transactions
             let txs_descriptor = BlockchainDescriptor::live(StreamType::Transactions, None);
             info!("Subscribing to transactions from bridge");
             let txs_stream = bridge.subscribe(&txs_descriptor).await?;
-            Self::spawn_stream_processor(StreamType::Transactions, txs_stream, txs_tx.clone());
+            Self::spawn_stream_processor(
+                StreamType::Transactions,
+                txs_stream,
+                txs_tx.clone(),
+                self.live_state.clone(),
+                self.chain_id,
+                self.bridge_name.clone(),
+            );
 
             // Subscribe to logs
             let logs_descriptor = BlockchainDescriptor::live(StreamType::Logs, None);
             info!("Subscribing to logs from bridge");
             let logs_stream = bridge.subscribe(&logs_descriptor).await?;
-            Self::spawn_stream_processor(StreamType::Logs, logs_stream, logs_tx.clone());
+            Self::spawn_stream_processor(
+                StreamType::Logs,
+                logs_stream,
+                logs_tx.clone(),
+                self.live_state.clone(),
+                self.chain_id,
+                self.bridge_name.clone(),
+            );
         }
 
         Ok(())
@@ -286,7 +337,14 @@ impl StreamingServiceWithWriter {
             match bridge.subscribe(&trie_descriptor).await {
                 Ok(trie_stream) => {
                     info!("Successfully subscribed to trie stream");
-                    Self::spawn_stream_processor(StreamType::Trie, trie_stream, trie_tx.clone());
+                    Self::spawn_stream_processor(
+                        StreamType::Trie,
+                        trie_stream,
+                        trie_tx.clone(),
+                        self.live_state.clone(),
+                        self.chain_id,
+                        self.bridge_name.clone(),
+                    );
                 }
                 Err(e) => {
                     error!("Failed to subscribe to trie stream: {}", e);
