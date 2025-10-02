@@ -79,16 +79,8 @@ pub enum ControlAction {
 pub enum QueryMode {
     /// Query historical data between start and end blocks
     Historical { start: u64, end: u64 },
-    /// Subscribe to live data, optionally starting from a specific block
-    Live {
-        from_block: Option<u64>,
-        buffer_size: u32,
-    },
-    /// Query historical then transition to live
-    Hybrid {
-        historical_start: u64,
-        then_follow: bool,
-    },
+    /// Subscribe to live data from current head
+    Live,
 }
 
 /// Data availability information for query planning

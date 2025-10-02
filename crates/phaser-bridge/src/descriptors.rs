@@ -45,69 +45,14 @@ impl BlockchainDescriptor {
         }
     }
 
-    /// Create a descriptor for live subscription
-    pub fn live(stream_type: StreamType, from_block: Option<u64>) -> Self {
+    /// Create a descriptor for live subscription (starts from current head)
+    pub fn live(stream_type: StreamType) -> Self {
         Self {
             stream_type,
             chain_id: None,
-            query_mode: QueryMode::Live {
-                from_block,
-                buffer_size: 100,
-            },
+            query_mode: QueryMode::Live,
             subscription_options: None,
             include_reorgs: false,
-        }
-    }
-
-    /// Create a hybrid descriptor (historical then live)
-    pub fn hybrid(stream_type: StreamType, historical_start: u64) -> Self {
-        Self {
-            stream_type,
-            chain_id: None,
-            query_mode: QueryMode::Hybrid {
-                historical_start,
-                then_follow: true,
-            },
-            subscription_options: None,
-            include_reorgs: false,
-        }
-    }
-
-    /// For backward compatibility - create from old-style parameters
-    pub fn from_legacy(
-        stream_type: StreamType,
-        chain_id: Option<u64>,
-        start_block: Option<u64>,
-        end_block: Option<u64>,
-        follow_head: bool,
-        include_reorgs: bool,
-    ) -> Self {
-        let query_mode = match (start_block, end_block, follow_head) {
-            (Some(start), Some(end), false) => QueryMode::Historical { start, end },
-            (Some(start), None, true) => QueryMode::Hybrid {
-                historical_start: start,
-                then_follow: true,
-            },
-            (None, None, true) | (_, _, true) => QueryMode::Live {
-                from_block: start_block,
-                buffer_size: 100,
-            },
-            (Some(start), None, false) => QueryMode::Historical {
-                start,
-                end: u64::MAX,
-            },
-            _ => QueryMode::Live {
-                from_block: None,
-                buffer_size: 100,
-            },
-        };
-
-        Self {
-            stream_type,
-            chain_id,
-            query_mode,
-            subscription_options: None,
-            include_reorgs,
         }
     }
 }

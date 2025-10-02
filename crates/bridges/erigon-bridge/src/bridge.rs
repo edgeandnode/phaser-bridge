@@ -564,8 +564,8 @@ impl FlightBridge for ErigonFlightBridge {
                         .await?,
                 )
             }
-            QueryMode::Live { from_block, .. } => {
-                info!("Creating live stream from block {:?}", from_block);
+            QueryMode::Live => {
+                info!("Creating live stream from current head");
                 let receiver = match stream_type {
                     StreamType::Blocks => self.streaming_service.subscribe_blocks(),
                     StreamType::Transactions => self.streaming_service.subscribe_transactions(),
@@ -579,17 +579,6 @@ impl FlightBridge for ErigonFlightBridge {
                         yield Ok(batch);
                     }
                 })
-            }
-            QueryMode::Hybrid {
-                historical_start,
-                then_follow,
-            } => {
-                info!(
-                    "Creating hybrid stream starting at block {}, follow: {}",
-                    historical_start, then_follow
-                );
-                // TODO: Implement hybrid mode (historical then live)
-                return Err(Status::unimplemented("Hybrid mode not yet implemented"));
             }
         };
 
