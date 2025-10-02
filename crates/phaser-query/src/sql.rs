@@ -12,7 +12,7 @@ pub struct SqlServer {
 
 #[derive(Debug, Deserialize)]
 struct SqlQuery {
-    query: String,
+    _query: String,
 }
 
 #[derive(Debug, Serialize)]

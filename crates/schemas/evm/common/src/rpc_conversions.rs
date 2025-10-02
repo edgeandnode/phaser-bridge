@@ -5,7 +5,7 @@ use crate::error::{EvmCommonError, Result};
 use crate::log::LogRecord;
 use crate::transaction::{TransactionContext, TransactionRecord};
 use alloy_consensus::Header as ConsensusHeader;
-use alloy_network::{AnyHeader, AnyRpcBlock, AnyTxEnvelope, BlockResponse, TransactionResponse};
+use alloy_network::{AnyHeader, AnyRpcBlock, AnyTxEnvelope, TransactionResponse};
 use alloy_rpc_types_eth::{Header as RpcHeader, Log as RpcLog};
 use arrow_array::RecordBatch;
 use typed_arrow::prelude::BuildRows;
@@ -122,7 +122,7 @@ pub fn convert_rpc_logs(
     for log in logs {
         // Extract topics (up to 4)
         let topics = log.topics();
-        let topic0 = topics.get(0).map(|t| (*t).into());
+        let topic0 = topics.first().map(|t| (*t).into());
         let topic1 = topics.get(1).map(|t| (*t).into());
         let topic2 = topics.get(2).map(|t| (*t).into());
         let topic3 = topics.get(3).map(|t| (*t).into());

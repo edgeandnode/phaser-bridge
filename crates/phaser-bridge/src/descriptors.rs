@@ -12,13 +12,13 @@ pub enum StreamType {
     Trie, // Raw trie nodes for state reconstruction
 }
 
-impl ToString for StreamType {
-    fn to_string(&self) -> String {
+impl std::fmt::Display for StreamType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StreamType::Blocks => "blocks".to_string(),
-            StreamType::Transactions => "transactions".to_string(),
-            StreamType::Logs => "logs".to_string(),
-            StreamType::Trie => "trie".to_string(),
+            StreamType::Blocks => write!(f, "blocks"),
+            StreamType::Transactions => write!(f, "transactions"),
+            StreamType::Logs => write!(f, "logs"),
+            StreamType::Trie => write!(f, "trie"),
         }
     }
 }

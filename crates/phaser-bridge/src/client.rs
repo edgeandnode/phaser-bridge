@@ -10,7 +10,6 @@ use crate::descriptors::{BlockchainDescriptor, BridgeInfo};
 /// Client for connecting to blockchain data bridges
 pub struct FlightBridgeClient {
     client: FlightClient,
-    endpoint: String,
     info: Option<BridgeInfo>,
 }
 
@@ -33,7 +32,7 @@ impl FlightBridgeClient {
             info!("Connecting via Unix domain socket: {}", path);
 
             // For Unix domain sockets, we need a special URI format
-            let uri = format!("http://[::]:50051"); // dummy URI for unix socket
+            let uri = "http://[::]:50051".to_string(); // dummy URI for unix socket
 
             // Use tonic's built-in Unix socket support
             use tonic::transport::Uri;
@@ -74,11 +73,7 @@ impl FlightBridgeClient {
 
         let client = FlightClient::new(channel);
 
-        Ok(Self {
-            client,
-            endpoint,
-            info: None,
-        })
+        Ok(Self { client, info: None })
     }
 
     /// Get bridge information

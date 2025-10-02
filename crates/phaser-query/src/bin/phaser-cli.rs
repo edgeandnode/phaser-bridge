@@ -116,11 +116,22 @@ async fn main() -> Result<()> {
                 status.chain_id, status.bridge_name
             );
             println!("Blocks: {}-{}", status.from_block, status.to_block);
+
+            // Progress includes blocks + transactions + logs (3 phases per segment)
+            let percent = if status.total_blocks > 0 {
+                (status.blocks_synced as f64 / status.total_blocks as f64) * 100.0
+            } else {
+                0.0
+            };
             println!(
-                "Progress: {}/{} blocks",
-                status.blocks_synced, status.total_blocks
+                "Progress: {}/{} blocks ({:.1}% - includes blocks+txs+logs)",
+                status.blocks_synced, status.total_blocks, percent
             );
-            println!("Current block: {}", status.current_block);
+
+            // Only show highest completed block if it's meaningful (> from_block)
+            if status.current_block > status.from_block {
+                println!("Highest completed: block {}", status.current_block);
+            }
             println!("Active workers: {}", status.active_workers);
 
             if !status.error.is_empty() {
@@ -170,17 +181,20 @@ async fn main() -> Result<()> {
                     println!("Status: {}", status_str);
                     println!("Chain: {} / Bridge: {}", job.chain_id, job.bridge_name);
                     println!("Blocks: {}-{}", job.from_block, job.to_block);
+
+                    let percent = if job.total_blocks > 0 {
+                        (job.blocks_synced as f64 / job.total_blocks as f64) * 100.0
+                    } else {
+                        0.0
+                    };
                     println!(
-                        "Progress: {}/{} blocks ({:.1}%)",
-                        job.blocks_synced,
-                        job.total_blocks,
-                        if job.total_blocks > 0 {
-                            (job.blocks_synced as f64 / job.total_blocks as f64) * 100.0
-                        } else {
-                            0.0
-                        }
+                        "Progress: {}/{} blocks ({:.1}% - includes blocks+txs+logs)",
+                        job.blocks_synced, job.total_blocks, percent
                     );
-                    println!("Current block: {}", job.current_block);
+
+                    if job.current_block > job.from_block {
+                        println!("Highest completed: block {}", job.current_block);
+                    }
                     println!("Active workers: {}", job.active_workers);
                     if !job.error.is_empty() {
                         println!("Error: {}", job.error);
@@ -231,9 +245,15 @@ async fn main() -> Result<()> {
                     println!("  Status: {}", status_str);
                     println!("  Chain: {} / Bridge: {}", job.chain_id, job.bridge_name);
                     println!("  Blocks: {}-{}", job.from_block, job.to_block);
+
+                    let percent = if job.total_blocks > 0 {
+                        (job.blocks_synced as f64 / job.total_blocks as f64) * 100.0
+                    } else {
+                        0.0
+                    };
                     println!(
-                        "  Progress: {}/{} blocks",
-                        job.blocks_synced, job.total_blocks
+                        "  Progress: {}/{} blocks ({:.1}%)",
+                        job.blocks_synced, job.total_blocks, percent
                     );
                     println!("  Workers: {}", job.active_workers);
                     if !job.error.is_empty() {

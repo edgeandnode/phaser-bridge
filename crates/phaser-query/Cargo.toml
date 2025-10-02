@@ -54,3 +54,6 @@ alloy-rlp.workspace = true
 
 [build-dependencies]
 tonic-build = "0.13"
+
+[dev-dependencies]
+tempfile = "3.10"

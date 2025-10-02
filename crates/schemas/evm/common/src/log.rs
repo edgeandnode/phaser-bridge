@@ -58,7 +58,7 @@ pub struct LogContext {
 impl From<LogContext> for LogRecord {
     fn from(ctx: LogContext) -> Self {
         // Extract topics (up to 4)
-        let topic0 = ctx.topics.get(0).cloned();
+        let topic0 = ctx.topics.first().cloned();
         let topic1 = ctx.topics.get(1).cloned();
         let topic2 = ctx.topics.get(2).cloned();
         let topic3 = ctx.topics.get(3).cloned();

@@ -1,6 +1,7 @@
 use crate::proto::admin::sync_service_server::{SyncService, SyncServiceServer};
 use crate::proto::admin::*;
-use crate::sync::worker::SyncWorker;
+use crate::sync::data_scanner::DataScanner;
+use crate::sync::worker::{ProgressTracker, SyncWorker};
 use crate::PhaserConfig;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -23,6 +24,7 @@ struct SyncJobState {
     blocks_synced: u64,
     active_workers: u32,
     error: Option<String>,
+    progress_tracker: ProgressTracker,
 }
 
 /// Server implementation for the sync admin service
@@ -64,6 +66,7 @@ impl SyncServer {
         bridge_endpoint: String,
         from_block: u64,
         to_block: u64,
+        progress_tracker: ProgressTracker,
     ) -> Result<()> {
         // Update status to RUNNING
         {
@@ -79,38 +82,140 @@ impl SyncServer {
             job_id, config.sync_parallelism, from_block, to_block
         );
 
-        // Calculate block range per worker
-        let total_blocks = to_block - from_block + 1;
-        let blocks_per_worker =
-            (total_blocks + config.sync_parallelism as u64 - 1) / config.sync_parallelism as u64;
+        let segment_size = config.segment_size;
 
-        // Get data directory for this bridge
+        // Find which segments need to be synced (supports resume)
         let data_dir = config.bridge_data_dir(chain_id, &bridge_name);
+        let scanner = DataScanner::new(data_dir.clone());
 
-        // Spawn workers
-        let mut worker_handles = vec![];
-        for worker_id in 0..config.sync_parallelism {
-            let worker_from = from_block + (worker_id as u64 * blocks_per_worker);
-            let worker_to = std::cmp::min(worker_from + blocks_per_worker - 1, to_block);
+        let missing_segments = scanner
+            .find_missing_segments(from_block, to_block, segment_size)
+            .map_err(|e| anyhow::anyhow!("Failed to find missing segments: {}", e))?;
 
-            // Skip if this worker has no blocks to process
-            if worker_from > to_block {
-                break;
-            }
+        let total_segments = missing_segments.len() as u64;
 
-            let mut worker = SyncWorker::new(
-                worker_id,
-                bridge_endpoint.clone(),
-                data_dir.clone(),
-                worker_from,
-                worker_to,
-                config.segment_size,
-                config.max_file_size_mb,
-                1000, // batch_size
-                config.parquet.clone(),
+        if total_segments == 0 {
+            info!(
+                "All segments already synced for range {}-{}",
+                from_block, to_block
             );
+            // Mark job as complete
+            let mut jobs_lock = jobs.write().await;
+            if let Some(job) = jobs_lock.get_mut(&job_id) {
+                job.status = SyncStatus::Completed as i32;
+                job.blocks_synced = to_block - from_block + 1;
+                job.current_block = to_block;
+            }
+            return Ok(());
+        }
 
-            let handle = tokio::spawn(async move { worker.run().await });
+        info!(
+            "Found {} segments to sync ({} blocks per segment)",
+            total_segments, segment_size
+        );
+
+        // Convert missing segments to a shared queue
+        let segment_queue = Arc::new(tokio::sync::Mutex::new(missing_segments));
+
+        // Spawn worker tasks that pull segments from the queue
+        let mut worker_handles = vec![];
+        let num_workers = std::cmp::min(config.sync_parallelism as u64, total_segments) as u32;
+        let max_file_size_mb = config.max_file_size_mb;
+
+        // Track failed segments for potential retry
+        let failed_segments = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
+        for worker_id in 0..num_workers {
+            let bridge_endpoint = bridge_endpoint.clone();
+            let data_dir = data_dir.clone();
+            let segment_queue = segment_queue.clone();
+            let progress_tracker = progress_tracker.clone();
+            let parquet_config = config.parquet.clone();
+            let failed_segments = failed_segments.clone();
+
+            let handle = tokio::spawn(async move {
+                let mut worker_errors = 0u32;
+
+                loop {
+                    // Get next segment to process
+                    let segment_num = {
+                        let mut queue = segment_queue.lock().await;
+                        if queue.is_empty() {
+                            info!(
+                                "Worker {} completed all assigned segments (errors: {})",
+                                worker_id, worker_errors
+                            );
+                            break;
+                        }
+                        queue.remove(0)
+                    };
+
+                    // Calculate block range for this segment
+                    let segment_from = segment_num * segment_size;
+                    let segment_to = segment_from + segment_size - 1;
+
+                    // Ensure we don't go past the requested to_block
+                    let segment_to = std::cmp::min(segment_to, to_block);
+
+                    info!(
+                        "Worker {} processing segment {} (blocks {}-{})",
+                        worker_id, segment_num, segment_from, segment_to
+                    );
+
+                    // Create and run worker for this segment with timeout
+                    let mut worker = SyncWorker::new(
+                        worker_id,
+                        bridge_endpoint.clone(),
+                        data_dir.clone(),
+                        segment_from,
+                        segment_to,
+                        segment_size,
+                        max_file_size_mb,
+                        1000, // batch_size
+                        parquet_config.clone(),
+                    )
+                    .with_progress_tracker(progress_tracker.clone());
+
+                    // Add 10 minute timeout per segment
+                    let result =
+                        tokio::time::timeout(std::time::Duration::from_secs(600), worker.run())
+                            .await;
+
+                    match result {
+                        Ok(Ok(())) => {
+                            info!("Worker {} completed segment {}", worker_id, segment_num);
+                        }
+                        Ok(Err(e)) => {
+                            error!(
+                                "Worker {} failed on segment {}: {}",
+                                worker_id, segment_num, e
+                            );
+                            worker_errors += 1;
+                            failed_segments.lock().await.push(segment_num);
+
+                            // Continue to next segment instead of stopping worker
+                        }
+                        Err(_) => {
+                            error!(
+                                "Worker {} timeout on segment {} after 10 minutes",
+                                worker_id, segment_num
+                            );
+                            worker_errors += 1;
+                            failed_segments.lock().await.push(segment_num);
+                        }
+                    }
+                }
+
+                if worker_errors > 0 {
+                    Err(anyhow::anyhow!(
+                        "Worker {} had {} errors",
+                        worker_id,
+                        worker_errors
+                    ))
+                } else {
+                    Ok(())
+                }
+            });
 
             worker_handles.push(handle);
         }
@@ -122,19 +227,36 @@ impl SyncServer {
         for (idx, handle) in worker_handles.into_iter().enumerate() {
             match handle.await {
                 Ok(Ok(())) => {
-                    info!("Worker {} completed successfully", idx);
+                    info!("Worker {} finished all segments", idx);
                 }
                 Ok(Err(e)) => {
                     error!("Worker {} failed: {}", idx, e);
                     has_error = true;
-                    error_msg = format!("Worker {} failed: {}", idx, e);
+                    if error_msg.is_empty() {
+                        error_msg = format!("Worker {} failed: {}", idx, e);
+                    }
                 }
                 Err(e) => {
                     error!("Worker {} panicked: {}", idx, e);
                     has_error = true;
-                    error_msg = format!("Worker {} panicked: {}", idx, e);
+                    if error_msg.is_empty() {
+                        error_msg = format!("Worker {} panicked: {}", idx, e);
+                    }
                 }
             }
+        }
+
+        // Check for failed segments
+        let failed = failed_segments.lock().await;
+        if !failed.is_empty() {
+            error!(
+                "Sync job {} had {} failed segments: {:?}",
+                job_id,
+                failed.len(),
+                failed
+            );
+            has_error = true;
+            error_msg = format!("{} segments failed: {:?}", failed.len(), failed);
         }
 
         // Update final status
@@ -146,7 +268,7 @@ impl SyncServer {
                     job.error = Some(error_msg);
                 } else {
                     job.status = SyncStatus::Completed as i32;
-                    job.blocks_synced = total_blocks;
+                    job.blocks_synced = to_block - from_block + 1;
                     job.current_block = to_block;
                 }
                 job.active_workers = 0;
@@ -182,6 +304,34 @@ impl SyncService for SyncServer {
             ));
         }
 
+        // Get data directory for this bridge to scan for existing data
+        let data_dir = self.config.bridge_data_dir(req.chain_id, &req.bridge_name);
+        let scanner = DataScanner::new(data_dir);
+
+        // Find where live sync data starts (if any)
+        let historical_boundary = scanner
+            .find_historical_boundary(self.config.segment_size)
+            .map_err(|e| Status::internal(format!("Failed to scan existing data: {}", e)))?;
+
+        // Determine final to_block
+        let to_block = if let Some(boundary) = historical_boundary {
+            // Live sync data detected, ensure we don't overlap
+            if req.to_block > boundary {
+                info!(
+                    "Live sync detected at block {}. Adjusting to_block from {} to {}",
+                    boundary + 1,
+                    req.to_block,
+                    boundary
+                );
+                boundary
+            } else {
+                req.to_block
+            }
+        } else {
+            // No live sync data, use requested to_block
+            req.to_block
+        };
+
         // Check if bridge is configured
         let bridge = self
             .config
@@ -196,18 +346,22 @@ impl SyncService for SyncServer {
         // Generate job ID
         let job_id = Uuid::new_v4().to_string();
 
+        // Create progress tracker
+        let progress_tracker = Arc::new(RwLock::new(HashMap::new()));
+
         // Create job state
         let job_state = SyncJobState {
             job_id: job_id.clone(),
             chain_id: req.chain_id,
             bridge_name: req.bridge_name.clone(),
             from_block: req.from_block,
-            to_block: req.to_block,
+            to_block,
             status: SyncStatus::Pending as i32,
             current_block: req.from_block,
             blocks_synced: 0,
             active_workers: 0,
             error: None,
+            progress_tracker: progress_tracker.clone(),
         };
 
         // Store job state
@@ -224,7 +378,6 @@ impl SyncService for SyncServer {
         let bridge_name = req.bridge_name.clone();
         let chain_id = req.chain_id;
         let from_block = req.from_block;
-        let to_block = req.to_block;
 
         tokio::spawn(async move {
             if let Err(e) = Self::run_sync_job(
@@ -236,6 +389,7 @@ impl SyncService for SyncServer {
                 bridge_endpoint,
                 from_block,
                 to_block,
+                progress_tracker,
             )
             .await
             {
@@ -249,7 +403,7 @@ impl SyncService for SyncServer {
             job_id,
             message: format!(
                 "Sync job created for blocks {}-{} on chain {} via bridge '{}'",
-                req.from_block, req.to_block, req.chain_id, req.bridge_name
+                req.from_block, to_block, req.chain_id, req.bridge_name
             ),
             accepted: true,
         }))
@@ -266,12 +420,44 @@ impl SyncService for SyncServer {
             .get(&req.job_id)
             .ok_or_else(|| Status::not_found(format!("Job {} not found", req.job_id)))?;
 
+        // Aggregate worker progress
+        let progress = job.progress_tracker.read().await;
+        let total_blocks = job.to_block - job.from_block + 1;
+
+        // Count completed items from all workers across all 3 data types
+        let mut blocks_synced = 0u64;
+        let mut max_completed_block = job.from_block;
+
+        for worker in progress.values() {
+            let worker_blocks = worker.to_block - worker.from_block + 1;
+
+            // Calculate completion for this worker
+            // Each worker processes 3 data types: blocks, transactions, logs
+            // Progress is sum of completed phases
+            let phase_progress = if worker.logs_completed {
+                worker_blocks // All 3 phases complete
+            } else if worker.transactions_completed {
+                (worker_blocks * 2) / 3 // 2 of 3 phases complete
+            } else if worker.blocks_completed {
+                worker_blocks / 3 // 1 of 3 phases complete
+            } else {
+                0
+            };
+
+            blocks_synced += phase_progress;
+
+            // Track highest fully completed segment (all 3 data types done)
+            if worker.logs_completed && worker.to_block > max_completed_block {
+                max_completed_block = worker.to_block;
+            }
+        }
+
         Ok(Response::new(SyncStatusResponse {
             job_id: job.job_id.clone(),
             status: job.status,
-            current_block: job.current_block,
-            total_blocks: job.to_block - job.from_block + 1,
-            blocks_synced: job.blocks_synced,
+            current_block: max_completed_block,
+            total_blocks,
+            blocks_synced,
             error: job.error.clone().unwrap_or_default(),
             active_workers: job.active_workers,
             chain_id: job.chain_id,
