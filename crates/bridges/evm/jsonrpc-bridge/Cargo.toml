@@ -13,8 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 # Bridge framework
-phaser-bridge = { path = "../../phaser-bridge" }
-evm-common = { path = "../../schemas/evm/common" }
+phaser-bridge = { workspace = true }
+evm-common = { workspace = true }
 
 # Alloy - all from workspace
 alloy = { workspace = true }

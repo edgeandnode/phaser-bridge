@@ -3,12 +3,18 @@ resolver = "2"
 members = [
     "crates/phaser-query",
     "crates/phaser-bridge",
-    "crates/bridges/erigon-bridge",
-    "crates/bridges/jsonrpc-bridge",
+    "crates/bridges/evm/erigon-bridge",
+    "crates/bridges/evm/jsonrpc-bridge",
     "crates/schemas/evm/common",
 ]
 
 [workspace.dependencies]
+# Internal crates
+erigon-bridge = { path = "crates/bridges/evm/erigon-bridge" }
+jsonrpc-bridge = { path = "crates/bridges/evm/jsonrpc-bridge" }
+phaser-bridge = { path = "crates/phaser-bridge" }
+evm-common = { path = "crates/schemas/evm/common" }
+
 # External dependencies
 tokio = { version = "1.41", features = ["full"] }
 async-trait = "0.1"
