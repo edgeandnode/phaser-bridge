@@ -292,13 +292,76 @@ impl ErigonFlightBridge {
                     }
                 }
                 StreamType::Logs => {
-                    error!("Historical log streaming not yet implemented");
-                    yield Err(arrow_flight::error::FlightError::ExternalError(
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Unsupported,
-                            "Historical log streaming not yet implemented"
-                        ))
-                    ));
+                    // For logs, we need to execute blocks to generate receipts
+                    let mut client_guard = blockdata_client.lock().await;
+
+                    // First get blocks to extract timestamps
+                    let mut timestamps = HashMap::new();
+                    let mut block_stream = match client_guard.stream_blocks(start, end, 100).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to start block stream for timestamps: {}", e);
+                            yield Err(arrow_flight::error::FlightError::ExternalError(
+                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                            ));
+                            return;
+                        }
+                    };
+
+                    // Collect timestamps
+                    while let Some(batch_result) = block_stream.message().await.transpose() {
+                        if let Ok(block_batch) = batch_result {
+                            use alloy_consensus::Header;
+                            use alloy_rlp::Decodable;
+                            for block in &block_batch.blocks {
+                                // Decode RLP header to get timestamp
+                                if let Ok(header) = Header::decode(&mut block.rlp_header.as_slice()) {
+                                    timestamps.insert(block.block_number, header.timestamp as i64);
+                                }
+                            }
+                        }
+                    }
+
+                    // Now execute blocks to get receipts (which contain logs)
+                    info!("Executing blocks {}-{} to generate receipts/logs (this may be slow)", start, end);
+                    let mut receipt_stream = match client_guard.execute_blocks(start, end, 100).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to start receipt stream: {}", e);
+                            yield Err(arrow_flight::error::FlightError::ExternalError(
+                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                            ));
+                            return;
+                        }
+                    };
+                    drop(client_guard);
+
+                    while let Some(batch_result) = receipt_stream.message().await.transpose() {
+                        match batch_result {
+                            Ok(receipt_batch) => {
+                                match BlockDataConverter::receipts_to_logs_arrow(receipt_batch, &timestamps) {
+                                    Ok(record_batch) => {
+                                        debug!("Converted receipt batch to {} log rows", record_batch.num_rows());
+                                        yield Ok(record_batch);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to convert receipt batch: {}", e);
+                                        yield Err(arrow_flight::error::FlightError::ExternalError(
+                                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to receive receipt batch: {}", e);
+                                yield Err(arrow_flight::error::FlightError::ExternalError(
+                                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                ));
+                                break;
+                            }
+                        }
+                    }
                 }
                 StreamType::Trie => {
                     error!("Historical trie streaming not supported");
