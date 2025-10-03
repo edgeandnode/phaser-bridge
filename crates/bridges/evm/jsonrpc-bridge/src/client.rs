@@ -32,7 +32,7 @@ impl JsonRpcClient {
                 Arc::new(
                     ProviderBuilder::new()
                         .network::<AnyNetwork>()
-                        .on_ws(alloy::transports::ws::WsConnect::new(url))
+                        .connect_ws(alloy::transports::ws::WsConnect::new(url))
                         .await?,
                 )
             } else if url.ends_with(".ipc") || url.starts_with("/") {
@@ -40,7 +40,7 @@ impl JsonRpcClient {
                 Arc::new(
                     ProviderBuilder::new()
                         .network::<AnyNetwork>()
-                        .on_ipc(alloy::transports::ipc::IpcConnect::new(url.to_string()))
+                        .connect_ipc(alloy::transports::ipc::IpcConnect::new(url.to_string()))
                         .await?,
                 )
             } else {
@@ -48,7 +48,7 @@ impl JsonRpcClient {
                 Arc::new(
                     ProviderBuilder::new()
                         .network::<AnyNetwork>()
-                        .on_http(url.parse()?),
+                        .connect_http(url.parse()?),
                 )
             };
 

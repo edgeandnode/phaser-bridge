@@ -38,7 +38,7 @@ struct WorkerOutput {
 #[clap(author, version, about = "CLI for phaser-query admin operations", long_about = None)]
 struct Args {
     /// Admin gRPC endpoint
-    #[clap(short, long, default_value = "http://localhost:9090")]
+    #[clap(short, long)]
     endpoint: String,
 
     #[clap(subcommand)]
@@ -120,7 +120,10 @@ enum Commands {
     },
 }
 
-async fn run_progress_json(mut client: SyncServiceClient<tonic::transport::Channel>, job_id: &str) -> Result<()> {
+async fn run_progress_json(
+    mut client: SyncServiceClient<tonic::transport::Channel>,
+    job_id: &str,
+) -> Result<()> {
     use futures::StreamExt;
     use std::collections::HashMap;
 
@@ -147,44 +150,48 @@ async fn run_progress_json(mut client: SyncServiceClient<tonic::transport::Chann
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_else(|| update.timestamp.to_string());
 
-        let workers = update.workers.iter().map(|w| {
-            let started_at = chrono::DateTime::from_timestamp(w.started_at, 0)
-                .map(|dt| dt.to_rfc3339())
-                .unwrap_or_else(|| w.started_at.to_string());
+        let workers = update
+            .workers
+            .iter()
+            .map(|w| {
+                let started_at = chrono::DateTime::from_timestamp(w.started_at, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_else(|| w.started_at.to_string());
 
-            let elapsed = if w.stage == "completed" {
-                if !completed_workers.contains_key(&w.worker_id) {
+                let elapsed = if w.stage == "completed" {
+                    if !completed_workers.contains_key(&w.worker_id) {
+                        let elapsed_secs = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64
+                            - w.started_at;
+                        completed_workers.insert(w.worker_id, elapsed_secs as u64);
+                    }
+                    Some(format_duration(completed_workers[&w.worker_id]))
+                } else {
                     let elapsed_secs = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_secs() as i64
                         - w.started_at;
-                    completed_workers.insert(w.worker_id, elapsed_secs as u64);
-                }
-                Some(format_duration(completed_workers[&w.worker_id]))
-            } else {
-                let elapsed_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64
-                    - w.started_at;
-                Some(format_duration(elapsed_secs as u64))
-            };
+                    Some(format_duration(elapsed_secs as u64))
+                };
 
-            WorkerOutput {
-                worker_id: w.worker_id,
-                stage: w.stage.clone(),
-                from_block: w.from_block,
-                to_block: w.to_block,
-                current_block: w.current_block,
-                blocks_processed: w.blocks_processed,
-                rate: w.rate,
-                bytes_written: w.bytes_written,
-                files_created: w.files_created,
-                started_at,
-                elapsed,
-            }
-        }).collect();
+                WorkerOutput {
+                    worker_id: w.worker_id,
+                    stage: w.stage.clone(),
+                    from_block: w.from_block,
+                    to_block: w.to_block,
+                    current_block: w.current_block,
+                    blocks_processed: w.blocks_processed,
+                    rate: w.rate,
+                    bytes_written: w.bytes_written,
+                    files_created: w.files_created,
+                    started_at,
+                    elapsed,
+                }
+            })
+            .collect();
 
         let output = ProgressOutput {
             job_id: update.job_id.clone(),
@@ -203,18 +210,21 @@ async fn run_progress_json(mut client: SyncServiceClient<tonic::transport::Chann
     Ok(())
 }
 
-async fn run_progress_tui(mut client: SyncServiceClient<tonic::transport::Channel>, job_id: &str) -> Result<()> {
-    use futures::StreamExt;
-    use ratatui::prelude::*;
-    use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Row, Table};
+async fn run_progress_tui(
+    mut client: SyncServiceClient<tonic::transport::Channel>,
+    job_id: &str,
+) -> Result<()> {
     use crossterm::{
         event::{self, Event, KeyCode},
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
         ExecutableCommand,
     };
+    use futures::StreamExt;
+    use ratatui::prelude::*;
+    use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Row, Table};
+    use std::collections::HashMap;
     use std::io::stdout;
     use std::time::Duration;
-    use std::collections::HashMap;
 
     // Setup terminal
     enable_raw_mode()?;
@@ -241,10 +251,9 @@ async fn run_progress_tui(mut client: SyncServiceClient<tonic::transport::Channe
         }
 
         // Try to get new update
-        if let Ok(Some(Ok(update))) = tokio::time::timeout(
-            Duration::from_millis(100),
-            stream.next()
-        ).await {
+        if let Ok(Some(Ok(update))) =
+            tokio::time::timeout(Duration::from_millis(100), stream.next()).await
+        {
             last_update = Some(update);
         }
 
@@ -261,7 +270,8 @@ async fn run_progress_tui(mut client: SyncServiceClient<tonic::transport::Channe
 
             // Update completed workers tracking
             for worker in &update.workers {
-                if worker.stage == "completed" && !completed_workers.contains_key(&worker.worker_id) {
+                if worker.stage == "completed" && !completed_workers.contains_key(&worker.worker_id)
+                {
                     let elapsed = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
@@ -299,47 +309,57 @@ async fn run_progress_tui(mut client: SyncServiceClient<tonic::transport::Channe
                     0.0
                 };
                 let gauge = Gauge::default()
-                    .block(Block::default().borders(Borders::ALL).title("Overall Progress"))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("Overall Progress"),
+                    )
                     .gauge_style(Style::default().fg(Color::Green))
                     .percent(percent as u16)
-                    .label(format!("{:.1}% | {:.1} blocks/sec | {:.2} GB",
+                    .label(format!(
+                        "{:.1}% | {:.1} blocks/sec | {:.2} GB",
                         percent,
                         update.overall_rate,
-                        update.total_bytes_written as f64 / 1_000_000_000.0));
+                        update.total_bytes_written as f64 / 1_000_000_000.0
+                    ));
                 f.render_widget(gauge, chunks[1]);
 
                 // Workers table
                 let headers = Row::new(vec!["ID", "Stage", "Blocks", "Current", "Rate", "Elapsed"])
                     .style(Style::default().fg(Color::Yellow));
 
-                let rows: Vec<Row> = update.workers.iter().map(|w| {
-                    let blocks_range = format!("{}-{}", w.from_block, w.to_block);
-                    let current = if w.stage == "completed" {
-                        "✓".to_string()
-                    } else {
-                        w.current_block.to_string()
-                    };
+                let rows: Vec<Row> = update
+                    .workers
+                    .iter()
+                    .map(|w| {
+                        let blocks_range = format!("{}-{}", w.from_block, w.to_block);
+                        let current = if w.stage == "completed" {
+                            "✓".to_string()
+                        } else {
+                            w.current_block.to_string()
+                        };
 
-                    let elapsed = if w.stage == "completed" {
-                        format_duration(completed_workers[&w.worker_id])
-                    } else {
-                        let e = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs() as i64
-                            - w.started_at;
-                        format_duration(e as u64)
-                    };
+                        let elapsed = if w.stage == "completed" {
+                            format_duration(completed_workers[&w.worker_id])
+                        } else {
+                            let e = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs() as i64
+                                - w.started_at;
+                            format_duration(e as u64)
+                        };
 
-                    Row::new(vec![
-                        w.worker_id.to_string(),
-                        w.stage.clone(),
-                        blocks_range,
-                        current,
-                        format!("{:.1}/s", w.rate),
-                        elapsed,
-                    ])
-                }).collect();
+                        Row::new(vec![
+                            w.worker_id.to_string(),
+                            w.stage.clone(),
+                            blocks_range,
+                            current,
+                            format!("{:.1}/s", w.rate),
+                            elapsed,
+                        ])
+                    })
+                    .collect();
 
                 let table = Table::new(
                     rows,
@@ -350,7 +370,7 @@ async fn run_progress_tui(mut client: SyncServiceClient<tonic::transport::Channe
                         Constraint::Length(12),
                         Constraint::Length(10),
                         Constraint::Length(10),
-                    ]
+                    ],
                 )
                 .header(headers)
                 .block(Block::default().borders(Borders::ALL).title("Workers"));

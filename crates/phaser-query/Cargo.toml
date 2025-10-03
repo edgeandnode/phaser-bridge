@@ -13,9 +13,9 @@ path = "src/bin/phaser-cli.rs"
 
 [dependencies]
 # Local dependencies
-phaser-bridge = { path = "../phaser-bridge" }
-erigon-bridge = { path = "../bridges/erigon-bridge" }
-evm-common = { path = "../schemas/evm/common" }
+phaser-bridge = { workspace = true }
+erigon-bridge = { workspace = true }
+evm-common = { workspace = true }
 
 # Typed Arrow support
 typed-arrow = { workspace = true }
