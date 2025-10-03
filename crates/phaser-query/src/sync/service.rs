@@ -222,9 +222,10 @@ impl SyncServer {
 
                     // Calculate block range for this segment
                     let segment_from = segment_num * segment_size;
-                    let segment_to = segment_from + segment_size - 1;
+                    let segment_to = (segment_num + 1) * segment_size - 1;
 
-                    // Ensure we don't go past the requested to_block
+                    // Clamp to the requested range (both start and end)
+                    let segment_from = std::cmp::max(segment_from, from_block);
                     let segment_to = std::cmp::min(segment_to, to_block);
 
                     info!(
