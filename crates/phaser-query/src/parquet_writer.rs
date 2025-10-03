@@ -61,14 +61,16 @@ impl ParquetWriter {
     }
 
     pub async fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
-        // Extract block number from the batch (assuming _block_num is first column)
-        let block_num = if let Some(array) = batch
+        // Extract first and last block numbers from the batch (assuming _block_num is first column)
+        let (first_block, last_block) = if let Some(array) = batch
             .column(0)
             .as_any()
             .downcast_ref::<arrow_array::UInt64Array>()
         {
             if !array.is_empty() {
-                array.value(0)
+                let first = array.value(0);
+                let last = array.value(array.len() - 1);
+                (first, last)
             } else {
                 return Ok(()); // Skip empty batch
             }
@@ -77,29 +79,30 @@ impl ParquetWriter {
             return Ok(());
         };
 
-        // Check if we need to start a new file
-        if self.should_start_new_file(block_num)? {
+        // Check if we need to start a new file (use first block for boundary check)
+        if self.should_start_new_file(first_block)? {
             self.finalize_current_file()?;
-            self.start_new_file(block_num, batch.schema())?;
+            self.start_new_file(first_block, batch.schema())?;
         }
 
         // Initialize file if needed
         if self.current_file.is_none() {
-            self.start_new_file(block_num, batch.schema())?;
+            self.start_new_file(first_block, batch.schema())?;
         }
 
         // Write the batch
         if let Some(ref mut current) = self.current_file {
             current.writer.write(&batch)?;
             current.row_count += batch.num_rows();
-            current.end_block = block_num;
+            current.end_block = last_block; // Track the last block we've written
 
             debug!(
-                "Wrote batch with {} rows to {}, total rows: {}, block: {}",
+                "Wrote batch with {} rows to {}, total rows: {}, blocks: {}-{}",
                 batch.num_rows(),
                 current.temp_path.display(),
                 current.row_count,
-                block_num
+                first_block,
+                last_block
             );
         }
 
@@ -123,13 +126,13 @@ impl ParquetWriter {
     }
 
     fn start_new_file(&mut self, block_num: u64, schema: arrow_schema::SchemaRef) -> Result<()> {
-        // Create temporary filename - will be renamed with actual range when finalized
-        // Format: {data_type}_temp_{timestamp}.parquet.tmp
+        // Create temporary filename with start block - will be renamed with actual range when finalized
+        // Format: {data_type}_from_{start}_{timestamp}.parquet.tmp
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let filename = format!("{}_{}.parquet.tmp", self.data_type, timestamp);
+        let filename = format!("{}_from_{}_{}.parquet.tmp", self.data_type, block_num, timestamp);
         let temp_path = self.data_dir.join(filename);
 
         info!(
