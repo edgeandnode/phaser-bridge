@@ -1,4 +1,4 @@
-use alloy::network::{AnyHeader, AnyRpcBlock};
+use alloy::network::AnyRpcBlock;
 use alloy_rpc_types_eth::{Header as RpcHeader, Log};
 use anyhow::Result;
 use arrow::datatypes::Schema;
