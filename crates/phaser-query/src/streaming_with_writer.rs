@@ -68,11 +68,13 @@ impl StreamingServiceWithWriter {
         mut receiver: mpsc::Receiver<RecordBatch>,
     ) {
         tokio::spawn(async move {
-            let mut writer = match ParquetWriter::new(
+            let mut writer = match ParquetWriter::with_config_and_mode(
                 data_dir,
                 max_file_size_mb,
                 segment_size,
                 data_type.to_string(),
+                None, // no custom parquet config for live streaming
+                true, // is_live = true for live streaming
             ) {
                 Ok(w) => w,
                 Err(e) => {
