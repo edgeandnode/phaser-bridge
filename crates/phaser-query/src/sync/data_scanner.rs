@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 /// Represents a block range that has been synced
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockRange {
     pub start: u64,
     pub end: u64,
@@ -112,6 +112,16 @@ impl DataScanner {
 
         let parquet_metadata = builder.metadata();
         let arrow_schema = builder.schema();
+
+        // Check if file has any rows - empty files should not be treated as valid data
+        let total_rows: i64 = (0..parquet_metadata.num_row_groups())
+            .map(|i| parquet_metadata.row_group(i).num_rows())
+            .sum();
+
+        if total_rows == 0 {
+            debug!("Parquet file {:?} is empty (0 rows), ignoring", path);
+            return Ok(None);
+        }
 
         // Find the _block_num column index
         let block_num_col_idx = match arrow_schema.column_with_name("_block_num") {
@@ -329,7 +339,13 @@ impl DataScanner {
             let filename_str = filename.to_string_lossy();
 
             // Only process temp files
-            if !filename_str.ends_with(".parquet.tmp") {
+            if !filename_str.ends_with(".parquet.tmp") && !filename_str.ends_with(".tmp") {
+                continue;
+            }
+
+            // Skip live streaming temp files - they're actively being written
+            if filename_str.starts_with("live_") {
+                debug!("Preserving live streaming temp file: {}", path.display());
                 continue;
             }
 
@@ -557,18 +573,24 @@ impl DataScanner {
             let filename = entry.file_name();
             let filename_str = filename.to_string_lossy();
 
-            // Look for completed parquet files for this data type
-            // Support both old and new formats:
-            // - Old: {data_type}_{segment_start}-{segment_end}_from_*_to_*.parquet
-            // - New: {data_type}_from_*_to_*.parquet
-            let matches_format = (filename_str.starts_with(&format!("{}_from_", data_type))
-                || filename_str.starts_with(&format!("{}_", data_type)))
-                && filename_str.ends_with(".parquet")
-                && !filename_str.ends_with(".parquet.tmp");
+            // Look for both parquet files and .empty marker files for this data type
+            let matches_format = filename_str.starts_with(&format!("{}_from_", data_type));
 
             if matches_format {
-                // Read block range from statistics
-                if let Some(range) = self.read_block_range_from_parquet(&path)? {
+                let range = if filename_str.ends_with(".empty") {
+                    // Empty marker file - parse filename for range
+                    debug!("Found empty marker: {}", filename_str);
+                    self.parse_filename(&path)?
+                } else if filename_str.ends_with(".parquet") && !filename_str.ends_with(".parquet.tmp") {
+                    // Parquet file - try to read block range from statistics
+                    // Empty parquet files (0 rows) will return None and be ignored
+                    self.read_block_range_from_parquet(&path)?
+                } else {
+                    // Skip temp files and other extensions
+                    None
+                };
+
+                if let Some(range) = range {
                     // Only consider ranges that overlap with this segment
                     if range.start <= segment_end && range.end >= segment_start {
                         debug!(
@@ -675,6 +697,135 @@ impl DataScanner {
         }
 
         Ok(())
+    }
+
+    /// Find missing block ranges for a specific data type within a segment
+    /// Uses parquet statistics to determine what's already been downloaded
+    /// Returns list of ranges that still need to be synced
+    pub fn find_missing_ranges(
+        &self,
+        data_type: &str,
+        segment_start: u64,
+        segment_end: u64,
+    ) -> Result<Vec<BlockRange>> {
+        info!(
+            "find_missing_ranges called for {} in segment {}-{}",
+            data_type, segment_start, segment_end
+        );
+        let mut covered_ranges = Vec::new();
+
+        if !self.data_dir.exists() {
+            // Directory doesn't exist - need entire range
+            info!("Data directory doesn't exist, returning full range");
+            return Ok(vec![BlockRange {
+                start: segment_start,
+                end: segment_end,
+            }]);
+        }
+
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let filename = entry.file_name();
+            let filename_str = filename.to_string_lossy();
+
+            // Check for both parquet files and .empty marker files
+            if filename_str.starts_with(&format!("{}_from_", data_type)) {
+                let range = if filename_str.ends_with(".empty") {
+                    // Empty marker file - parse filename for range
+                    info!("Found empty marker: {}", filename_str);
+                    self.parse_filename(&path)?
+                } else if filename_str.ends_with(".parquet") {
+                    // Parquet file - try to read block range from statistics
+                    // Empty parquet files (0 rows) will return None and be ignored
+                    self.read_block_range_from_parquet(&path)?
+                } else {
+                    // Skip temp files and other extensions
+                    None
+                };
+
+                if let Some(range) = range {
+                    // Only include if it overlaps with our segment
+                    if range.start <= segment_end && range.end >= segment_start {
+                        info!("Found {} range {}-{} from {}", data_type, range.start, range.end, filename_str);
+                        covered_ranges.push(range);
+                    }
+                }
+            }
+        }
+
+        if covered_ranges.is_empty() {
+            // Nothing downloaded - need entire range
+            info!(
+                "No existing {} data found for segment {}-{}, will sync entire range",
+                data_type, segment_start, segment_end
+            );
+            return Ok(vec![BlockRange {
+                start: segment_start,
+                end: segment_end,
+            }]);
+        }
+
+        // Sort ranges by start block
+        covered_ranges.sort_by_key(|r| r.start);
+
+        debug!(
+            "Found {} {} files covering segment {}-{}",
+            covered_ranges.len(),
+            data_type,
+            segment_start,
+            segment_end
+        );
+
+        // Find gaps in coverage
+        let mut missing = Vec::new();
+        let mut current_pos = segment_start;
+
+        for range in &covered_ranges {
+            if range.start > current_pos {
+                // Gap before this range
+                debug!(
+                    "Gap in {} data: {}-{}",
+                    data_type,
+                    current_pos,
+                    range.start - 1
+                );
+                missing.push(BlockRange {
+                    start: current_pos,
+                    end: range.start - 1,
+                });
+            }
+            current_pos = current_pos.max(range.end + 1);
+        }
+
+        // Gap at the end?
+        if current_pos <= segment_end {
+            debug!(
+                "Gap in {} data at end: {}-{}",
+                data_type, current_pos, segment_end
+            );
+            missing.push(BlockRange {
+                start: current_pos,
+                end: segment_end,
+            });
+        }
+
+        if missing.is_empty() {
+            info!(
+                "{} data complete for segment {}-{}",
+                data_type, segment_start, segment_end
+            );
+        } else {
+            info!(
+                "{} data has {} gaps in segment {}-{}",
+                data_type,
+                missing.len(),
+                segment_start,
+                segment_end
+            );
+        }
+
+        Ok(missing)
     }
 }
 
