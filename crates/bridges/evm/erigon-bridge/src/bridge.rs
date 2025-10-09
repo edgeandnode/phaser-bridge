@@ -193,12 +193,15 @@ impl ErigonFlightBridge {
                     };
                     drop(client_guard);
 
+                    let mut batch_count = 0;
                     while let Some(batch_result) = block_stream.message().await.transpose() {
                         match batch_result {
                             Ok(block_batch) => {
+                                batch_count += 1;
+                                info!("Received batch {} from BlockDataBackend with {} blocks", batch_count, block_batch.blocks.len());
                                 match BlockDataConverter::blocks_to_arrow(block_batch) {
                                     Ok(record_batch) => {
-                                        debug!("Converted block batch with {} rows", record_batch.num_rows());
+                                        info!("Converted block batch {} with {} rows", batch_count, record_batch.num_rows());
                                         yield Ok(record_batch);
                                     }
                                     Err(e) => {
@@ -219,6 +222,7 @@ impl ErigonFlightBridge {
                             }
                         }
                     }
+                    info!("Block stream ended after receiving {} batches", batch_count);
                 }
                 StreamType::Transactions => {
                     // For transactions, we need to get block timestamps first
@@ -238,8 +242,11 @@ impl ErigonFlightBridge {
                     };
 
                     // Collect timestamps
+                    let mut block_batch_count = 0;
                     while let Some(batch_result) = block_stream.message().await.transpose() {
                         if let Ok(block_batch) = batch_result {
+                            block_batch_count += 1;
+                            info!("Received batch {} from BlockDataBackend for timestamps with {} blocks", block_batch_count, block_batch.blocks.len());
                             use alloy_consensus::Header;
                             use alloy_rlp::Decodable;
                             for block in &block_batch.blocks {
@@ -250,6 +257,7 @@ impl ErigonFlightBridge {
                             }
                         }
                     }
+                    info!("Block stream for timestamps ended after receiving {} batches, collected {} timestamps", block_batch_count, timestamps.len());
 
                     // Now stream transactions
                     let mut tx_stream = match client_guard.stream_transactions(start, end, 100).await {
@@ -264,12 +272,15 @@ impl ErigonFlightBridge {
                     };
                     drop(client_guard);
 
+                    let mut tx_batch_count = 0;
                     while let Some(batch_result) = tx_stream.message().await.transpose() {
                         match batch_result {
                             Ok(tx_batch) => {
+                                tx_batch_count += 1;
+                                info!("Received batch {} from BlockDataBackend with {} transactions", tx_batch_count, tx_batch.transactions.len());
                                 match BlockDataConverter::transactions_to_arrow(tx_batch, &timestamps) {
                                     Ok(record_batch) => {
-                                        debug!("Converted transaction batch with {} rows", record_batch.num_rows());
+                                        info!("Converted transaction batch {} with {} rows", tx_batch_count, record_batch.num_rows());
                                         yield Ok(record_batch);
                                     }
                                     Err(e) => {
@@ -290,6 +301,7 @@ impl ErigonFlightBridge {
                             }
                         }
                     }
+                    info!("Transaction stream ended after receiving {} batches", tx_batch_count);
                 }
                 StreamType::Logs => {
                     // For logs, we need to execute blocks to generate receipts
@@ -309,8 +321,11 @@ impl ErigonFlightBridge {
                     };
 
                     // Collect timestamps
+                    let mut block_batch_count = 0;
                     while let Some(batch_result) = block_stream.message().await.transpose() {
                         if let Ok(block_batch) = batch_result {
+                            block_batch_count += 1;
+                            info!("Received batch {} from BlockDataBackend for timestamps with {} blocks", block_batch_count, block_batch.blocks.len());
                             use alloy_consensus::Header;
                             use alloy_rlp::Decodable;
                             for block in &block_batch.blocks {
@@ -321,6 +336,7 @@ impl ErigonFlightBridge {
                             }
                         }
                     }
+                    info!("Block stream for timestamps ended after receiving {} batches, collected {} timestamps", block_batch_count, timestamps.len());
 
                     // Now execute blocks to get receipts (which contain logs)
                     info!("Executing blocks {}-{} to generate receipts/logs (this may be slow)", start, end);
@@ -336,12 +352,15 @@ impl ErigonFlightBridge {
                     };
                     drop(client_guard);
 
+                    let mut receipt_batch_count = 0;
                     while let Some(batch_result) = receipt_stream.message().await.transpose() {
                         match batch_result {
                             Ok(receipt_batch) => {
+                                receipt_batch_count += 1;
+                                info!("Received batch {} from BlockDataBackend with {} receipts", receipt_batch_count, receipt_batch.receipts.len());
                                 match BlockDataConverter::receipts_to_logs_arrow(receipt_batch, &timestamps) {
                                     Ok(record_batch) => {
-                                        debug!("Converted receipt batch to {} log rows", record_batch.num_rows());
+                                        info!("Converted receipt batch {} to {} log rows", receipt_batch_count, record_batch.num_rows());
                                         yield Ok(record_batch);
                                     }
                                     Err(e) => {
@@ -362,6 +381,7 @@ impl ErigonFlightBridge {
                             }
                         }
                     }
+                    info!("Receipt/log stream ended after receiving {} batches", receipt_batch_count);
                 }
                 StreamType::Trie => {
                     error!("Historical trie streaming not supported");
