@@ -523,37 +523,33 @@ impl SyncService for SyncServer {
             .get(&req.job_id)
             .ok_or_else(|| Status::not_found(format!("Job {} not found", req.job_id)))?;
 
-        // Aggregate worker progress
+        // Scan disk for ground truth - what's actually completed
+        let data_dir = self.config.bridge_data_dir(job.chain_id, &job.bridge_name);
+        let scanner = DataScanner::new(data_dir);
+        let analysis = scanner
+            .analyze_sync_range(job.from_block, job.to_block, self.config.segment_size)
+            .map_err(|e| Status::internal(format!("Failed to analyze sync progress: {}", e)))?;
+
+        // Calculate actual progress from disk
+        let complete_segments = analysis.complete_segments.len() as u64;
+        let blocks_synced = complete_segments * self.config.segment_size;
+
+        // Find highest completed block from complete segments
+        let max_completed_block = analysis
+            .complete_segments
+            .iter()
+            .max()
+            .map(|&seg| {
+                let seg_end = (seg + 1) * self.config.segment_size - 1;
+                std::cmp::min(seg_end, job.to_block)
+            })
+            .unwrap_or(job.from_block);
+
+        // Count active workers from progress tracker (for UX visibility)
         let progress = job.progress_tracker.read().await;
+        let active_workers = progress.len() as u32;
+
         let total_blocks = job.to_block - job.from_block + 1;
-
-        // Count completed items from all workers across all 3 data types
-        let mut blocks_synced = 0u64;
-        let mut max_completed_block = job.from_block;
-
-        for worker in progress.values() {
-            let worker_blocks = worker.to_block - worker.from_block + 1;
-
-            // Calculate completion for this worker
-            // Each worker processes 3 data types: blocks, transactions, logs
-            // Progress is sum of completed phases
-            let phase_progress = if worker.logs_completed {
-                worker_blocks // All 3 phases complete
-            } else if worker.transactions_completed {
-                (worker_blocks * 2) / 3 // 2 of 3 phases complete
-            } else if worker.blocks_completed {
-                worker_blocks / 3 // 1 of 3 phases complete
-            } else {
-                0
-            };
-
-            blocks_synced += phase_progress;
-
-            // Track highest fully completed segment (all 3 data types done)
-            if worker.logs_completed && worker.to_block > max_completed_block {
-                max_completed_block = worker.to_block;
-            }
-        }
 
         Ok(Response::new(SyncStatusResponse {
             job_id: job.job_id.clone(),
@@ -562,15 +558,12 @@ impl SyncService for SyncServer {
             total_blocks,
             blocks_synced,
             error: job.error.clone().unwrap_or_default(),
-            active_workers: job.active_workers,
+            active_workers,
             chain_id: job.chain_id,
             bridge_name: job.bridge_name.clone(),
             from_block: job.from_block,
             to_block: job.to_block,
-            gap_analysis: job
-                .gap_analysis
-                .as_ref()
-                .map(|ga| gap_analysis_to_proto(ga, self.config.segment_size)),
+            gap_analysis: Some(gap_analysis_to_proto(&analysis, self.config.segment_size)),
         }))
     }
 
@@ -582,34 +575,61 @@ impl SyncService for SyncServer {
 
         let jobs = self.jobs.read().await;
 
-        let job_list: Vec<SyncStatusResponse> = jobs
-            .values()
-            .filter(|job| {
-                // Apply status filter if provided
-                if let Some(status_filter) = req.status_filter {
-                    job.status == status_filter
-                } else {
-                    true
+        let mut job_list = Vec::new();
+
+        for job in jobs.values() {
+            // Apply status filter if provided
+            if let Some(status_filter) = req.status_filter {
+                if job.status != status_filter {
+                    continue;
                 }
-            })
-            .map(|job| SyncStatusResponse {
+            }
+
+            // Scan disk for actual progress
+            let data_dir = self.config.bridge_data_dir(job.chain_id, &job.bridge_name);
+            let scanner = DataScanner::new(data_dir);
+            let (blocks_synced, max_completed_block, gap_analysis) = match scanner
+                .analyze_sync_range(job.from_block, job.to_block, self.config.segment_size)
+            {
+                Ok(analysis) => {
+                    let complete_segments = analysis.complete_segments.len() as u64;
+                    let blocks = complete_segments * self.config.segment_size;
+                    let max_block = analysis
+                        .complete_segments
+                        .iter()
+                        .max()
+                        .map(|&seg| {
+                            let seg_end = (seg + 1) * self.config.segment_size - 1;
+                            std::cmp::min(seg_end, job.to_block)
+                        })
+                        .unwrap_or(job.from_block);
+                    (
+                        blocks,
+                        max_block,
+                        Some(gap_analysis_to_proto(&analysis, self.config.segment_size)),
+                    )
+                }
+                Err(_) => (0, job.from_block, None),
+            };
+
+            // Count active workers
+            let active_workers = job.progress_tracker.read().await.len() as u32;
+
+            job_list.push(SyncStatusResponse {
                 job_id: job.job_id.clone(),
                 status: job.status,
-                current_block: job.current_block,
+                current_block: max_completed_block,
                 total_blocks: job.to_block - job.from_block + 1,
-                blocks_synced: job.blocks_synced,
+                blocks_synced,
                 error: job.error.clone().unwrap_or_default(),
-                active_workers: job.active_workers,
+                active_workers,
                 chain_id: job.chain_id,
                 bridge_name: job.bridge_name.clone(),
                 from_block: job.from_block,
                 to_block: job.to_block,
-                gap_analysis: job
-                    .gap_analysis
-                    .as_ref()
-                    .map(|ga| gap_analysis_to_proto(ga, self.config.segment_size)),
-            })
-            .collect();
+                gap_analysis,
+            });
+        }
 
         Ok(Response::new(ListSyncJobsResponse { jobs: job_list }))
     }
@@ -736,10 +756,10 @@ impl SyncService for SyncServer {
             }
         }
 
-        // TODO: Implement actual progress streaming from workers
-        // For now, return a stub stream that sends periodic updates
+        // Stream actual progress from disk + active worker state
         let jobs = self.jobs.clone();
         let job_id = req.job_id.clone();
+        let config = self.config.clone();
 
         let stream = async_stream::stream! {
             loop {
@@ -747,7 +767,19 @@ impl SyncService for SyncServer {
                 let update = {
                     let jobs_lock = jobs.read().await;
                     if let Some(job) = jobs_lock.get(&job_id) {
-                        // Read worker progress
+                        // Scan disk for actual progress
+                        let data_dir = config.bridge_data_dir(job.chain_id, &job.bridge_name);
+                        let scanner = DataScanner::new(data_dir);
+                        let total_blocks_synced = match scanner.analyze_sync_range(
+                            job.from_block,
+                            job.to_block,
+                            config.segment_size,
+                        ) {
+                            Ok(analysis) => analysis.complete_segments.len() as u64 * config.segment_size,
+                            Err(_) => 0, // Fallback if scan fails
+                        };
+
+                        // Read worker progress for UX visibility
                         let progress_lock = job.progress_tracker.read().await;
                         let workers: Vec<WorkerProgress> = progress_lock
                             .values()
@@ -787,7 +819,7 @@ impl SyncService for SyncServer {
                                 .unwrap()
                                 .as_secs() as i64,
                             workers,
-                            total_blocks_synced: job.blocks_synced,
+                            total_blocks_synced,
                             total_blocks: job.to_block - job.from_block + 1,
                             overall_rate: 0.0,
                             total_bytes_written: 0,
