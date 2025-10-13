@@ -251,7 +251,7 @@ impl FlightBridge for JsonRpcFlightBridge {
     async fn get_capabilities(&self) -> std::result::Result<BridgeCapabilities, Status> {
         Ok(BridgeCapabilities {
             supports_historical: true, // Can fetch historical blocks via JSON-RPC
-            supports_streaming: true,  // Always support streaming (HTTP uses polling, WS/IPC use subscriptions)
+            supports_streaming: true, // Always support streaming (HTTP uses polling, WS/IPC use subscriptions)
             supports_reorg_notifications: false,
             supports_filters: true,
             max_batch_size: self.max_batch_size,

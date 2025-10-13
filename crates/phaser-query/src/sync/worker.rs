@@ -1,6 +1,8 @@
 use crate::parquet_writer::ParquetWriter;
+use crate::sync::data_scanner::DataScanner;
 use crate::ParquetConfig;
 use anyhow::{Context, Result};
+use arrow::array as arrow_array;
 use futures::StreamExt;
 use phaser_bridge::client::FlightBridgeClient;
 use phaser_bridge::descriptors::{BlockchainDescriptor, StreamType};
@@ -9,6 +11,26 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
+
+/// Write a 0-byte .empty file to mark a range as checked but containing no data
+fn write_empty_marker(
+    data_dir: &PathBuf,
+    data_type: &str,
+    from_block: u64,
+    to_block: u64,
+) -> Result<()> {
+    let filename = format!("{}_from_{}_to_{}.empty", data_type, from_block, to_block);
+    let path = data_dir.join(filename);
+    std::fs::File::create(&path)?;
+    info!(
+        "Created empty marker file for {} blocks {}-{}: {}",
+        data_type,
+        from_block,
+        to_block,
+        path.display()
+    );
+    Ok(())
+}
 
 /// Worker progress tracking
 #[derive(Debug, Clone)]
@@ -121,8 +143,24 @@ impl SyncWorker {
         );
 
         // Initialize progress
-        self.update_progress("blocks", false, false, false, self.from_block, 0, 0, 0)
+        self.update_progress("scanning", false, false, false, self.from_block, 0, 0, 0)
             .await;
+
+        // Scan for missing ranges using DataScanner
+        let scanner = DataScanner::new(self.data_dir.clone());
+        let missing_blocks =
+            scanner.find_missing_ranges("blocks", self.from_block, self.to_block)?;
+        let missing_txs =
+            scanner.find_missing_ranges("transactions", self.from_block, self.to_block)?;
+        let missing_logs = scanner.find_missing_ranges("logs", self.from_block, self.to_block)?;
+
+        let blocks_complete = missing_blocks.is_empty();
+        let txs_complete = missing_txs.is_empty();
+        let logs_complete = missing_logs.is_empty();
+
+        // Note: We don't skip work even if scanner reports everything complete
+        // Empty parquet files may exist but contain no actual data
+        // Always attempt to sync missing ranges to verify data exists
 
         // Connect to bridge via Arrow Flight
         let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
@@ -131,43 +169,103 @@ impl SyncWorker {
 
         info!("Worker {} connected to bridge", self.worker_id);
 
-        // Sync blocks, transactions, and logs
-        let (blocks_processed, blocks_bytes) = self.sync_blocks(&mut client).await?;
-        self.update_progress(
-            "transactions",
-            true,
-            false,
-            false,
-            self.to_block,
-            blocks_processed,
-            blocks_bytes,
-            1,
-        )
-        .await;
+        let mut total_batches = 0u64;
+        let mut total_bytes = 0u64;
+        let mut files_created = 0u32;
 
-        let (txs_processed, txs_bytes) = self.sync_transactions(&mut client).await?;
-        self.update_progress(
-            "logs",
-            true,
-            true,
-            false,
-            self.to_block,
-            blocks_processed + txs_processed,
-            blocks_bytes + txs_bytes,
-            2,
-        )
-        .await;
+        // Sync missing blocks ranges
+        if !blocks_complete {
+            self.update_progress(
+                "blocks",
+                false,
+                txs_complete,
+                logs_complete,
+                self.from_block,
+                total_batches,
+                total_bytes,
+                files_created,
+            )
+            .await;
 
-        let (logs_processed, logs_bytes) = self.sync_logs(&mut client).await?;
+            for range in &missing_blocks {
+                info!(
+                    "Worker {} syncing blocks {}-{}",
+                    self.worker_id, range.start, range.end
+                );
+                let (batches, bytes) = self
+                    .sync_blocks_range(&mut client, range.start, range.end)
+                    .await?;
+                total_batches += batches;
+                total_bytes += bytes;
+                files_created += 1;
+            }
+        }
+
+        // Sync missing transaction ranges
+        if !txs_complete {
+            self.update_progress(
+                "transactions",
+                true,
+                false,
+                logs_complete,
+                self.to_block,
+                total_batches,
+                total_bytes,
+                files_created,
+            )
+            .await;
+
+            for range in &missing_txs {
+                info!(
+                    "Worker {} syncing transactions {}-{}",
+                    self.worker_id, range.start, range.end
+                );
+                let (batches, bytes) = self
+                    .sync_transactions_range(&mut client, range.start, range.end)
+                    .await?;
+                total_batches += batches;
+                total_bytes += bytes;
+                files_created += 1;
+            }
+        }
+
+        // Sync missing log ranges
+        if !logs_complete {
+            self.update_progress(
+                "logs",
+                true,
+                true,
+                false,
+                self.to_block,
+                total_batches,
+                total_bytes,
+                files_created,
+            )
+            .await;
+
+            for range in &missing_logs {
+                info!(
+                    "Worker {} syncing logs {}-{}",
+                    self.worker_id, range.start, range.end
+                );
+                let (batches, bytes) = self
+                    .sync_logs_range(&mut client, range.start, range.end)
+                    .await?;
+                total_batches += batches;
+                total_bytes += bytes;
+                files_created += 1;
+            }
+        }
+
         self.update_progress(
             "completed",
             true,
             true,
             true,
             self.to_block,
-            blocks_processed + txs_processed + logs_processed,
-            blocks_bytes + txs_bytes + logs_bytes,
-            3,
+            total_batches,
+            total_bytes,
+            files_created,
         )
         .await;
 
@@ -175,12 +273,12 @@ impl SyncWorker {
         Ok(())
     }
 
-    async fn sync_blocks(&mut self, client: &mut FlightBridgeClient) -> Result<(u64, u64)> {
-        info!(
-            "Worker {} syncing blocks {}-{}",
-            self.worker_id, self.from_block, self.to_block
-        );
-
+    async fn sync_blocks_range(
+        &mut self,
+        client: &mut FlightBridgeClient,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<(u64, u64)> {
         let mut writer = ParquetWriter::with_config(
             self.data_dir.clone(),
             self.max_file_size_mb,
@@ -190,8 +288,7 @@ impl SyncWorker {
         )?;
 
         // Create historical query descriptor
-        let descriptor =
-            BlockchainDescriptor::historical(StreamType::Blocks, self.from_block, self.to_block);
+        let descriptor = BlockchainDescriptor::historical(StreamType::Blocks, from_block, to_block);
 
         // Subscribe to the block stream (returns Arrow RecordBatches)
         let mut stream = client
@@ -201,6 +298,10 @@ impl SyncWorker {
 
         let mut batches_processed = 0u64;
         let mut bytes_written = 0u64;
+        let mut first_block_seen: Option<u64> = None;
+        let mut last_block_seen: Option<u64> = None;
+        let mut schema: Option<arrow::datatypes::SchemaRef> = None;
+
         while let Some(batch_result) = stream.next().await {
             let batch = batch_result.context("Failed to receive block batch")?;
 
@@ -209,6 +310,23 @@ impl SyncWorker {
                 self.worker_id,
                 batch.num_rows()
             );
+
+            // Track the block range we actually received
+            if batch.num_rows() > 0 {
+                if let Some(block_col) = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                {
+                    let first = block_col.value(0);
+                    let last = block_col.value(block_col.len() - 1);
+
+                    if first_block_seen.is_none() {
+                        first_block_seen = Some(first);
+                    }
+                    last_block_seen = Some(last);
+                }
+            }
 
             let batch_bytes = batch.get_array_memory_size() as u64;
             bytes_written += batch_bytes;
@@ -222,21 +340,39 @@ impl SyncWorker {
             batches_processed += 1;
         }
 
-        writer.finalize_current_file()?;
+        // Validate we got the expected range
+        if batches_processed > 0 {
+            if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
+                if first != from_block {
+                    anyhow::bail!(
+                        "Bridge returned blocks starting at {} but requested range started at {}",
+                        first,
+                        from_block
+                    );
+                }
+                if last != to_block {
+                    anyhow::bail!(
+                        "Bridge returned blocks ending at {} but requested range ended at {}",
+                        last,
+                        to_block
+                    );
+                }
+            }
+            writer.finalize_current_file()?;
+        } else {
+            // No data received - write empty marker to mark range as checked
+            write_empty_marker(&self.data_dir, "blocks", from_block, to_block)?;
+        }
 
-        info!(
-            "Worker {} completed block sync ({} batches, {} bytes)",
-            self.worker_id, batches_processed, bytes_written
-        );
         Ok((batches_processed, bytes_written))
     }
 
-    async fn sync_transactions(&mut self, client: &mut FlightBridgeClient) -> Result<(u64, u64)> {
-        info!(
-            "Worker {} syncing transactions {}-{}",
-            self.worker_id, self.from_block, self.to_block
-        );
-
+    async fn sync_transactions_range(
+        &mut self,
+        client: &mut FlightBridgeClient,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<(u64, u64)> {
         let mut writer = ParquetWriter::with_config(
             self.data_dir.clone(),
             self.max_file_size_mb,
@@ -246,11 +382,8 @@ impl SyncWorker {
         )?;
 
         // Create historical query descriptor for transactions
-        let descriptor = BlockchainDescriptor::historical(
-            StreamType::Transactions,
-            self.from_block,
-            self.to_block,
-        );
+        let descriptor =
+            BlockchainDescriptor::historical(StreamType::Transactions, from_block, to_block);
 
         // Subscribe to the transaction stream (returns Arrow RecordBatches)
         let mut stream = client
@@ -260,6 +393,9 @@ impl SyncWorker {
 
         let mut batches_processed = 0u64;
         let mut bytes_written = 0u64;
+        let mut first_block_seen: Option<u64> = None;
+        let mut last_block_seen: Option<u64> = None;
+
         while let Some(batch_result) = stream.next().await {
             let batch = batch_result.context("Failed to receive transaction batch")?;
 
@@ -268,6 +404,23 @@ impl SyncWorker {
                 self.worker_id,
                 batch.num_rows()
             );
+
+            // Track the block range we actually received
+            if batch.num_rows() > 0 {
+                if let Some(block_col) = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                {
+                    let first = block_col.value(0);
+                    let last = block_col.value(block_col.len() - 1);
+
+                    if first_block_seen.is_none() {
+                        first_block_seen = Some(first);
+                    }
+                    last_block_seen = Some(last);
+                }
+            }
 
             let batch_bytes = batch.get_array_memory_size() as u64;
             bytes_written += batch_bytes;
@@ -281,21 +434,39 @@ impl SyncWorker {
             batches_processed += 1;
         }
 
-        writer.finalize_current_file()?;
+        // Validate we got the expected range
+        if batches_processed > 0 {
+            if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
+                if first != from_block {
+                    anyhow::bail!(
+                        "Bridge returned transactions starting at block {} but requested range started at {}",
+                        first,
+                        from_block
+                    );
+                }
+                if last != to_block {
+                    anyhow::bail!(
+                        "Bridge returned transactions ending at block {} but requested range ended at {}",
+                        last,
+                        to_block
+                    );
+                }
+            }
+            writer.finalize_current_file()?;
+        } else {
+            // No data received - write empty marker to mark range as checked
+            write_empty_marker(&self.data_dir, "transactions", from_block, to_block)?;
+        }
 
-        info!(
-            "Worker {} completed transaction sync ({} batches, {} bytes)",
-            self.worker_id, batches_processed, bytes_written
-        );
         Ok((batches_processed, bytes_written))
     }
 
-    async fn sync_logs(&mut self, client: &mut FlightBridgeClient) -> Result<(u64, u64)> {
-        info!(
-            "Worker {} syncing logs {}-{}",
-            self.worker_id, self.from_block, self.to_block
-        );
-
+    async fn sync_logs_range(
+        &mut self,
+        client: &mut FlightBridgeClient,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<(u64, u64)> {
         let mut writer = ParquetWriter::with_config(
             self.data_dir.clone(),
             self.max_file_size_mb,
@@ -305,8 +476,7 @@ impl SyncWorker {
         )?;
 
         // Create historical query descriptor for logs (uses ExecuteBlocks)
-        let descriptor =
-            BlockchainDescriptor::historical(StreamType::Logs, self.from_block, self.to_block);
+        let descriptor = BlockchainDescriptor::historical(StreamType::Logs, from_block, to_block);
 
         // Subscribe to the log stream (returns Arrow RecordBatches)
         let mut stream = client
@@ -316,6 +486,9 @@ impl SyncWorker {
 
         let mut batches_processed = 0u64;
         let mut bytes_written = 0u64;
+        let mut first_block_seen: Option<u64> = None;
+        let mut last_block_seen: Option<u64> = None;
+
         while let Some(batch_result) = stream.next().await {
             let batch = batch_result.context("Failed to receive log batch")?;
 
@@ -324,6 +497,23 @@ impl SyncWorker {
                 self.worker_id,
                 batch.num_rows()
             );
+
+            // Track the block range we actually received
+            if batch.num_rows() > 0 {
+                if let Some(block_col) = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<arrow_array::UInt64Array>()
+                {
+                    let first = block_col.value(0);
+                    let last = block_col.value(block_col.len() - 1);
+
+                    if first_block_seen.is_none() {
+                        first_block_seen = Some(first);
+                    }
+                    last_block_seen = Some(last);
+                }
+            }
 
             let batch_bytes = batch.get_array_memory_size() as u64;
             bytes_written += batch_bytes;
@@ -337,12 +527,30 @@ impl SyncWorker {
             batches_processed += 1;
         }
 
-        writer.finalize_current_file()?;
+        // Validate we got the expected range
+        if batches_processed > 0 {
+            if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
+                if first != from_block {
+                    anyhow::bail!(
+                        "Bridge returned logs starting at block {} but requested range started at {}",
+                        first,
+                        from_block
+                    );
+                }
+                if last != to_block {
+                    anyhow::bail!(
+                        "Bridge returned logs ending at block {} but requested range ended at {}",
+                        last,
+                        to_block
+                    );
+                }
+            }
+            writer.finalize_current_file()?;
+        } else {
+            // No data received - write empty marker to mark range as checked
+            write_empty_marker(&self.data_dir, "logs", from_block, to_block)?;
+        }
 
-        info!(
-            "Worker {} completed log sync ({} batches, {} bytes)",
-            self.worker_id, batches_processed, bytes_written
-        );
         Ok((batches_processed, bytes_written))
     }
 }

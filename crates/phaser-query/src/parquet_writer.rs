@@ -20,6 +20,7 @@ pub struct ParquetWriter {
     segment_size: u64,
     data_type: String, // "blocks", "transactions", or "logs"
     parquet_config: Option<ParquetConfig>,
+    is_live: bool, // true for live streaming, false for historical sync
 }
 
 struct CurrentFile {
@@ -47,6 +48,24 @@ impl ParquetWriter {
         data_type: String,
         parquet_config: Option<ParquetConfig>,
     ) -> Result<Self> {
+        Self::with_config_and_mode(
+            data_dir,
+            max_file_size_mb,
+            segment_size,
+            data_type,
+            parquet_config,
+            false, // historical sync by default
+        )
+    }
+
+    pub fn with_config_and_mode(
+        data_dir: PathBuf,
+        max_file_size_mb: u64,
+        segment_size: u64,
+        data_type: String,
+        parquet_config: Option<ParquetConfig>,
+        is_live: bool,
+    ) -> Result<Self> {
         // Create data directory if it doesn't exist
         fs::create_dir_all(&data_dir)?;
 
@@ -57,6 +76,7 @@ impl ParquetWriter {
             segment_size,
             data_type,
             parquet_config,
+            is_live,
         })
     }
 
@@ -65,8 +85,8 @@ impl ParquetWriter {
         let (first_block, last_block) = if let Some(array) = batch
             .column(0)
             .as_any()
-            .downcast_ref::<arrow_array::UInt64Array>()
-        {
+            .downcast_ref::<arrow_array::UInt64Array>(
+        ) {
             if !array.is_empty() {
                 let first = array.value(0);
                 let last = array.value(array.len() - 1);
@@ -127,12 +147,23 @@ impl ParquetWriter {
 
     fn start_new_file(&mut self, block_num: u64, schema: arrow_schema::SchemaRef) -> Result<()> {
         // Create temporary filename with start block - will be renamed with actual range when finalized
-        // Format: {data_type}_from_{start}_{timestamp}.parquet.tmp
+        // Format for historical: {data_type}_from_{start}_{timestamp}.parquet.tmp
+        // Format for live: live_{data_type}_from_{start}_{timestamp}.tmp
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let filename = format!("{}_from_{}_{}.parquet.tmp", self.data_type, block_num, timestamp);
+        let filename = if self.is_live {
+            format!(
+                "live_{}_from_{}_{}.tmp",
+                self.data_type, block_num, timestamp
+            )
+        } else {
+            format!(
+                "{}_from_{}_{}.parquet.tmp",
+                self.data_type, block_num, timestamp
+            )
+        };
         let temp_path = self.data_dir.join(filename);
 
         info!(
@@ -260,6 +291,57 @@ impl ParquetWriter {
         if let Some(ref mut current) = self.current_file {
             current.writer.flush()?;
         }
+        Ok(())
+    }
+
+    /// Write an empty parquet file for a range with no data
+    /// This marks the range as "checked" so it won't be re-synced
+    pub fn write_empty_range(
+        &mut self,
+        schema: arrow_schema::SchemaRef,
+        start_block: u64,
+        end_block: u64,
+    ) -> Result<()> {
+        // Create temporary filename
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let filename = format!(
+            "{}_from_{}_{}.parquet.tmp",
+            self.data_type, start_block, timestamp
+        );
+        let temp_path = self.data_dir.join(filename);
+
+        info!(
+            "No data received for {} blocks {}-{}, creating empty parquet file",
+            self.data_type, start_block, end_block
+        );
+
+        let file = File::create(&temp_path)?;
+        let props = self.build_writer_properties(&schema)?;
+        let writer = ArrowWriter::try_new(file, schema, Some(props))?;
+
+        // Close the writer without writing any rows
+        writer.close()?;
+
+        // Build final filename with the range
+        let final_filename = format!(
+            "{}_from_{}_to_{}.parquet",
+            self.data_type, start_block, end_block
+        );
+        let final_path = self.data_dir.join(final_filename);
+
+        // Rename from .tmp to final name
+        fs::rename(&temp_path, &final_path)?;
+
+        info!(
+            "Created empty parquet file: {} for blocks {}-{} (no data in range)",
+            final_path.display(),
+            start_block,
+            end_block
+        );
+
         Ok(())
     }
 }
