@@ -6,6 +6,7 @@ members = [
     "crates/bridges/evm/erigon-bridge",
     "crates/bridges/evm/jsonrpc-bridge",
     "crates/schemas/evm/common",
+    "crates/validators/evm",
     "crates/phaser-integration-test",
 ]
 
@@ -15,6 +16,7 @@ erigon-bridge = { path = "crates/bridges/evm/erigon-bridge" }
 jsonrpc-bridge = { path = "crates/bridges/evm/jsonrpc-bridge" }
 phaser-bridge = { path = "crates/phaser-bridge" }
 evm-common = { path = "crates/schemas/evm/common", features = ["views"] }
+validators-evm = { path = "crates/validators/evm" }
 
 # External dependencies
 tokio = { version = "1.41", features = ["full"] }
@@ -53,6 +55,8 @@ thiserror = "1.0"
 anyhow = "1.0"
 axum = "0.7"
 jsonrpsee = { version = "0.24", features = ["server"] }
+rayon = "1.10"
+num_cpus = "1.16"
 
 # gRPC dependencies
 tonic = "0.13"

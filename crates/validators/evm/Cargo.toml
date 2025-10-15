@@ -1,0 +1,33 @@
+[package]
+name = "validators-evm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Internal crates
+evm-common = { workspace = true }
+
+# Alloy dependencies
+alloy-consensus = { workspace = true }
+alloy-trie = { workspace = true }
+alloy-rlp = { workspace = true }
+alloy-primitives = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Async
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = "0.3"
+
+# Serialization
+serde = { workspace = true }
+
+# Parallelism
+rayon = { workspace = true }
+num_cpus = { workspace = true }
+
+# core-executor
+core-executor = { git = "https://github.com/dwerner/core-executor" }
