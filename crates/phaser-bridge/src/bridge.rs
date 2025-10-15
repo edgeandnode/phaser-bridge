@@ -1,4 +1,3 @@
-use arrow_array::RecordBatch;
 use arrow_flight::{
     Criteria, FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
     SchemaResult, Ticket,
@@ -70,20 +69,4 @@ pub trait FlightBridge: Send + Sync + 'static {
 
     /// Check health/readiness of the bridge
     async fn health_check(&self) -> Result<bool, Status>;
-}
-
-/// Helper trait for converting node-specific data to Arrow format
-#[async_trait]
-pub trait DataConverter: Send + Sync {
-    /// Convert blocks to Arrow RecordBatch
-    async fn blocks_to_batch(&self, blocks: Vec<impl Send>) -> Result<RecordBatch, anyhow::Error>;
-
-    /// Convert transactions to Arrow RecordBatch
-    async fn transactions_to_batch(
-        &self,
-        txs: Vec<impl Send>,
-    ) -> Result<RecordBatch, anyhow::Error>;
-
-    /// Convert logs to Arrow RecordBatch
-    async fn logs_to_batch(&self, logs: Vec<impl Send>) -> Result<RecordBatch, anyhow::Error>;
 }
