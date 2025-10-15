@@ -2351,9 +2351,14 @@ name = "evm-common"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eip2930",
+ "alloy-eip7702",
  "alloy-network",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-rpc-types-eth",
+ "alloy-trie",
+ "anyhow",
  "arrow",
  "arrow-array",
  "serde",
@@ -3923,6 +3928,27 @@ dependencies = [
  "tonic",
  "tower 0.5.2",
  "tracing",
+]
+
+[[package]]
+name = "phaser-integration-test"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-trie",
+ "anyhow",
+ "arrow-array",
+ "clap",
+ "evm-common",
+ "parquet",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "typed-arrow",
 ]
 
 [[package]]
@@ -5641,22 +5667,20 @@ checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
 
 [[package]]
 name = "typed-arrow"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ee5739f7eb5c8885dc2429e20aa1f08d30173d0085ee6dddf4ba8183c6a88a3"
+version = "0.4.1"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
+ "arrow-data",
  "arrow-schema",
  "half",
+ "thiserror 2.0.16",
  "typed-arrow-derive",
 ]
 
 [[package]]
 name = "typed-arrow-derive"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "988fa11d760097999a2538dd2d325e3fa9551de91cc6458a69dbbaa88b616c1f"
+version = "0.4.1"
 dependencies = [
  "proc-macro2",
  "quote",
