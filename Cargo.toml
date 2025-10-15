@@ -6,6 +6,7 @@ members = [
     "crates/bridges/evm/erigon-bridge",
     "crates/bridges/evm/jsonrpc-bridge",
     "crates/schemas/evm/common",
+    "crates/phaser-integration-test",
 ]
 
 [workspace.dependencies]
@@ -13,20 +14,27 @@ members = [
 erigon-bridge = { path = "crates/bridges/evm/erigon-bridge" }
 jsonrpc-bridge = { path = "crates/bridges/evm/jsonrpc-bridge" }
 phaser-bridge = { path = "crates/phaser-bridge" }
-evm-common = { path = "crates/schemas/evm/common" }
+evm-common = { path = "crates/schemas/evm/common", features = ["views"] }
 
 # External dependencies
 tokio = { version = "1.41", features = ["full"] }
 async-trait = "0.1"
 datafusion = "49.0"
-arrow = "56.1"
-arrow-flight = "56.1"
-arrow-array = "56.1"
-typed-arrow = "0.4"
+arrow = "56"
+arrow-flight = "56"
+arrow-array = "56"
+typed-arrow = { path = "../../typed-arrow" }
 alloy-primitives = "1.3"
 alloy-consensus = "1.0"
 alloy-rlp = "0.3"
-alloy = { version = "1.0", features = ["full", "providers", "transports", "rpc", "pubsub"] }
+alloy-trie = "0.9"
+alloy = { version = "1.0", features = [
+    "full",
+    "providers",
+    "transports",
+    "rpc",
+    "pubsub",
+] }
 alloy-network = "1.0"
 alloy-rpc-types-eth = "1.0"
 alloy-pubsub = "1.0"
