@@ -69,3 +69,33 @@ impl From<u128> for Wei {
         }
     }
 }
+
+impl From<Wei> for U256 {
+    fn from(w: Wei) -> Self {
+        U256::from_le_bytes(w.bytes)
+    }
+}
+
+impl From<&Wei> for U256 {
+    fn from(w: &Wei) -> Self {
+        U256::from_le_bytes(w.bytes)
+    }
+}
+
+impl From<Wei> for u128 {
+    fn from(w: Wei) -> Self {
+        U256::from_le_bytes(w.bytes).to::<u128>()
+    }
+}
+
+impl From<&Wei> for u128 {
+    fn from(w: &Wei) -> Self {
+        U256::from_le_bytes(w.bytes).to::<u128>()
+    }
+}
+
+impl From<FixedBytes<20>> for Address20 {
+    fn from(b: FixedBytes<20>) -> Self {
+        Address20 { bytes: b.0 }
+    }
+}
