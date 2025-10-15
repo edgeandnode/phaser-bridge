@@ -153,17 +153,10 @@ impl ParquetWriter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let filename = if self.is_live {
-            format!(
-                "live_{}_from_{}_{}.tmp",
-                self.data_type, block_num, timestamp
-            )
-        } else {
-            format!(
-                "{}_from_{}_{}.parquet.tmp",
-                self.data_type, block_num, timestamp
-            )
-        };
+        let filename = format!(
+            "{}_from_{}_{}.parquet.tmp",
+            self.data_type, block_num, timestamp
+        );
         let temp_path = self.data_dir.join(filename);
 
         info!(
