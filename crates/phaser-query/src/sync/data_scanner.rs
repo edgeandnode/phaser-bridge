@@ -581,7 +581,9 @@ impl DataScanner {
                     // Empty marker file - parse filename for range
                     debug!("Found empty marker: {}", filename_str);
                     self.parse_filename(&path)?
-                } else if filename_str.ends_with(".parquet") && !filename_str.ends_with(".parquet.tmp") {
+                } else if filename_str.ends_with(".parquet")
+                    && !filename_str.ends_with(".parquet.tmp")
+                {
                     // Parquet file - try to read block range from statistics
                     // Empty parquet files (0 rows) will return None and be ignored
                     self.read_block_range_from_parquet(&path)?
@@ -747,7 +749,10 @@ impl DataScanner {
                 if let Some(range) = range {
                     // Only include if it overlaps with our segment
                     if range.start <= segment_end && range.end >= segment_start {
-                        info!("Found {} range {}-{} from {}", data_type, range.start, range.end, filename_str);
+                        info!(
+                            "Found {} range {}-{} from {}",
+                            data_type, range.start, range.end, filename_str
+                        );
                         covered_ranges.push(range);
                     }
                 }
