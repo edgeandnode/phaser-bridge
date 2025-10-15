@@ -127,6 +127,8 @@ pub struct ParquetConfig {
     pub row_group_size_mb: usize,
     #[serde(default)]
     pub column_options: HashMap<String, ColumnOptions>,
+    #[serde(default)]
+    pub generate_proofs: bool, // Generate merkle proofs for transactions
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

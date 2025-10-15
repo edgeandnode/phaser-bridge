@@ -3,6 +3,8 @@ use crate::sync::data_scanner::DataScanner;
 use crate::ParquetConfig;
 use anyhow::{Context, Result};
 use arrow::array as arrow_array;
+use evm_common::proof::{generate_transaction_proof, MerkleProofRecord};
+use evm_common::transaction::TransactionRecord;
 use futures::StreamExt;
 use phaser_bridge::client::FlightBridgeClient;
 use phaser_bridge::descriptors::{BlockchainDescriptor, StreamType};
@@ -10,7 +12,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+use typed_arrow::prelude::*;
 
 /// Write a 0-byte .empty file to mark a range as checked but containing no data
 fn write_empty_marker(
@@ -381,6 +384,29 @@ impl SyncWorker {
             self.parquet_config.clone(),
         )?;
 
+        // Check if proof generation is enabled
+        let generate_proofs = self
+            .parquet_config
+            .as_ref()
+            .map(|c| c.generate_proofs)
+            .unwrap_or(false);
+
+        let mut proof_writer = if generate_proofs {
+            info!(
+                "Worker {} will generate merkle proofs for transactions",
+                self.worker_id
+            );
+            Some(ParquetWriter::with_config(
+                self.data_dir.clone(),
+                self.max_file_size_mb,
+                self.segment_size,
+                "proofs".to_string(),
+                self.parquet_config.clone(),
+            )?)
+        } else {
+            None
+        };
+
         // Create historical query descriptor for transactions
         let descriptor =
             BlockchainDescriptor::historical(StreamType::Transactions, from_block, to_block);
@@ -425,6 +451,21 @@ impl SyncWorker {
             let batch_bytes = batch.get_array_memory_size() as u64;
             bytes_written += batch_bytes;
 
+            // Generate proofs if enabled
+            if let Some(ref mut proof_w) = proof_writer {
+                if let Ok(proof_batch) = self.generate_proofs_for_batch(&batch) {
+                    proof_w
+                        .write_batch(proof_batch)
+                        .await
+                        .context("Failed to write proof batch")?;
+                } else {
+                    warn!(
+                        "Worker {} failed to generate proofs for batch",
+                        self.worker_id
+                    );
+                }
+            }
+
             // Write Arrow RecordBatch directly to parquet
             writer
                 .write_batch(batch)
@@ -459,6 +500,63 @@ impl SyncWorker {
         }
 
         Ok((batches_processed, bytes_written))
+    }
+
+    fn generate_proofs_for_batch(
+        &self,
+        batch: &arrow::array::RecordBatch,
+    ) -> Result<arrow::array::RecordBatch> {
+        use alloy_consensus::TxEnvelope;
+        use std::collections::BTreeMap;
+
+        // Convert RecordBatch to TransactionRecords
+        let views = batch.iter_views::<TransactionRecord>()?;
+        let tx_records: Vec<TransactionRecord> = views
+            .try_flatten()?
+            .into_iter()
+            .map(|v| v.try_into())
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Group transactions by block number
+        let mut txs_by_block: BTreeMap<u64, Vec<TransactionRecord>> = BTreeMap::new();
+        for tx in tx_records {
+            txs_by_block.entry(tx.block_num).or_default().push(tx);
+        }
+
+        // Generate proofs for each block
+        let mut all_proofs = Vec::new();
+        for (block_num, txs) in txs_by_block {
+            // Convert transactions to RLP
+            let tx_rlps: Vec<Vec<u8>> = txs
+                .iter()
+                .filter_map(|tx| {
+                    TxEnvelope::try_from(tx)
+                        .ok()
+                        .map(|envelope| alloy_rlp::encode(&envelope))
+                })
+                .collect();
+
+            // Generate proof for each transaction
+            for (index, _tx) in txs.iter().enumerate() {
+                if let Ok((root, proof_nodes, value)) = generate_transaction_proof(&tx_rlps, index)
+                {
+                    let proof = MerkleProofRecord::new_transaction_proof(
+                        block_num,
+                        index as u64,
+                        root,
+                        proof_nodes,
+                        value,
+                    );
+                    all_proofs.push(proof);
+                }
+            }
+        }
+
+        // Convert proofs to RecordBatch
+        let mut builder = <MerkleProofRecord as BuildRows>::new_builders(all_proofs.len());
+        builder.append_rows(all_proofs);
+        let arrays = builder.finish();
+        Ok(arrays.into_record_batch())
     }
 
     async fn sync_logs_range(
