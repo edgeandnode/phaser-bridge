@@ -1,5 +1,6 @@
 use crate::types::{Address20, Hash32, Wei};
 use alloy_consensus::Header;
+use alloy_primitives::B256;
 use typed_arrow::Record;
 
 /// EVM Block schema - common across all EVM chains
@@ -72,14 +73,12 @@ pub struct BlockRecord {
     pub parent_beacon_root: Option<Hash32>,
 }
 
-impl From<&Header> for BlockRecord {
-    fn from(header: &Header) -> Self {
-        let block_num = header.number;
-        let hash = header.hash_slow();
-
+impl BlockRecord {
+    /// Create BlockRecord from Header with known hash
+    pub fn from_header_with_hash(hash: B256, header: &Header) -> Self {
         BlockRecord {
-            _block_num: block_num,
-            block_num,
+            _block_num: header.number,
+            block_num: header.number,
             timestamp: header.timestamp as i64 * 1_000_000_000,
             hash: hash.into(),
             parent_hash: header.parent_hash.into(),
@@ -101,6 +100,13 @@ impl From<&Header> for BlockRecord {
             excess_blob_gas: header.excess_blob_gas,
             parent_beacon_root: header.parent_beacon_block_root.map(Into::into),
         }
+    }
+}
+
+impl From<&Header> for BlockRecord {
+    fn from(header: &Header) -> Self {
+        let hash = header.hash_slow();
+        BlockRecord::from_header_with_hash(hash, header)
     }
 }
 

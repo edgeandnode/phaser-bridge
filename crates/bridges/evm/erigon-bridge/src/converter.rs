@@ -117,9 +117,12 @@ impl ErigonDataConverter {
             }
         };
 
+        // Compute block hash once (used by both header and transactions)
+        let block_hash = block.header.hash_slow();
+
         // Convert header to RecordBatch
         debug!("Converting header for block #{}", block.header.number);
-        let header_batch = Self::convert_header_to_batch(&block.header)?;
+        let header_batch = Self::convert_header_to_batch_with_hash(&block.header, block_hash)?;
         debug!(
             "Header batch created with {} rows, {} columns",
             header_batch.num_rows(),
@@ -133,7 +136,11 @@ impl ErigonDataConverter {
                 block.body.transactions.len(),
                 block.header.number
             );
-            let batch = Self::convert_transactions_to_batch(&block, &block_reply.senders)?;
+            let batch = Self::convert_transactions_to_batch_with_hash(
+                &block,
+                &block_reply.senders,
+                block_hash,
+            )?;
             debug!(
                 "Transaction batch created with {} rows, {} columns",
                 batch.num_rows(),
@@ -154,17 +161,20 @@ impl ErigonDataConverter {
         Ok((header_batch, tx_batch))
     }
 
-    /// Convert a header to RecordBatch using typed-arrow
-    fn convert_header_to_batch(header: &Header) -> Result<RecordBatch> {
+    /// Convert a header to RecordBatch with pre-computed hash
+    fn convert_header_to_batch_with_hash(
+        header: &Header,
+        hash: alloy_primitives::B256,
+    ) -> Result<RecordBatch> {
         debug!(
             "Processing block #{} at timestamp {} with hash 0x{}",
             header.number,
             header.timestamp,
-            hex::encode(header.hash_slow().as_slice())
+            hex::encode(hash.as_slice())
         );
 
-        // Convert header to BlockRecord using From trait
-        let block = BlockRecord::from(header);
+        // Use pre-computed hash to avoid recomputing
+        let block = BlockRecord::from_header_with_hash(hash, header);
 
         // Build RecordBatch using typed-arrow
         let mut builders = BlockRecord::new_builders(1);
@@ -229,6 +239,16 @@ impl ErigonDataConverter {
         block: &EthBlock,
         senders_bytes: &[u8],
     ) -> Result<RecordBatch> {
+        let block_hash = block.header.hash_slow();
+        Self::convert_transactions_to_batch_with_hash(block, senders_bytes, block_hash)
+    }
+
+    /// Convert transactions from a block to RecordBatch with pre-computed hash
+    fn convert_transactions_to_batch_with_hash(
+        block: &EthBlock,
+        senders_bytes: &[u8],
+        block_hash: alloy_primitives::B256,
+    ) -> Result<RecordBatch> {
         let num_txs = block.body.transactions.len();
         debug!(
             "Processing {} transactions for block #{}",
@@ -244,7 +264,7 @@ impl ErigonDataConverter {
             ));
         }
 
-        let block_hash = Hash32::from(block.header.hash_slow());
+        let block_hash = Hash32::from(block_hash);
         let timestamp = block.header.timestamp as i64 * 1_000_000_000;
 
         // Build transaction records

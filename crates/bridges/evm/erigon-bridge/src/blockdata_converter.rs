@@ -54,8 +54,9 @@ impl BlockDataConverter {
                 }
             };
 
-            // Use From impl: alloy Header → BlockRecord
-            let record = BlockRecord::from(&header);
+            // Use hash from Erigon (already computed) instead of recomputing via hash_slow()
+            let hash = alloy_primitives::B256::from_slice(&block_data.block_hash);
+            let record = BlockRecord::from_header_with_hash(hash, &header);
             builders.append_row(record);
         }
 
@@ -139,6 +140,86 @@ impl BlockDataConverter {
         }
 
         debug!("Converted {} transactions to Arrow", num_transactions);
+
+        let arrays = builders.finish();
+        Ok(arrays.into_record_batch())
+    }
+
+    /// Convert a batch of blocks with transactions directly to Arrow RecordBatch
+    ///
+    /// This is more efficient than transactions_to_arrow as it:
+    /// - Takes ownership of BlockData (no cloning)
+    /// - Extracts timestamps directly from headers (no HashMap)
+    /// - Processes transactions in a single pass
+    pub fn block_transactions_to_arrow(
+        blocks: Vec<crate::segment_worker::BlockData>,
+    ) -> Result<RecordBatch, ErigonBridgeError> {
+        // Pre-calculate total transactions for builder capacity
+        let total_transactions: usize = blocks.iter().map(|b| b.transactions.len()).sum();
+        let mut builders = TransactionRecord::new_builders(total_transactions);
+
+        // Process each block, moving transactions out
+        for block in blocks {
+            let timestamp = block.header.timestamp as i64 * 1_000_000_000;
+
+            // Process all transactions in this block (moving, not cloning)
+            for tx_data in block.transactions {
+                // Use block_hash from TransactionData (already provided by Erigon)
+                let block_hash_bytes: [u8; 32] =
+                    tx_data.block_hash.as_slice().try_into().map_err(|_| {
+                        ErigonBridgeError::InvalidData(format!(
+                            "Invalid block_hash size for block {} tx {}: expected 32 bytes, got {}",
+                            block.block_num,
+                            tx_data.tx_index,
+                            tx_data.block_hash.len()
+                        ))
+                    })?;
+                let block_hash = Hash32 {
+                    bytes: block_hash_bytes,
+                };
+
+                // Decode RLP → alloy TxEnvelope
+                let tx = match TxEnvelope::decode(&mut tx_data.rlp_transaction.as_slice()) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        error!(
+                            "Failed to decode RLP transaction for block {} tx {}: {}",
+                            block.block_num, tx_data.tx_index, e
+                        );
+                        continue;
+                    }
+                };
+
+                // Recover sender address from signature
+                let sender = match tx.recover_sender() {
+                    Some(addr) => addr,
+                    None => {
+                        warn!(
+                            "Failed to recover sender for block {} tx {} - skipping",
+                            block.block_num, tx_data.tx_index
+                        );
+                        continue;
+                    }
+                };
+
+                // Build context for conversion
+                let ctx = TransactionContext {
+                    tx: &tx,
+                    block_hash: block_hash.clone(),
+                    block_num: block.block_num,
+                    timestamp,
+                    tx_index: tx_data.tx_index,
+                    from: sender,
+                    gas_used: 0,   // Not available without receipt
+                    status: false, // Not available without receipt
+                };
+
+                let record = TransactionRecord::from(ctx);
+                builders.append_row(record);
+            }
+        }
+
+        debug!("Converted {} transactions to Arrow", total_transactions);
 
         let arrays = builders.finish();
         Ok(arrays.into_record_batch())
