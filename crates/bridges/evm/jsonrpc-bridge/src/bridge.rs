@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{error, info};
+use validators_evm::ValidationExecutor;
 
 /// A bridge that connects to any JSON-RPC compatible node
 pub struct JsonRpcFlightBridge {
@@ -25,6 +26,7 @@ pub struct JsonRpcFlightBridge {
     streaming_service: Arc<StreamingService>,
     node_url: String,
     max_batch_size: usize,
+    validator: Option<Arc<dyn ValidationExecutor>>,
 }
 
 impl JsonRpcFlightBridge {
@@ -32,6 +34,7 @@ impl JsonRpcFlightBridge {
     pub async fn new(
         node_url: String,
         chain_id: Option<u64>,
+        validator_config: Option<validators_evm::ExecutorConfig>,
     ) -> std::result::Result<Self, anyhow::Error> {
         let client = Arc::new(JsonRpcClient::connect(&node_url).await?);
 
@@ -47,6 +50,15 @@ impl JsonRpcFlightBridge {
             "Connected to node: {} (chain ID: {})",
             node_version, chain_id
         );
+
+        // Build validator if config is provided
+        let validator = validator_config.map(|config| {
+            let boxed_validator = config.build();
+            Arc::from(boxed_validator) as Arc<dyn ValidationExecutor>
+        });
+        if validator.is_some() {
+            info!("Validation enabled");
+        }
 
         // Create and start the streaming service
         let streaming_service = Arc::new(StreamingService::new(client.clone()));
@@ -64,6 +76,7 @@ impl JsonRpcFlightBridge {
             streaming_service,
             node_url,
             max_batch_size: 1000, // Default batch size, matches BridgeCapabilities
+            validator,
         })
     }
 
@@ -125,9 +138,11 @@ impl JsonRpcFlightBridge {
         stream_type: StreamType,
         start_block: u64,
         end_block: u64,
+        validate: bool,
     ) -> impl Stream<Item = Result<arrow::record_batch::RecordBatch, Status>> + Send {
         let client = self.client.clone();
         let batch_size = self.max_batch_size as u64;
+        let validator = self.validator.clone();
 
         async_stream::stream! {
             use alloy::eips::BlockNumberOrTag;
@@ -168,7 +183,9 @@ impl JsonRpcFlightBridge {
                         StreamType::Blocks => {
                             // Convert block header to RecordBatch
                             match evm_common::rpc_conversions::convert_any_header(&block.header) {
-                                Ok(batch) => record_batches.push(batch),
+                                Ok(batch) => {
+                                    record_batches.push(batch);
+                                },
                                 Err(e) => {
                                     error!("Failed to convert block header #{}: {}", block_num, e);
                                     yield Err(Status::internal(format!("Conversion error: {}", e)));
@@ -178,8 +195,47 @@ impl JsonRpcFlightBridge {
                         StreamType::Transactions => {
                             // Convert transactions (if any)
                             if !block.transactions.is_empty() {
+                                // Validate transactions if requested and validator is available
+                                if validate {
+                                    if let Some(ref val) = validator {
+                                        // Extract block record and transaction records for validation
+                                        // This validates our conversion: TransactionRecord → TxEnvelope → RLP → merkle root
+                                        let block_record = evm_common::rpc_conversions::convert_any_header_to_record(&block.header);
+
+                                        match evm_common::rpc_conversions::extract_transaction_records(&block) {
+                                            Ok(tx_records) => {
+                                                // Validate the transactions against the block's transactions_root
+                                                // Using spawn_validate_records() for post-conversion validation
+                                                match val.spawn_validate_records(block_record, tx_records).await {
+                                                    Ok(()) => {
+                                                        debug!("Validated {} transactions for block #{}", block.transactions.len(), block_num);
+                                                    },
+                                                    Err(e) => {
+                                                        error!("Transaction validation failed for block #{}: {}", block_num, e);
+                                                        yield Err(Status::internal(format!("Validation error for block {}: {}", block_num, e)));
+                                                        continue;
+                                                    }
+                                                }
+                                            },
+                                            Err(e) => {
+                                                error!("Failed to extract transaction records for validation: {}", e);
+                                                yield Err(Status::internal(format!("Failed to extract records for validation: {}", e)));
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        // Validation requested but no validator available
+                                        error!("Validation requested but validator not configured");
+                                        yield Err(Status::failed_precondition("Validation requested but validator not configured"));
+                                        return;
+                                    }
+                                }
+
+                                // Convert to RecordBatch after validation
                                 match JsonRpcConverter::convert_transactions(&block) {
-                                    Ok(batch) => record_batches.push(batch),
+                                    Ok(batch) => {
+                                        record_batches.push(batch);
+                                    },
                                     Err(e) => {
                                         error!("Failed to convert transactions for block #{}: {}", block_num, e);
                                         yield Err(Status::internal(format!("Conversion error: {}", e)));
@@ -254,6 +310,7 @@ impl FlightBridge for JsonRpcFlightBridge {
             supports_streaming: true, // Always support streaming (HTTP uses polling, WS/IPC use subscriptions)
             supports_reorg_notifications: false,
             supports_filters: true,
+            supports_validation: self.validator.is_some(),
             max_batch_size: self.max_batch_size,
         })
     }
@@ -377,13 +434,30 @@ impl FlightBridge for JsonRpcFlightBridge {
         // Get schema for the stream type
         let schema = Self::get_schema_for_type(stream_type)?;
 
+        // Determine if we should do conversion validation
+        // JSON-RPC doesn't give us raw RLP, so we can only do conversion validation
+        use phaser_bridge::ValidationStage;
+        let should_validate_conversion = matches!(
+            blockchain_desc.validation,
+            ValidationStage::Conversion | ValidationStage::Both
+        );
+
         // Branch based on query mode
         let batch_stream: Pin<
             Box<dyn Stream<Item = Result<arrow::record_batch::RecordBatch, Status>> + Send>,
         > = match query_mode {
             QueryMode::Historical { start, end } => {
                 // Historical query - fetch specific block range
-                Box::pin(self.create_historical_stream(stream_type, start, end))
+                info!(
+                    "Creating historical stream for {:?} blocks {}-{} (validation: {:?})",
+                    stream_type, start, end, blockchain_desc.validation
+                );
+                Box::pin(self.create_historical_stream(
+                    stream_type,
+                    start,
+                    end,
+                    should_validate_conversion,
+                ))
             }
             QueryMode::Live => {
                 // Live streaming - subscribe to broadcast channels

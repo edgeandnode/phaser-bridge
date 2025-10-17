@@ -16,6 +16,7 @@ pub struct BridgeCapabilities {
     pub supports_streaming: bool,
     pub supports_reorg_notifications: bool,
     pub supports_filters: bool,
+    pub supports_validation: bool,
     pub max_batch_size: usize,
 }
 

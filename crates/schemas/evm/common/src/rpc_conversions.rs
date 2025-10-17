@@ -38,8 +38,8 @@ pub fn convert_rpc_header(header: &RpcHeader) -> Result<RecordBatch> {
         extra_data: header.extra_data.clone(),
     };
 
-    // Use existing From trait implementation
-    let block_record = BlockRecord::from(&consensus_header);
+    // Use hash from RPC response (already computed) instead of recomputing
+    let block_record = BlockRecord::from_header_with_hash(header.hash, &consensus_header);
 
     // Build RecordBatch
     let mut builders = BlockRecord::new_builders(1);
@@ -66,8 +66,8 @@ pub fn convert_rpc_block(block: &AnyRpcBlock) -> Result<(RecordBatch, Option<Rec
     Ok((header_batch, tx_batch))
 }
 
-/// Convert RPC transactions from an AnyRpcBlock
-pub fn convert_rpc_transactions(block: &AnyRpcBlock) -> Result<RecordBatch> {
+/// Extract transaction records from an AnyRpcBlock
+pub fn extract_transaction_records(block: &AnyRpcBlock) -> Result<Vec<TransactionRecord>> {
     let header = &block.header;
     let block_num = header.number;
     let block_hash = header.hash;
@@ -77,7 +77,7 @@ pub fn convert_rpc_transactions(block: &AnyRpcBlock) -> Result<RecordBatch> {
         EvmCommonError::InvalidBlock("Block does not contain full transactions".to_string())
     })?;
 
-    let mut builders = TransactionRecord::new_builders(transactions.len());
+    let mut records = Vec::new();
 
     for (idx, any_rpc_tx) in transactions.iter().enumerate() {
         // Try to extract TxEnvelope from AnyRpcTransaction
@@ -98,12 +98,24 @@ pub fn convert_rpc_transactions(block: &AnyRpcBlock) -> Result<RecordBatch> {
             };
 
             let record = TransactionRecord::from(context);
-            builders.append_row(record);
+            records.push(record);
         } else {
             // Handle unknown transaction types
             // For now, skip them
             continue;
         }
+    }
+
+    Ok(records)
+}
+
+/// Convert RPC transactions from an AnyRpcBlock
+pub fn convert_rpc_transactions(block: &AnyRpcBlock) -> Result<RecordBatch> {
+    let records = extract_transaction_records(block)?;
+
+    let mut builders = TransactionRecord::new_builders(records.len());
+    for record in records {
+        builders.append_row(record);
     }
 
     let arrays = builders.finish();
@@ -151,8 +163,8 @@ pub fn convert_rpc_logs(
     Ok(arrays.into_record_batch())
 }
 
-/// Convert an AnyHeader to a block RecordBatch
-pub fn convert_any_header(header: &AnyHeader) -> Result<RecordBatch> {
+/// Convert an AnyHeader to a BlockRecord
+pub fn convert_any_header_to_record(header: &AnyHeader) -> BlockRecord {
     // AnyHeader derefs to the inner consensus header
     let consensus_header = ConsensusHeader {
         parent_hash: header.parent_hash,
@@ -178,8 +190,14 @@ pub fn convert_any_header(header: &AnyHeader) -> Result<RecordBatch> {
         extra_data: header.extra_data.clone(),
     };
 
-    // Use existing From trait implementation
-    let block_record = BlockRecord::from(&consensus_header);
+    // AnyHeader doesn't expose hash field, so compute it from consensus header
+    let hash = consensus_header.hash_slow();
+    BlockRecord::from_header_with_hash(hash, &consensus_header)
+}
+
+/// Convert an AnyHeader to a block RecordBatch
+pub fn convert_any_header(header: &AnyHeader) -> Result<RecordBatch> {
+    let block_record = convert_any_header_to_record(header);
 
     // Build RecordBatch
     let mut builders = BlockRecord::new_builders(1);

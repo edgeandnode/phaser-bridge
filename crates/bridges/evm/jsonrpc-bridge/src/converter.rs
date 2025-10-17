@@ -25,11 +25,6 @@ impl JsonRpcConverter {
         evm_common::log_arrow_schema()
     }
 
-    /// Convert an RPC header to a block RecordBatch
-    pub fn convert_header(header: &RpcHeader) -> Result<RecordBatch> {
-        Ok(rpc_conversions::convert_rpc_header(header)?)
-    }
-
     /// Convert an AnyRpcBlock to RecordBatches
     pub fn convert_block(block: &AnyRpcBlock) -> Result<(RecordBatch, Option<RecordBatch>)> {
         Ok(rpc_conversions::convert_rpc_block(block)?)

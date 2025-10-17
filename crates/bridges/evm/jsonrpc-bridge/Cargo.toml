@@ -15,6 +15,7 @@ path = "src/main.rs"
 # Bridge framework
 phaser-bridge = { workspace = true }
 evm-common = { workspace = true }
+validators-evm = { workspace = true }
 
 # Alloy - all from workspace
 alloy = { workspace = true }
@@ -50,3 +51,4 @@ hex = "0.4"
 tokio-stream = "0.1"
 tower = "0.5"
 hyper-util = "0.1"
+num_cpus = { workspace = true }

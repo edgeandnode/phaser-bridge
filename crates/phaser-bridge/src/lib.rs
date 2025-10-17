@@ -6,7 +6,7 @@ pub mod subscription;
 
 pub use bridge::{BridgeCapabilities, FlightBridge};
 pub use client::FlightBridgeClient;
-pub use descriptors::{BlockchainDescriptor, StreamType};
+pub use descriptors::{BlockchainDescriptor, StreamType, ValidationStage};
 pub use server::FlightBridgeServer;
 pub use subscription::{
     BackpressureStrategy, BlockRange, ControlAction, DataAvailability, DataSource, FilterSpec,

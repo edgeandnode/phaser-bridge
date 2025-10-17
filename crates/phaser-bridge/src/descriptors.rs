@@ -12,6 +12,26 @@ pub enum StreamType {
     Trie, // Raw trie nodes for state reconstruction
 }
 
+/// Validation stages for blockchain data
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ValidationStage {
+    /// No validation
+    None,
+    /// Validate RLP at ingestion (node → bridge)
+    Ingestion,
+    /// Validate records after conversion (conversion → storage)
+    Conversion,
+    /// Validate at both stages
+    Both,
+}
+
+impl Default for ValidationStage {
+    fn default() -> Self {
+        ValidationStage::None
+    }
+}
+
 impl std::fmt::Display for StreamType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -31,6 +51,8 @@ pub struct BlockchainDescriptor {
     pub query_mode: QueryMode,
     pub subscription_options: Option<SubscriptionOptions>,
     pub include_reorgs: bool,
+    #[serde(default)]
+    pub validation: ValidationStage,
 }
 
 impl BlockchainDescriptor {
@@ -42,6 +64,7 @@ impl BlockchainDescriptor {
             query_mode: QueryMode::Historical { start, end },
             subscription_options: None,
             include_reorgs: false,
+            validation: ValidationStage::None,
         }
     }
 
@@ -53,7 +76,32 @@ impl BlockchainDescriptor {
             query_mode: QueryMode::Live,
             subscription_options: None,
             include_reorgs: false,
+            validation: ValidationStage::None,
         }
+    }
+
+    /// Set validation stage for this descriptor
+    pub fn with_validation(mut self, stage: ValidationStage) -> Self {
+        self.validation = stage;
+        self
+    }
+
+    /// Enable ingestion validation (validates RLP from node)
+    pub fn with_ingestion_validation(mut self) -> Self {
+        self.validation = ValidationStage::Ingestion;
+        self
+    }
+
+    /// Enable conversion validation (validates records after conversion)
+    pub fn with_conversion_validation(mut self) -> Self {
+        self.validation = ValidationStage::Conversion;
+        self
+    }
+
+    /// Enable both ingestion and conversion validation
+    pub fn with_full_validation(mut self) -> Self {
+        self.validation = ValidationStage::Both;
+        self
     }
 }
 

@@ -5,16 +5,19 @@ mod client;
 mod converter;
 mod error;
 mod proto;
+mod segment_worker;
 mod streaming_service;
 mod trie_client;
 mod trie_converter;
 
 use anyhow::Result;
 use clap::Parser;
+use segment_worker::SegmentConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+use validators_evm::ExecutorType;
 
 use bridge::ErigonFlightBridge;
 use phaser_bridge::FlightBridgeServer;
@@ -38,6 +41,26 @@ struct Args {
     /// Chain ID
     #[arg(long, env = "CHAIN_ID", default_value_t = 1)]
     chain_id: u64,
+
+    /// Validation executor type (tokio or core)
+    #[arg(long, env = "EXECUTOR", value_parser = clap::value_parser!(ExecutorType))]
+    executor: Option<ExecutorType>,
+
+    /// Number of threads for validation executor (defaults to core count)
+    #[arg(long, env = "EXECUTOR_THREADS")]
+    threads: Option<usize>,
+
+    /// Segment size in blocks (aligned with Erigon snapshots, default: 500_000)
+    #[arg(long, env = "SEGMENT_SIZE", default_value_t = 500_000)]
+    segment_size: u64,
+
+    /// Maximum number of segments to process in parallel (default: num_cpus / 4)
+    #[arg(long, env = "MAX_CONCURRENT_SEGMENTS")]
+    max_concurrent_segments: Option<usize>,
+
+    /// Validation batch size within a segment (default: 100 blocks)
+    #[arg(long, env = "VALIDATION_BATCH_SIZE", default_value_t = 100)]
+    validation_batch_size: usize,
 }
 
 #[tokio::main]
@@ -69,14 +92,48 @@ async fn main() -> Result<()> {
     info!("Endpoint: {}", endpoint);
     info!("Chain ID: {}", args.chain_id);
 
+    // Build validator config if executor is specified
+    let validator_config = args
+        .executor
+        .map(|executor_type| executor_type.build_config(args.threads));
+
+    if let Some(ref config) = validator_config {
+        info!("Validation enabled with executor: {:?}", config);
+    }
+
+    // Build segment config
+    let segment_config = SegmentConfig {
+        segment_size: args.segment_size,
+        max_concurrent_segments: args
+            .max_concurrent_segments
+            .unwrap_or_else(|| (num_cpus::get() / 4).max(1)),
+        validation_batch_size: args.validation_batch_size,
+    };
+
+    info!("Segment configuration:");
+    info!("  Segment size: {} blocks", segment_config.segment_size);
+    info!(
+        "  Max concurrent segments: {}",
+        segment_config.max_concurrent_segments
+    );
+    info!(
+        "  Validation batch size: {} blocks",
+        segment_config.validation_batch_size
+    );
+
     // Create the bridge
     let bridge = Arc::new(
-        ErigonFlightBridge::new(args.erigon_grpc, args.chain_id)
-            .await
-            .map_err(|e| {
-                error!("Failed to create bridge: {}", e);
-                e
-            })?,
+        ErigonFlightBridge::new(
+            args.erigon_grpc,
+            args.chain_id,
+            validator_config,
+            Some(segment_config),
+        )
+        .await
+        .map_err(|e| {
+            error!("Failed to create bridge: {}", e);
+            e
+        })?,
     );
 
     // Create the Flight server
