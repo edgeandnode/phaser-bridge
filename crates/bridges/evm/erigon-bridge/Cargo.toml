@@ -15,6 +15,7 @@ path = "src/main.rs"
 # Local dependencies
 phaser-bridge = { workspace = true }
 evm-common = { workspace = true }
+validators-evm = { workspace = true }
 
 # Typed Arrow support
 typed-arrow = { workspace = true }
@@ -54,6 +55,7 @@ tracing-subscriber = { workspace = true }
 chrono = "0.4"
 hex = "0.4"
 async-stream = "0.3"
+num_cpus = { workspace = true }
 
 # Ethereum types and RLP
 alloy-consensus = { workspace = true }

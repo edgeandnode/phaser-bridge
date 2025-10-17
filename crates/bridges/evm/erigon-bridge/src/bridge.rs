@@ -3,7 +3,7 @@ use arrow_flight::{
     FlightInfo, HandshakeRequest, HandshakeResponse, SchemaResult, Ticket,
 };
 use async_trait::async_trait;
-use futures::{stream, Stream, StreamExt};
+use futures::{stream, Stream, StreamExt as FuturesStreamExt};
 use phaser_bridge::{
     bridge::{BridgeCapabilities, FlightBridge},
     descriptors::{BridgeInfo, StreamType},
@@ -11,16 +11,17 @@ use phaser_bridge::{
 use std::pin::Pin;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info};
+use validators_evm::ValidationExecutor;
 
 use crate::blockdata_client::BlockDataClient;
 use crate::blockdata_converter::BlockDataConverter;
 use crate::client::ErigonClient;
 use crate::converter::ErigonDataConverter;
 use crate::error::ErigonBridgeError;
+use crate::segment_worker::{split_into_segments, SegmentConfig, SegmentWorker};
 use crate::streaming_service::StreamingService;
 use crate::trie_client::TrieClient;
 use crate::trie_converter;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tonic::Status as TonicStatus;
 
@@ -31,10 +32,18 @@ pub struct ErigonFlightBridge {
     trie_client: Option<Arc<tokio::sync::Mutex<TrieClient>>>,
     chain_id: u64,
     streaming_service: Arc<StreamingService>,
+    validator: Option<Arc<dyn ValidationExecutor>>,
+    segment_config: SegmentConfig,
+    endpoint: String,
 }
 
 impl ErigonFlightBridge {
-    pub async fn new(endpoint: String, chain_id: u64) -> Result<Self, anyhow::Error> {
+    pub async fn new(
+        endpoint: String,
+        chain_id: u64,
+        validator_config: Option<validators_evm::ExecutorConfig>,
+        segment_config: Option<SegmentConfig>,
+    ) -> Result<Self, anyhow::Error> {
         let client = ErigonClient::connect(endpoint.clone()).await?;
 
         // Try to connect to the TrieBackend service (custom Erigon only)
@@ -62,6 +71,15 @@ impl ErigonFlightBridge {
         // Create BlockDataClient for historical queries
         let blockdata_client = BlockDataClient::connect(endpoint.clone()).await?;
 
+        // Build validator if config is provided
+        let validator = validator_config.map(|config| {
+            let boxed_validator = config.build();
+            Arc::from(boxed_validator) as Arc<dyn ValidationExecutor>
+        });
+        if validator.is_some() {
+            info!("Validation enabled");
+        }
+
         // Create the streaming service for live subscriptions
         let streaming_service = Arc::new(StreamingService::new(client.clone()));
 
@@ -79,6 +97,9 @@ impl ErigonFlightBridge {
             trie_client,
             chain_id,
             streaming_service,
+            validator,
+            segment_config: segment_config.unwrap_or_default(),
+            endpoint,
         })
     }
 
@@ -159,20 +180,162 @@ impl ErigonFlightBridge {
         Ok(stream)
     }
 
+    /// Process transactions using segment-based workers
+    ///
+    /// Extracted as a separate function to avoid lifetime capture issues
+    fn process_transactions_with_segments(
+        blockdata_client: BlockDataClient,
+        config: SegmentConfig,
+        validator: Option<Arc<dyn ValidationExecutor>>,
+        start: u64,
+        end: u64,
+        validate: bool,
+    ) -> impl Stream<Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>> + Send
+    {
+        let max_concurrent = config.max_concurrent_segments;
+        let should_validate = validate && validator.is_some();
+
+        // Split range into segments
+        let segments = split_into_segments(start, end, config.segment_size);
+
+        // Process segments in parallel but emit results in order
+        futures::stream::iter(segments)
+            .map(move |(seg_start, seg_end): (u64, u64)| {
+                let client = blockdata_client.clone(); // Clone shares the underlying HTTP/2 connection
+                let config = config.clone();
+                let validator = if should_validate {
+                    validator.clone()
+                } else {
+                    None
+                };
+
+                async move {
+                    let worker = SegmentWorker::new(seg_start, seg_end, client, config, validator);
+
+                    // Convert the stream to handle FlightError
+                    worker.process().map(move |result| {
+                        result.map_err(|e| {
+                            error!(
+                                "Segment {}-{}: Processing failed: {}",
+                                seg_start, seg_end, e
+                            );
+                            arrow_flight::error::FlightError::ExternalError(Box::new(
+                                std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    format!("Segment {}-{} failed: {}", seg_start, seg_end, e),
+                                ),
+                            ))
+                        })
+                    })
+                }
+            })
+            .buffered(max_concurrent)
+            .flatten()
+    }
+
+    /// Process logs using segment-based workers
+    ///
+    /// Extracted as a separate function to avoid lifetime capture issues
+    fn process_logs_with_segments(
+        blockdata_client: BlockDataClient,
+        config: SegmentConfig,
+        validator: Option<Arc<dyn ValidationExecutor>>,
+        start: u64,
+        end: u64,
+        validate: bool,
+    ) -> impl Stream<Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>> + Send
+    {
+        let max_concurrent = config.max_concurrent_segments;
+        let should_validate = validate && validator.is_some();
+
+        // Split range into segments
+        let segments = split_into_segments(start, end, config.segment_size);
+
+        // Process segments in parallel but emit results in order
+        futures::stream::iter(segments)
+            .map(move |(seg_start, seg_end): (u64, u64)| {
+                let client = blockdata_client.clone(); // Clone shares the underlying HTTP/2 connection
+                let config = config.clone();
+                let validator = if should_validate {
+                    validator.clone()
+                } else {
+                    None
+                };
+
+                async move {
+                    let worker =
+                        SegmentWorker::new_for_logs(seg_start, seg_end, client, config, validator);
+
+                    // Convert the stream to handle FlightError
+                    worker.process().map(move |result| {
+                        result.map_err(|e| {
+                            error!(
+                                "Segment {}-{}: Log processing failed: {}",
+                                seg_start, seg_end, e
+                            );
+                            arrow_flight::error::FlightError::ExternalError(Box::new(
+                                std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    format!("Segment {}-{} failed: {}", seg_start, seg_end, e),
+                                ),
+                            ))
+                        })
+                    })
+                }
+            })
+            .buffered(max_concurrent)
+            .flatten()
+    }
+
     /// Create a historical stream that fetches data from Erigon for a block range
     async fn create_historical_stream(
         &self,
         stream_type: StreamType,
         start: u64,
         end: u64,
+        validate: bool,
     ) -> Result<
-        impl Stream<Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>> + Send,
+        Pin<
+            Box<
+                dyn Stream<
+                        Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>,
+                    > + Send
+                    + 'static,
+            >,
+        >,
         Status,
     > {
         info!(
             "Creating historical stream for {:?} from block {} to {}",
             stream_type, start, end
         );
+
+        // Handle transactions and logs separately since they use segment workers
+        if stream_type == StreamType::Transactions {
+            let client = self.blockdata_client.lock().await.clone();
+            let stream = Self::process_transactions_with_segments(
+                client,
+                self.segment_config.clone(),
+                self.validator.clone(),
+                start,
+                end,
+                validate,
+            );
+            return Ok(Box::pin(stream));
+        }
+
+        if stream_type == StreamType::Logs {
+            let client = self.blockdata_client.lock().await.clone();
+            let stream = Self::process_logs_with_segments(
+                client,
+                self.segment_config.clone(),
+                self.validator.clone(),
+                start,
+                end,
+                validate,
+            );
+            return Ok(Box::pin(stream));
+        }
 
         let blockdata_client = self.blockdata_client.clone();
 
@@ -225,163 +388,12 @@ impl ErigonFlightBridge {
                     info!("Block stream ended after receiving {} batches", batch_count);
                 }
                 StreamType::Transactions => {
-                    // For transactions, we need to get block timestamps first
-                    let mut client_guard = blockdata_client.lock().await;
-
-                    // First get blocks to extract timestamps
-                    let mut timestamps = HashMap::new();
-                    let mut block_stream = match client_guard.stream_blocks(start, end, 100).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("Failed to start block stream for timestamps: {}", e);
-                            yield Err(arrow_flight::error::FlightError::ExternalError(
-                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                            ));
-                            return;
-                        }
-                    };
-
-                    // Collect timestamps
-                    let mut block_batch_count = 0;
-                    while let Some(batch_result) = block_stream.message().await.transpose() {
-                        if let Ok(block_batch) = batch_result {
-                            block_batch_count += 1;
-                            info!("Received batch {} from BlockDataBackend for timestamps with {} blocks", block_batch_count, block_batch.blocks.len());
-                            use alloy_consensus::Header;
-                            use alloy_rlp::Decodable;
-                            for block in &block_batch.blocks {
-                                // Decode RLP header to get timestamp
-                                if let Ok(header) = Header::decode(&mut block.rlp_header.as_slice()) {
-                                    timestamps.insert(block.block_number, header.timestamp as i64);
-                                }
-                            }
-                        }
-                    }
-                    info!("Block stream for timestamps ended after receiving {} batches, collected {} timestamps", block_batch_count, timestamps.len());
-
-                    // Now stream transactions
-                    let mut tx_stream = match client_guard.stream_transactions(start, end, 100).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("Failed to start transaction stream: {}", e);
-                            yield Err(arrow_flight::error::FlightError::ExternalError(
-                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                            ));
-                            return;
-                        }
-                    };
-                    drop(client_guard);
-
-                    let mut tx_batch_count = 0;
-                    while let Some(batch_result) = tx_stream.message().await.transpose() {
-                        match batch_result {
-                            Ok(tx_batch) => {
-                                tx_batch_count += 1;
-                                info!("Received batch {} from BlockDataBackend with {} transactions", tx_batch_count, tx_batch.transactions.len());
-                                match BlockDataConverter::transactions_to_arrow(tx_batch, &timestamps) {
-                                    Ok(record_batch) => {
-                                        info!("Converted transaction batch {} with {} rows", tx_batch_count, record_batch.num_rows());
-                                        yield Ok(record_batch);
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to convert transaction batch: {}", e);
-                                        yield Err(arrow_flight::error::FlightError::ExternalError(
-                                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                                        ));
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to receive transaction batch: {}", e);
-                                yield Err(arrow_flight::error::FlightError::ExternalError(
-                                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                                ));
-                                break;
-                            }
-                        }
-                    }
-                    info!("Transaction stream ended after receiving {} batches", tx_batch_count);
+                    // Unreachable - handled before async_stream::stream! block
+                    unreachable!("Transactions handled separately")
                 }
                 StreamType::Logs => {
-                    // For logs, we need to execute blocks to generate receipts
-                    let mut client_guard = blockdata_client.lock().await;
-
-                    // First get blocks to extract timestamps
-                    let mut timestamps = HashMap::new();
-                    let mut block_stream = match client_guard.stream_blocks(start, end, 100).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("Failed to start block stream for timestamps: {}", e);
-                            yield Err(arrow_flight::error::FlightError::ExternalError(
-                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                            ));
-                            return;
-                        }
-                    };
-
-                    // Collect timestamps
-                    let mut block_batch_count = 0;
-                    while let Some(batch_result) = block_stream.message().await.transpose() {
-                        if let Ok(block_batch) = batch_result {
-                            block_batch_count += 1;
-                            info!("Received batch {} from BlockDataBackend for timestamps with {} blocks", block_batch_count, block_batch.blocks.len());
-                            use alloy_consensus::Header;
-                            use alloy_rlp::Decodable;
-                            for block in &block_batch.blocks {
-                                // Decode RLP header to get timestamp
-                                if let Ok(header) = Header::decode(&mut block.rlp_header.as_slice()) {
-                                    timestamps.insert(block.block_number, header.timestamp as i64);
-                                }
-                            }
-                        }
-                    }
-                    info!("Block stream for timestamps ended after receiving {} batches, collected {} timestamps", block_batch_count, timestamps.len());
-
-                    // Now execute blocks to get receipts (which contain logs)
-                    info!("Executing blocks {}-{} to generate receipts/logs (this may be slow)", start, end);
-                    let mut receipt_stream = match client_guard.execute_blocks(start, end, 100).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("Failed to start receipt stream: {}", e);
-                            yield Err(arrow_flight::error::FlightError::ExternalError(
-                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                            ));
-                            return;
-                        }
-                    };
-                    drop(client_guard);
-
-                    let mut receipt_batch_count = 0;
-                    while let Some(batch_result) = receipt_stream.message().await.transpose() {
-                        match batch_result {
-                            Ok(receipt_batch) => {
-                                receipt_batch_count += 1;
-                                info!("Received batch {} from BlockDataBackend with {} receipts", receipt_batch_count, receipt_batch.receipts.len());
-                                match BlockDataConverter::receipts_to_logs_arrow(receipt_batch, &timestamps) {
-                                    Ok(record_batch) => {
-                                        info!("Converted receipt batch {} to {} log rows", receipt_batch_count, record_batch.num_rows());
-                                        yield Ok(record_batch);
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to convert receipt batch: {}", e);
-                                        yield Err(arrow_flight::error::FlightError::ExternalError(
-                                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                                        ));
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to receive receipt batch: {}", e);
-                                yield Err(arrow_flight::error::FlightError::ExternalError(
-                                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                                ));
-                                break;
-                            }
-                        }
-                    }
-                    info!("Receipt/log stream ended after receiving {} batches", receipt_batch_count);
+                    // Unreachable - handled before async_stream::stream! block
+                    unreachable!("Logs handled separately")
                 }
                 StreamType::Trie => {
                     error!("Historical trie streaming not supported");
@@ -397,7 +409,7 @@ impl ErigonFlightBridge {
             info!("Completed historical stream for {:?} blocks {}-{}", stream_type, start, end);
         };
 
-        Ok(stream)
+        Ok(Box::pin(stream))
     }
 
     /// Get the Arrow schema for a given stream type
@@ -428,6 +440,7 @@ impl FlightBridge for ErigonFlightBridge {
             supports_streaming: true,
             supports_reorg_notifications: false,
             supports_filters: false,
+            supports_validation: self.validator.is_some(),
             max_batch_size: 1000,
         })
     }
@@ -570,6 +583,14 @@ impl FlightBridge for ErigonFlightBridge {
 
         // Handle based on query mode
         use phaser_bridge::subscription::QueryMode;
+        use phaser_bridge::ValidationStage;
+
+        // Determine if we should do ingestion validation
+        let should_validate_ingestion = matches!(
+            blockchain_desc.validation,
+            ValidationStage::Ingestion | ValidationStage::Both
+        );
+
         let batch_stream: Pin<
             Box<
                 dyn Stream<
@@ -578,10 +599,18 @@ impl FlightBridge for ErigonFlightBridge {
             >,
         > = match query_mode {
             QueryMode::Historical { start, end } => {
-                info!("Creating historical stream for blocks {}-{}", start, end);
+                info!(
+                    "Creating historical stream for blocks {}-{} (validation: {:?})",
+                    start, end, blockchain_desc.validation
+                );
                 Box::pin(
-                    self.create_historical_stream(stream_type, start, end)
-                        .await?,
+                    self.create_historical_stream(
+                        stream_type,
+                        start,
+                        end,
+                        should_validate_ingestion,
+                    )
+                    .await?,
                 )
             }
             QueryMode::Live => {
