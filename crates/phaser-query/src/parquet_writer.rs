@@ -116,6 +116,9 @@ impl ParquetWriter {
             current.row_count += batch.num_rows();
             current.end_block = last_block; // Track the last block we've written
 
+            // Flush to disk after each batch to avoid buffering everything in RAM
+            current.writer.flush()?;
+
             debug!(
                 "Wrote batch with {} rows to {}, total rows: {}, blocks: {}-{}",
                 batch.num_rows(),

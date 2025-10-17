@@ -7,7 +7,7 @@ use evm_common::proof::{generate_transaction_proof, MerkleProofRecord};
 use evm_common::transaction::TransactionRecord;
 use futures::StreamExt;
 use phaser_bridge::client::FlightBridgeClient;
-use phaser_bridge::descriptors::{BlockchainDescriptor, StreamType};
+use phaser_bridge::descriptors::{BlockchainDescriptor, StreamType, ValidationStage};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,6 +66,7 @@ pub struct SyncWorker {
     _batch_size: u32,
     parquet_config: Option<ParquetConfig>,
     progress_tracker: Option<ProgressTracker>,
+    validation_stage: ValidationStage,
 }
 
 impl SyncWorker {
@@ -79,6 +80,7 @@ impl SyncWorker {
         max_file_size_mb: u64,
         batch_size: u32,
         parquet_config: Option<ParquetConfig>,
+        validation_stage: ValidationStage,
     ) -> Self {
         Self {
             worker_id,
@@ -91,6 +93,7 @@ impl SyncWorker {
             _batch_size: batch_size,
             parquet_config,
             progress_tracker: None,
+            validation_stage,
         }
     }
 
@@ -407,9 +410,10 @@ impl SyncWorker {
             None
         };
 
-        // Create historical query descriptor for transactions
+        // Create historical query descriptor for transactions with configured validation stage
         let descriptor =
-            BlockchainDescriptor::historical(StreamType::Transactions, from_block, to_block);
+            BlockchainDescriptor::historical(StreamType::Transactions, from_block, to_block)
+                .with_validation(self.validation_stage);
 
         // Subscribe to the transaction stream (returns Arrow RecordBatches)
         let mut stream = client
@@ -475,25 +479,31 @@ impl SyncWorker {
             batches_processed += 1;
         }
 
-        // Validate we got the expected range
+        // Validate we got data within the expected range
+        // Note: Early blocks may have no transactions, so first block can be > from_block
         if batches_processed > 0 {
             if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
-                if first != from_block {
+                if first < from_block || first > to_block {
                     anyhow::bail!(
-                        "Bridge returned transactions starting at block {} but requested range started at {}",
+                        "Bridge returned transactions starting at block {} which is outside requested range {}-{}",
                         first,
-                        from_block
+                        from_block,
+                        to_block
                     );
                 }
-                if last != to_block {
+                if last < from_block || last > to_block {
                     anyhow::bail!(
-                        "Bridge returned transactions ending at block {} but requested range ended at {}",
+                        "Bridge returned transactions ending at block {} which is outside requested range {}-{}",
                         last,
+                        from_block,
                         to_block
                     );
                 }
             }
             writer.finalize_current_file()?;
+            if let Some(ref mut proof_w) = proof_writer {
+                proof_w.finalize_current_file()?;
+            }
         } else {
             // No data received - write empty marker to mark range as checked
             write_empty_marker(&self.data_dir, "transactions", from_block, to_block)?;
@@ -573,8 +583,9 @@ impl SyncWorker {
             self.parquet_config.clone(),
         )?;
 
-        // Create historical query descriptor for logs (uses ExecuteBlocks)
-        let descriptor = BlockchainDescriptor::historical(StreamType::Logs, from_block, to_block);
+        // Create historical query descriptor for logs with configured validation stage
+        let descriptor = BlockchainDescriptor::historical(StreamType::Logs, from_block, to_block)
+            .with_validation(self.validation_stage);
 
         // Subscribe to the log stream (returns Arrow RecordBatches)
         let mut stream = client
@@ -625,20 +636,23 @@ impl SyncWorker {
             batches_processed += 1;
         }
 
-        // Validate we got the expected range
+        // Validate we got data within the expected range
+        // Note: Early blocks may have no logs, so first block can be > from_block
         if batches_processed > 0 {
             if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
-                if first != from_block {
+                if first < from_block || first > to_block {
                     anyhow::bail!(
-                        "Bridge returned logs starting at block {} but requested range started at {}",
+                        "Bridge returned logs starting at block {} which is outside requested range {}-{}",
                         first,
-                        from_block
+                        from_block,
+                        to_block
                     );
                 }
-                if last != to_block {
+                if last < from_block || last > to_block {
                     anyhow::bail!(
-                        "Bridge returned logs ending at block {} but requested range ended at {}",
+                        "Bridge returned logs ending at block {} which is outside requested range {}-{}",
                         last,
+                        from_block,
                         to_block
                     );
                 }

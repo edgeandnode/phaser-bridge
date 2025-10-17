@@ -202,6 +202,7 @@ impl SyncServer {
             let progress_tracker = progress_tracker.clone();
             let parquet_config = config.parquet.clone();
             let failed_segments = failed_segments.clone();
+            let validation_stage = config.validation_stage;
 
             let handle = tokio::spawn(async move {
                 let mut worker_errors = 0u32;
@@ -244,6 +245,7 @@ impl SyncServer {
                         max_file_size_mb,
                         1000, // batch_size
                         parquet_config.clone(),
+                        validation_stage,
                     )
                     .with_progress_tracker(progress_tracker.clone());
 
