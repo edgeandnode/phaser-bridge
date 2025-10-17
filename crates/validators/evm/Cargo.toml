@@ -25,8 +25,10 @@ futures = "0.3"
 # Serialization
 serde = { workspace = true }
 
+# Encoding
+hex = "0.4"
+
 # Parallelism
-rayon = { workspace = true }
 num_cpus = { workspace = true }
 
 # core-executor

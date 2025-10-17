@@ -1,6 +1,9 @@
 use crate::error::ValidationError;
 use crate::executor::ValidationExecutor;
-use crate::validation::validate_transactions_root;
+use crate::validation::{
+    validate_receipts_rlp, validate_transactions_rlp, validate_transactions_root,
+};
+use alloy_primitives::{Bytes, B256};
 use async_trait::async_trait;
 use core_executor::ThreadPoolExecutor;
 use evm_common::block::BlockRecord;
@@ -53,7 +56,49 @@ impl CoreExecutor {
 
 #[async_trait]
 impl ValidationExecutor for CoreExecutor {
-    async fn validate_block(
+    async fn spawn_validate_rlp(
+        &self,
+        expected_root: B256,
+        transaction_rlps: Vec<Bytes>,
+    ) -> Result<(), ValidationError> {
+        // Lock briefly to spawn the task
+        let future = {
+            let mut executor = self.executor.lock().unwrap();
+            executor.spawn_on_any(async move {
+                let rlp_refs: Vec<_> = transaction_rlps.iter().map(|b| b.as_ref()).collect();
+                validate_transactions_rlp(expected_root, &rlp_refs)
+            })
+        };
+        // Lock is released here
+
+        // Await the future without holding the lock
+        future
+            .await
+            .map_err(|_| ValidationError::TaskJoinError("Task channel closed".to_string()))?
+    }
+
+    async fn spawn_validate_receipts_rlp(
+        &self,
+        expected_root: B256,
+        receipt_rlps: Vec<Bytes>,
+    ) -> Result<(), ValidationError> {
+        // Lock briefly to spawn the task
+        let future = {
+            let mut executor = self.executor.lock().unwrap();
+            executor.spawn_on_any(async move {
+                let rlp_refs: Vec<_> = receipt_rlps.iter().map(|b| b.as_ref()).collect();
+                validate_receipts_rlp(expected_root, &rlp_refs)
+            })
+        };
+        // Lock is released here
+
+        // Await the future without holding the lock
+        future
+            .await
+            .map_err(|_| ValidationError::TaskJoinError("Task channel closed".to_string()))?
+    }
+
+    async fn spawn_validate_records(
         &self,
         block: BlockRecord,
         transactions: Vec<TransactionRecord>,
@@ -71,7 +116,7 @@ impl ValidationExecutor for CoreExecutor {
             .map_err(|_| ValidationError::TaskJoinError("Task channel closed".to_string()))?
     }
 
-    async fn validate_batch(
+    async fn spawn_validate_batch(
         &self,
         blocks: Vec<(BlockRecord, Vec<TransactionRecord>)>,
     ) -> Vec<Result<(), ValidationError>> {

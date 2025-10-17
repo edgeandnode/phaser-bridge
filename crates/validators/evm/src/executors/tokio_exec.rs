@@ -1,6 +1,9 @@
 use crate::error::ValidationError;
 use crate::executor::ValidationExecutor;
-use crate::validation::validate_transactions_root;
+use crate::validation::{
+    validate_receipts_rlp, validate_transactions_rlp, validate_transactions_root,
+};
+use alloy_primitives::{Bytes, B256};
 use async_trait::async_trait;
 use evm_common::block::BlockRecord;
 use evm_common::transaction::TransactionRecord;
@@ -25,7 +28,31 @@ impl TokioExecutor {
 
 #[async_trait]
 impl ValidationExecutor for TokioExecutor {
-    async fn validate_block(
+    async fn spawn_validate_rlp(
+        &self,
+        expected_root: B256,
+        transaction_rlps: Vec<Bytes>,
+    ) -> Result<(), ValidationError> {
+        tokio::task::spawn_blocking(move || {
+            let rlp_refs: Vec<_> = transaction_rlps.iter().map(|b| b.as_ref()).collect();
+            validate_transactions_rlp(expected_root, &rlp_refs)
+        })
+        .await?
+    }
+
+    async fn spawn_validate_receipts_rlp(
+        &self,
+        expected_root: B256,
+        receipt_rlps: Vec<Bytes>,
+    ) -> Result<(), ValidationError> {
+        tokio::task::spawn_blocking(move || {
+            let rlp_refs: Vec<_> = receipt_rlps.iter().map(|b| b.as_ref()).collect();
+            validate_receipts_rlp(expected_root, &rlp_refs)
+        })
+        .await?
+    }
+
+    async fn spawn_validate_records(
         &self,
         block: BlockRecord,
         transactions: Vec<TransactionRecord>,
@@ -34,7 +61,7 @@ impl ValidationExecutor for TokioExecutor {
             .await?
     }
 
-    async fn validate_batch(
+    async fn spawn_validate_batch(
         &self,
         blocks: Vec<(BlockRecord, Vec<TransactionRecord>)>,
     ) -> Vec<Result<(), ValidationError>> {

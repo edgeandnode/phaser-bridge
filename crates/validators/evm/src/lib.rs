@@ -26,6 +26,9 @@ pub mod validation;
 
 // Re-export main types for convenience
 pub use error::ValidationError;
-pub use executor::{ExecutorConfig, ValidationExecutor};
-pub use executors::{CoreExecutor, RayonExecutor, TokioExecutor};
-pub use validation::{compute_transactions_root, validate_transactions_root};
+pub use executor::{ExecutorConfig, ExecutorType, ValidationExecutor};
+pub use executors::{CoreExecutor, TokioExecutor};
+pub use validation::{
+    compute_receipts_root_from_rlp, compute_transactions_root, compute_transactions_root_from_rlp,
+    validate_receipts_rlp, validate_transactions_rlp, validate_transactions_root,
+};

@@ -2,11 +2,11 @@ use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]
 pub enum ValidationError {
-    #[error("Transaction root mismatch for block {block_num}: expected {expected:?}, computed {computed:?}")]
+    #[error("Transaction root mismatch: expected {expected}, computed {computed}")]
     RootMismatch {
         block_num: u64,
-        expected: [u8; 32],
-        computed: [u8; 32],
+        expected: String,
+        computed: String,
     },
 
     #[error("Failed to convert transaction at index {index} in block {block_num}: {message}")]
@@ -21,6 +21,9 @@ pub enum ValidationError {
 
     #[error("No transactions provided for validation")]
     NoTransactions,
+
+    #[error("No receipts provided for validation")]
+    NoReceipts,
 
     #[error("RLP encoding error: {0}")]
     RlpError(#[from] alloy_rlp::Error),
