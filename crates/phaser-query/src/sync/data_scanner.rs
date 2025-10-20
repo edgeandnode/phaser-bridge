@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
+use core_executor::ThreadPoolExecutor;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::statistics::Statistics;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 /// Represents a block range that has been synced
@@ -12,13 +15,45 @@ pub struct BlockRange {
     pub end: u64,
 }
 
+/// Work needed for a specific segment
+#[derive(Debug, Clone)]
+pub struct SegmentWork {
+    pub segment_num: u64,
+    pub segment_from: u64,
+    pub segment_to: u64,
+    pub missing_blocks: Vec<BlockRange>,
+    pub missing_transactions: Vec<BlockRange>,
+    pub missing_logs: Vec<BlockRange>,
+}
+
+impl SegmentWork {
+    pub fn is_complete(&self) -> bool {
+        self.missing_blocks.is_empty()
+            && self.missing_transactions.is_empty()
+            && self.missing_logs.is_empty()
+    }
+
+    pub fn missing_types(&self) -> Vec<String> {
+        let mut types = Vec::new();
+        if !self.missing_blocks.is_empty() {
+            types.push("blocks".to_string());
+        }
+        if !self.missing_transactions.is_empty() {
+            types.push("transactions".to_string());
+        }
+        if !self.missing_logs.is_empty() {
+            types.push("logs".to_string());
+        }
+        types
+    }
+}
+
 /// Analysis of what segments need syncing
 #[derive(Debug, Clone)]
 pub struct GapAnalysis {
     pub total_segments: u64,
     pub complete_segments: Vec<u64>,
-    pub missing_segments: Vec<u64>,
-    pub incomplete_segments: Vec<(u64, Vec<String>)>, // (segment_num, missing data types)
+    pub segments_needing_work: Vec<SegmentWork>,
     pub cleaned_temp_files: usize,
 }
 
@@ -28,7 +63,7 @@ impl GapAnalysis {
     }
 
     pub fn missing_count(&self) -> usize {
-        self.missing_segments.len()
+        self.segments_needing_work.len()
     }
 
     pub fn completion_percentage(&self) -> f64 {
@@ -39,18 +74,62 @@ impl GapAnalysis {
     }
 
     pub fn needs_sync(&self) -> bool {
-        !self.missing_segments.is_empty()
+        !self.segments_needing_work.is_empty()
+    }
+}
+
+/// In-memory catalog of existing data files
+/// Maps data_type -> Vec<BlockRange> for fast lookups
+#[derive(Debug, Clone)]
+struct DataCatalog {
+    blocks: Vec<BlockRange>,
+    transactions: Vec<BlockRange>,
+    logs: Vec<BlockRange>,
+}
+
+impl DataCatalog {
+    fn new() -> Self {
+        Self {
+            blocks: Vec::new(),
+            transactions: Vec::new(),
+            logs: Vec::new(),
+        }
+    }
+
+    fn get_ranges(&self, data_type: &str) -> &[BlockRange] {
+        match data_type {
+            "blocks" => &self.blocks,
+            "transactions" => &self.transactions,
+            "logs" => &self.logs,
+            _ => &[],
+        }
+    }
+
+    fn add_range(&mut self, data_type: &str, range: BlockRange) {
+        match data_type {
+            "blocks" => self.blocks.push(range),
+            "transactions" => self.transactions.push(range),
+            "logs" => self.logs.push(range),
+            _ => {}
+        }
+    }
+
+    fn sort_all(&mut self) {
+        self.blocks.sort_by_key(|r| r.start);
+        self.transactions.sort_by_key(|r| r.start);
+        self.logs.sort_by_key(|r| r.start);
     }
 }
 
 /// Scanner for detecting existing blockchain data
 pub struct DataScanner {
     data_dir: PathBuf,
+    executor: Arc<Mutex<ThreadPoolExecutor>>,
 }
 
 impl DataScanner {
-    pub fn new(data_dir: PathBuf) -> Self {
-        Self { data_dir }
+    pub fn new(data_dir: PathBuf, executor: Arc<Mutex<ThreadPoolExecutor>>) -> Self {
+        Self { data_dir, executor }
     }
 
     /// Scans parquet files to find existing block ranges
@@ -88,7 +167,10 @@ impl DataScanner {
 
     /// Read block range from Parquet file statistics
     /// This reads only the metadata (file footer), not the actual data
-    fn read_block_range_from_parquet(&self, path: &Path) -> Result<Option<BlockRange>> {
+    ///
+    /// NOTE: This is synchronous blocking I/O and should be called from
+    /// within the executor thread pool, not directly from async code.
+    fn read_block_range_from_parquet(path: &Path) -> Result<Option<BlockRange>> {
         // Only read finalized parquet files (not .tmp files) for statistics
         if path.extension().and_then(|s| s.to_str()) != Some("parquet") {
             return Ok(None);
@@ -385,9 +467,272 @@ impl DataScanner {
         Ok(cleaned_count)
     }
 
+    /// Build in-memory catalog of all existing data files with parallel processing
+    /// Uses core-executor to read parquet metadata from multiple files concurrently
+    async fn build_catalog(&self) -> Result<DataCatalog> {
+        let mut catalog = DataCatalog::new();
+
+        if !self.data_dir.exists() {
+            return Ok(catalog);
+        }
+
+        info!("Building data catalog from directory scan...");
+        let start_time = std::time::Instant::now();
+
+        // First pass: collect all file paths that need processing
+        #[derive(Debug)]
+        struct FileTask {
+            path: PathBuf,
+            data_type: String,
+            is_empty: bool,
+        }
+
+        let mut tasks = Vec::new();
+
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let filename = entry.file_name();
+            let filename_str = filename.to_string_lossy();
+
+            // Skip non-data files
+            if !filename_str.contains(".parquet") && !filename_str.ends_with(".empty") {
+                continue;
+            }
+
+            // Skip temp files
+            if filename_str.ends_with(".parquet.tmp") {
+                continue;
+            }
+
+            // Determine data type from filename
+            let data_type = if filename_str.starts_with("blocks_") {
+                "blocks"
+            } else if filename_str.starts_with("transactions_") {
+                "transactions"
+            } else if filename_str.starts_with("logs_") {
+                "logs"
+            } else {
+                continue; // Unknown file type
+            };
+
+            let is_empty = filename_str.ends_with(".empty");
+            tasks.push(FileTask {
+                path,
+                data_type: data_type.to_string(),
+                is_empty,
+            });
+        }
+
+        let total_files = tasks.len();
+        info!(
+            "Found {} data files to catalog (blocks, transactions, logs)",
+            total_files
+        );
+
+        if total_files == 0 {
+            return Ok(catalog);
+        }
+
+        // Process files in parallel using the executor
+        let futures: Vec<_> = {
+            let mut executor = self.executor.lock().unwrap();
+            tasks
+                .into_iter()
+                .enumerate()
+                .map(|(idx, task)| {
+                    let data_dir = self.data_dir.clone();
+                    executor.spawn_on_any(async move {
+                        // Progress logging every 50 files
+                        if idx > 0 && idx % 50 == 0 {
+                            info!("Cataloging progress: {}/{} files", idx, total_files);
+                        }
+
+                        let range = if task.is_empty {
+                            // Empty marker file - parse filename for range
+                            DataScanner::parse_filename_static(&task.path)?
+                        } else {
+                            // Parquet file - read block range from statistics (blocking I/O in executor)
+                            Self::read_block_range_from_parquet(&task.path)?
+                        };
+
+                        Ok::<_, anyhow::Error>((task.data_type, range))
+                    })
+                })
+                .collect()
+        };
+        // Executor lock released here
+
+        // Await all futures and collect results
+        for future in futures {
+            match future.await {
+                Ok(Ok((data_type, Some(range)))) => {
+                    catalog.add_range(&data_type, range);
+                }
+                Ok(Ok((_, None))) => {
+                    // No range found, skip
+                }
+                Ok(Err(e)) => {
+                    warn!("Failed to read file range: {}", e);
+                }
+                Err(e) => {
+                    warn!("Task execution failed: {:?}", e);
+                }
+            }
+        }
+
+        // Sort all ranges for efficient gap detection
+        catalog.sort_all();
+
+        let elapsed = start_time.elapsed();
+        info!(
+            "Catalog built in {:.2}s: {} blocks, {} transactions, {} logs files",
+            elapsed.as_secs_f64(),
+            catalog.blocks.len(),
+            catalog.transactions.len(),
+            catalog.logs.len()
+        );
+
+        Ok(catalog)
+    }
+
+    /// Static version of parse_filename for use in executor tasks
+    fn parse_filename_static(path: &Path) -> Result<Option<BlockRange>> {
+        let filename = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => return Ok(None),
+        };
+
+        // Skip non-parquet files
+        if !filename.contains(".parquet") {
+            return Ok(None);
+        }
+
+        // Parse filenames like:
+        // Finalized: blocks_0-499999_from_0_to_499999.parquet
+        // Temp: blocks_from_0_to_499999.parquet.tmp
+        // Temp (live): blocks_from_485689_to_499999.parquet.tmp
+
+        // Check if this contains the actual block range (both .tmp and finalized files)
+        if filename.contains("_from_") && filename.contains("_to_") {
+            if let Some(from_idx) = filename.find("_from_") {
+                if let Some(to_idx) = filename.find("_to_") {
+                    let start_str = &filename[from_idx + 6..to_idx];
+                    let end_part = &filename[to_idx + 4..];
+                    // Remove .parquet or .parquet.tmp extension
+                    let end_str = end_part
+                        .trim_end_matches(".parquet.tmp")
+                        .trim_end_matches(".parquet")
+                        .trim_end_matches(".empty");
+
+                    if let (Ok(start), Ok(end)) = (start_str.parse::<u64>(), end_str.parse::<u64>())
+                    {
+                        return Ok(Some(BlockRange { start, end }));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Compute gaps (missing ranges) for a data type within a segment
+    /// Returns Vec of BlockRange representing what needs to be synced
+    fn compute_gaps_in_segment(
+        catalog: &DataCatalog,
+        data_type: &str,
+        segment_start: u64,
+        segment_end: u64,
+    ) -> Vec<BlockRange> {
+        let ranges = catalog.get_ranges(data_type);
+        if ranges.is_empty() {
+            // No data at all - need entire segment
+            return vec![BlockRange {
+                start: segment_start,
+                end: segment_end,
+            }];
+        }
+
+        let mut gaps = Vec::new();
+        let mut covered_up_to = segment_start.saturating_sub(1);
+
+        for range in ranges {
+            // Only consider ranges that overlap with our segment
+            if range.end < segment_start || range.start > segment_end {
+                continue;
+            }
+
+            // If there's a gap before this range starts
+            if range.start > covered_up_to + 1 {
+                let gap_start = covered_up_to + 1;
+                let gap_end = (range.start - 1).min(segment_end);
+                if gap_start <= gap_end && gap_start >= segment_start {
+                    gaps.push(BlockRange {
+                        start: gap_start.max(segment_start),
+                        end: gap_end,
+                    });
+                }
+            }
+
+            covered_up_to = covered_up_to.max(range.end.min(segment_end));
+        }
+
+        // If there's a gap at the end
+        if covered_up_to < segment_end {
+            gaps.push(BlockRange {
+                start: covered_up_to + 1,
+                end: segment_end,
+            });
+        }
+
+        gaps
+    }
+
+    /// Check if a segment is complete using the in-memory catalog
+    fn is_segment_complete(
+        catalog: &DataCatalog,
+        data_type: &str,
+        segment_start: u64,
+        segment_end: u64,
+    ) -> bool {
+        let ranges = catalog.get_ranges(data_type);
+
+        if ranges.is_empty() {
+            return false;
+        }
+
+        // Check if the union of ranges covers [segment_start, segment_end]
+        let mut covered_up_to = segment_start.saturating_sub(1);
+
+        for range in ranges {
+            // Only consider ranges that could cover this segment
+            if range.end < segment_start {
+                continue; // This range ends before segment starts
+            }
+            if range.start > segment_end {
+                break; // Ranges are sorted, no more can overlap
+            }
+
+            // If there's a gap, segment is not complete
+            if range.start > covered_up_to + 1 {
+                return false;
+            }
+
+            // Extend coverage
+            covered_up_to = covered_up_to.max(range.end);
+
+            // If we've covered the entire segment, we're done
+            if covered_up_to >= segment_end {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Analyze sync range and find gaps
     /// Returns detailed analysis of what needs syncing
-    pub fn analyze_sync_range(
+    pub async fn analyze_sync_range(
         &self,
         from_block: u64,
         to_block: u64,
@@ -403,9 +748,8 @@ impl DataScanner {
             from_block, to_block, total_segments
         );
 
-        let mut missing_segments = Vec::new();
+        let mut segments_needing_work = Vec::new();
         let mut complete_segments = Vec::new();
-        let mut incomplete_segments = Vec::new(); // For detailed logging
 
         if !self.data_dir.exists() {
             info!(
@@ -413,45 +757,70 @@ impl DataScanner {
                 total_segments
             );
             for segment_num in first_segment..=last_segment {
-                missing_segments.push(segment_num);
+                let segment_from = segment_num * segment_size;
+                let segment_to = (segment_num + 1) * segment_size - 1;
+                segments_needing_work.push(SegmentWork {
+                    segment_num,
+                    segment_from,
+                    segment_to,
+                    missing_blocks: vec![BlockRange {
+                        start: segment_from,
+                        end: segment_to,
+                    }],
+                    missing_transactions: vec![BlockRange {
+                        start: segment_from,
+                        end: segment_to,
+                    }],
+                    missing_logs: vec![BlockRange {
+                        start: segment_from,
+                        end: segment_to,
+                    }],
+                });
             }
             return Ok(GapAnalysis {
                 total_segments,
                 complete_segments: Vec::new(),
-                missing_segments,
-                incomplete_segments: Vec::new(),
+                segments_needing_work,
                 cleaned_temp_files: 0,
             });
         }
 
+        // Build catalog once with parallel directory scan
+        let catalog = self.build_catalog().await?;
+
+        // Now check all segments against the catalog
         for segment_num in first_segment..=last_segment {
             let segment_start = segment_num * segment_size;
             let segment_end = segment_start + segment_size - 1;
 
-            // Check for completed segment files (all three data types must exist)
-            let blocks_complete =
-                self.has_completed_segment("blocks", segment_start, segment_end)?;
-            let txs_complete =
-                self.has_completed_segment("transactions", segment_start, segment_end)?;
-            let logs_complete = self.has_completed_segment("logs", segment_start, segment_end)?;
+            // Compute exact missing ranges for each data type
+            let missing_blocks =
+                Self::compute_gaps_in_segment(&catalog, "blocks", segment_start, segment_end);
+            let missing_transactions =
+                Self::compute_gaps_in_segment(&catalog, "transactions", segment_start, segment_end);
+            let missing_logs =
+                Self::compute_gaps_in_segment(&catalog, "logs", segment_start, segment_end);
 
-            if blocks_complete && txs_complete && logs_complete {
+            if missing_blocks.is_empty()
+                && missing_transactions.is_empty()
+                && missing_logs.is_empty()
+            {
                 complete_segments.push(segment_num);
                 debug!(
                     "Segment {} (blocks {}-{}) is complete",
                     segment_num, segment_start, segment_end
                 );
             } else {
-                // Track what's missing for better logging
+                // Build detailed work description
                 let mut missing_parts = Vec::new();
-                if !blocks_complete {
-                    missing_parts.push("blocks");
+                if !missing_blocks.is_empty() {
+                    missing_parts.push(format!("blocks ({} ranges)", missing_blocks.len()));
                 }
-                if !txs_complete {
-                    missing_parts.push("txs");
+                if !missing_transactions.is_empty() {
+                    missing_parts.push(format!("txs ({} ranges)", missing_transactions.len()));
                 }
-                if !logs_complete {
-                    missing_parts.push("logs");
+                if !missing_logs.is_empty() {
+                    missing_parts.push(format!("logs ({} ranges)", missing_logs.len()));
                 }
 
                 info!(
@@ -464,11 +833,15 @@ impl DataScanner {
 
                 // Clean any temp files for this segment
                 self.clean_temp_files_for_segment(segment_start, segment_end)?;
-                missing_segments.push(segment_num);
-                incomplete_segments.push((
+
+                segments_needing_work.push(SegmentWork {
                     segment_num,
-                    missing_parts.into_iter().map(|s| s.to_string()).collect(),
-                ));
+                    segment_from: segment_start,
+                    segment_to: segment_end,
+                    missing_blocks,
+                    missing_transactions,
+                    missing_logs,
+                });
             }
         }
 
@@ -521,38 +894,43 @@ impl DataScanner {
             }
         }
 
-        if missing_segments.is_empty() {
+        if segments_needing_work.is_empty() {
             info!(
                 "All {} segments already synced - nothing to do",
                 total_segments
             );
         } else {
             info!(
-                "Need to sync {} missing segments ({}% of range)",
-                missing_segments.len(),
-                (missing_segments.len() as f64 / total_segments as f64 * 100.0) as u32
+                "Need to sync {} segments ({}% of range)",
+                segments_needing_work.len(),
+                (segments_needing_work.len() as f64 / total_segments as f64 * 100.0) as u32
             );
         }
 
         Ok(GapAnalysis {
             total_segments,
             complete_segments,
-            missing_segments,
-            incomplete_segments,
+            segments_needing_work,
             cleaned_temp_files: 0, // Will be filled in by caller
         })
     }
 
     /// Legacy method - kept for backward compatibility
     /// Use analyze_sync_range() for detailed analysis
-    pub fn find_missing_segments(
+    pub async fn find_missing_segments(
         &self,
         from_block: u64,
         to_block: u64,
         segment_size: u64,
     ) -> Result<Vec<u64>> {
-        let analysis = self.analyze_sync_range(from_block, to_block, segment_size)?;
-        Ok(analysis.missing_segments)
+        let analysis = self
+            .analyze_sync_range(from_block, to_block, segment_size)
+            .await?;
+        Ok(analysis
+            .segments_needing_work
+            .iter()
+            .map(|w| w.segment_num)
+            .collect())
     }
 
     /// Check if completed parquet file(s) cover a specific segment
@@ -586,7 +964,7 @@ impl DataScanner {
                 {
                     // Parquet file - try to read block range from statistics
                     // Empty parquet files (0 rows) will return None and be ignored
-                    self.read_block_range_from_parquet(&path)?
+                    Self::read_block_range_from_parquet(&path)?
                 } else {
                     // Skip temp files and other extensions
                     None
@@ -740,7 +1118,7 @@ impl DataScanner {
                 } else if filename_str.ends_with(".parquet") {
                     // Parquet file - try to read block range from statistics
                     // Empty parquet files (0 rows) will return None and be ignored
-                    self.read_block_range_from_parquet(&path)?
+                    Self::read_block_range_from_parquet(&path)?
                 } else {
                     // Skip temp files and other extensions
                     None
@@ -839,6 +1217,122 @@ mod tests {
     use super::*;
     use std::fs::File;
     use tempfile::TempDir;
+
+    // Tests for compute_gaps_in_segment logic (in-memory, no files)
+    #[test]
+    fn test_compute_gaps_no_data() {
+        let catalog = DataCatalog::new();
+        let gaps = DataScanner::compute_gaps_in_segment(&catalog, "blocks", 0, 999);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].start, 0);
+        assert_eq!(gaps[0].end, 999);
+    }
+
+    #[test]
+    fn test_compute_gaps_complete_coverage() {
+        let mut catalog = DataCatalog::new();
+        catalog.add_range("blocks", BlockRange { start: 0, end: 999 });
+        let gaps = DataScanner::compute_gaps_in_segment(&catalog, "blocks", 0, 999);
+        assert_eq!(gaps.len(), 0, "No gaps when fully covered");
+    }
+
+    #[test]
+    fn test_compute_gaps_single_gap_at_start() {
+        let mut catalog = DataCatalog::new();
+        catalog.add_range(
+            "blocks",
+            BlockRange {
+                start: 500,
+                end: 999,
+            },
+        );
+        let gaps = DataScanner::compute_gaps_in_segment(&catalog, "blocks", 0, 999);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].start, 0);
+        assert_eq!(gaps[0].end, 499);
+    }
+
+    #[test]
+    fn test_compute_gaps_single_gap_at_end() {
+        let mut catalog = DataCatalog::new();
+        catalog.add_range("blocks", BlockRange { start: 0, end: 499 });
+        let gaps = DataScanner::compute_gaps_in_segment(&catalog, "blocks", 0, 999);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].start, 500);
+        assert_eq!(gaps[0].end, 999);
+    }
+
+    #[test]
+    fn test_compute_gaps_middle_gap() {
+        let mut catalog = DataCatalog::new();
+        catalog.add_range("blocks", BlockRange { start: 0, end: 299 });
+        catalog.add_range(
+            "blocks",
+            BlockRange {
+                start: 700,
+                end: 999,
+            },
+        );
+        let gaps = DataScanner::compute_gaps_in_segment(&catalog, "blocks", 0, 999);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].start, 300);
+        assert_eq!(gaps[0].end, 699);
+    }
+
+    #[test]
+    fn test_compute_gaps_multiple_gaps() {
+        let mut catalog = DataCatalog::new();
+        catalog.add_range(
+            "blocks",
+            BlockRange {
+                start: 100,
+                end: 199,
+            },
+        );
+        catalog.add_range(
+            "blocks",
+            BlockRange {
+                start: 400,
+                end: 599,
+            },
+        );
+        catalog.add_range(
+            "blocks",
+            BlockRange {
+                start: 800,
+                end: 899,
+            },
+        );
+        let gaps = DataScanner::compute_gaps_in_segment(&catalog, "blocks", 0, 999);
+        assert_eq!(
+            gaps.len(),
+            4,
+            "Expected 4 gaps: before 100, 200-399, 600-799, after 899"
+        );
+        assert_eq!(gaps[0].start, 0);
+        assert_eq!(gaps[0].end, 99);
+        assert_eq!(gaps[1].start, 200);
+        assert_eq!(gaps[1].end, 399);
+        assert_eq!(gaps[2].start, 600);
+        assert_eq!(gaps[2].end, 799);
+        assert_eq!(gaps[3].start, 900);
+        assert_eq!(gaps[3].end, 999);
+    }
+
+    #[test]
+    fn test_compute_gaps_overlapping_ranges() {
+        let mut catalog = DataCatalog::new();
+        catalog.add_range("blocks", BlockRange { start: 0, end: 500 });
+        catalog.add_range(
+            "blocks",
+            BlockRange {
+                start: 300,
+                end: 999,
+            },
+        ); // Overlaps
+        let gaps = DataScanner::compute_gaps_in_segment(&catalog, "blocks", 0, 999);
+        assert_eq!(gaps.len(), 0, "Overlapping ranges should cover everything");
+    }
 
     #[test]
     fn test_parse_finalized_filename() {

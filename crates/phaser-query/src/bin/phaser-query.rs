@@ -342,9 +342,20 @@ async fn start_sync_admin_server(
     config: PhaserConfig,
     live_state: Arc<LiveStreamingState>,
 ) -> Result<()> {
+    use core_executor::ThreadPoolExecutor;
     use phaser_query::sync::SyncServer;
+    use std::sync::{Arc as StdArc, Mutex};
 
-    let server = SyncServer::new(Arc::new(config.clone()), live_state);
+    // Create thread pool executor for I/O-bound work (parquet metadata scanning)
+    // Regular pool is sufficient since we're I/O-bound, not CPU-bound
+    let num_threads = num_cpus::get();
+    info!(
+        "DataScanner: Creating thread pool with {} threads for I/O-bound parquet scanning",
+        num_threads
+    );
+    let executor = StdArc::new(Mutex::new(ThreadPoolExecutor::new(num_threads)));
+
+    let server = SyncServer::new(Arc::new(config.clone()), live_state, executor);
     server.start(config.sync_admin_port).await?;
 
     Ok(())

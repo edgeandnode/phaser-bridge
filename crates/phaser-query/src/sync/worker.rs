@@ -67,6 +67,7 @@ pub struct SyncWorker {
     parquet_config: Option<ParquetConfig>,
     progress_tracker: Option<ProgressTracker>,
     validation_stage: ValidationStage,
+    segment_work: crate::sync::data_scanner::SegmentWork, // Pre-computed missing ranges
 }
 
 impl SyncWorker {
@@ -81,6 +82,7 @@ impl SyncWorker {
         batch_size: u32,
         parquet_config: Option<ParquetConfig>,
         validation_stage: ValidationStage,
+        segment_work: crate::sync::data_scanner::SegmentWork,
     ) -> Self {
         Self {
             worker_id,
@@ -94,6 +96,7 @@ impl SyncWorker {
             parquet_config,
             progress_tracker: None,
             validation_stage,
+            segment_work,
         }
     }
 
@@ -148,25 +151,35 @@ impl SyncWorker {
             self.worker_id, self.from_block, self.to_block, self.bridge_endpoint
         );
 
-        // Initialize progress
-        self.update_progress("scanning", false, false, false, self.from_block, 0, 0, 0)
-            .await;
-
-        // Scan for missing ranges using DataScanner
-        let scanner = DataScanner::new(self.data_dir.clone());
-        let missing_blocks =
-            scanner.find_missing_ranges("blocks", self.from_block, self.to_block)?;
-        let missing_txs =
-            scanner.find_missing_ranges("transactions", self.from_block, self.to_block)?;
-        let missing_logs = scanner.find_missing_ranges("logs", self.from_block, self.to_block)?;
+        // Use pre-computed missing ranges from segment_work (no file I/O needed!)
+        let missing_blocks = self.segment_work.missing_blocks.clone();
+        let missing_txs = self.segment_work.missing_transactions.clone();
+        let missing_logs = self.segment_work.missing_logs.clone();
 
         let blocks_complete = missing_blocks.is_empty();
         let txs_complete = missing_txs.is_empty();
         let logs_complete = missing_logs.is_empty();
 
-        // Note: We don't skip work even if scanner reports everything complete
-        // Empty parquet files may exist but contain no actual data
-        // Always attempt to sync missing ranges to verify data exists
+        info!(
+            "Worker {} segment work: blocks={} ranges, txs={} ranges, logs={} ranges",
+            self.worker_id,
+            missing_blocks.len(),
+            missing_txs.len(),
+            missing_logs.len()
+        );
+
+        // Initialize progress
+        self.update_progress(
+            "connecting",
+            blocks_complete,
+            txs_complete,
+            logs_complete,
+            self.from_block,
+            0,
+            0,
+            0,
+        )
+        .await;
 
         // Connect to bridge via Arrow Flight
         let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
