@@ -17,6 +17,7 @@ jsonrpc-bridge = { path = "crates/bridges/evm/jsonrpc-bridge" }
 phaser-bridge = { path = "crates/phaser-bridge" }
 evm-common = { path = "crates/schemas/evm/common", features = ["views"] }
 validators-evm = { path = "crates/validators/evm" }
+core-executor = { path = "../../core-executor" }
 
 # External dependencies
 tokio = { version = "1.41", features = ["full"] }

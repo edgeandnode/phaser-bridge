@@ -16,6 +16,7 @@ path = "src/bin/phaser-cli.rs"
 phaser-bridge = { workspace = true }
 erigon-bridge = { workspace = true }
 evm-common = { workspace = true }
+core-executor = { workspace = true }
 
 # Typed Arrow support
 typed-arrow = { workspace = true }
@@ -37,6 +38,7 @@ jsonrpsee.workspace = true
 tonic.workspace = true
 prost.workspace = true
 prost-types.workspace = true
+num_cpus.workspace = true
 
 # Additional crate-specific dependencies
 async-channel = "2.3"
