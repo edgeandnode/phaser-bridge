@@ -4,6 +4,9 @@ mod bridge;
 mod client;
 mod converter;
 mod error;
+mod generated;
+mod kv_client;
+mod metrics;
 mod proto;
 mod segment_worker;
 mod streaming_service;
@@ -27,6 +30,7 @@ use phaser_bridge::FlightBridgeServer;
 #[command(about = "Arrow Flight bridge for Erigon blockchain node")]
 struct Args {
     /// Erigon gRPC endpoint (TCP: localhost:9090 or IPC: /path/to/erigon.ipc)
+    /// This endpoint is used for both BlockData streaming and KV table access (TxSender)
     #[arg(long, env = "ERIGON_GRPC_ENDPOINT", default_value = "localhost:9090")]
     erigon_grpc: String,
 
@@ -61,6 +65,10 @@ struct Args {
     /// Validation batch size within a segment (default: 100 blocks)
     #[arg(long, env = "VALIDATION_BATCH_SIZE", default_value_t = 100)]
     validation_batch_size: usize,
+
+    /// Prometheus metrics port (default: 9091)
+    #[arg(long, env = "METRICS_PORT", default_value_t = 9091)]
+    metrics_port: u16,
 }
 
 #[tokio::main]
@@ -121,10 +129,39 @@ async fn main() -> Result<()> {
         segment_config.validation_batch_size
     );
 
+    // Start Prometheus metrics server
+    let metrics_port = args.metrics_port;
+    tokio::spawn(async move {
+        use std::convert::Infallible;
+
+        let make_svc = hyper::service::make_service_fn(|_conn| async {
+            Ok::<_, Infallible>(hyper::service::service_fn(|_req| async {
+                let metrics = metrics::gather_metrics();
+                let mut response = hyper::Response::new(hyper::Body::from(metrics));
+                response.headers_mut().insert(
+                    hyper::header::CONTENT_TYPE,
+                    hyper::header::HeaderValue::from_static("text/plain; version=0.0.4"),
+                );
+                Ok::<_, Infallible>(response)
+            }))
+        });
+
+        let addr = ([0, 0, 0, 0], metrics_port).into();
+        info!(
+            "Starting Prometheus metrics server on http://0.0.0.0:{}",
+            metrics_port
+        );
+
+        if let Err(e) = hyper::Server::bind(&addr).serve(make_svc).await {
+            error!("Metrics server error: {}", e);
+        }
+    });
+
     // Create the bridge
     let bridge = Arc::new(
         ErigonFlightBridge::new(
-            args.erigon_grpc,
+            args.erigon_grpc.clone(),
+            args.erigon_grpc, // KV endpoint is the same as main gRPC endpoint
             args.chain_id,
             validator_config,
             Some(segment_config),

@@ -33,6 +33,7 @@ async-trait = { workspace = true }
 futures = "0.3"
 tokio-stream = "0.1"
 tower = "0.5"
+hyper = { version = "0.14", features = ["server", "tcp", "http1"] }
 hyper-util = "0.1"
 http = "1.0"
 
@@ -56,6 +57,10 @@ chrono = "0.4"
 hex = "0.4"
 async-stream = "0.3"
 num_cpus = { workspace = true }
+
+# Metrics
+prometheus = "0.13"
+lazy_static = "1.4"
 
 # Ethereum types and RLP
 alloy-consensus = { workspace = true }

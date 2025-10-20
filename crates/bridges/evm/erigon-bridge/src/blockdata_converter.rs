@@ -3,7 +3,7 @@
 /// This module handles the RLP bytes → alloy types conversion,
 /// then uses the From impls in evm-common to convert to typed-arrow records
 use crate::error::ErigonBridgeError;
-use crate::proto::custom::{BlockBatch, ReceiptBatch, TransactionBatch};
+use crate::proto::custom::{BlockBatch, ReceiptBatch, ReceiptData, TransactionBatch};
 use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_rlp::Decodable;
 use arrow::datatypes::Schema;
@@ -151,8 +151,28 @@ impl BlockDataConverter {
     /// - Takes ownership of BlockData (no cloning)
     /// - Extracts timestamps directly from headers (no HashMap)
     /// - Processes transactions in a single pass
-    pub fn block_transactions_to_arrow(
+    ///
+    /// ## Sender Address Resolution Strategy
+    ///
+    /// Sender addresses are queried from Erigon's TxSender table (precomputed during
+    /// block import) rather than performing expensive signature recovery.
+    ///
+    /// **Why this matters:**
+    /// - Signature recovery uses elliptic curve point multiplication (expensive)
+    /// - Perf profiling showed 75% of CPU time on k256 EC operations
+    /// - TxSender table lookup is a simple KV query + byte parsing
+    /// - Performance improvement: ~4x faster (eliminate 75% CPU bottleneck)
+    ///
+    /// **Erigon's TxSender Table:**
+    /// - Computed once during "Senders" stage of block import
+    /// - Format: block_num+block_hash → sender_0|sender_1|...|sender_n (20 bytes each)
+    /// - Always populated for historical blocks in a synced Erigon node
+    ///
+    /// Returns error if TxSender lookup fails - this indicates Erigon database issues
+    /// that should be investigated rather than silently falling back to slow recovery.
+    pub async fn block_transactions_to_arrow(
         blocks: Vec<crate::segment_worker::BlockData>,
+        kv_client: &mut crate::kv_client::ErigonKvClient,
     ) -> Result<RecordBatch, ErigonBridgeError> {
         // Pre-calculate total transactions for builder capacity
         let total_transactions: usize = blocks.iter().map(|b| b.transactions.len()).sum();
@@ -162,8 +182,41 @@ impl BlockDataConverter {
         for block in blocks {
             let timestamp = block.header.timestamp as i64 * 1_000_000_000;
 
+            // Get block hash from header (authoritative source)
+            // Don't use tx_data.block_hash as that's a validation target
+            let block_hash_bytes = block.header.hash_slow().0;
+
+            // Get precomputed senders from TxSender table using header hash
+            let senders = if block.transactions.is_empty() {
+                // Skip KV lookup for blocks with no transactions
+                Vec::new()
+            } else {
+                match kv_client
+                    .get_block_senders(block.block_num, &block_hash_bytes)
+                    .await?
+                {
+                    Some(senders) => {
+                        if senders.len() != block.transactions.len() {
+                            return Err(ErigonBridgeError::InvalidData(format!(
+                                "TxSender count mismatch for block {}: expected {} transactions, got {} senders",
+                                block.block_num,
+                                block.transactions.len(),
+                                senders.len()
+                            )));
+                        }
+                        senders
+                    }
+                    None => {
+                        return Err(ErigonBridgeError::InvalidData(format!(
+                            "No TxSender entry found for block {} - Erigon database may be incomplete",
+                            block.block_num
+                        )));
+                    }
+                }
+            };
+
             // Process all transactions in this block (moving, not cloning)
-            for tx_data in block.transactions {
+            for (tx_index_in_block, tx_data) in block.transactions.into_iter().enumerate() {
                 // Use block_hash from TransactionData (already provided by Erigon)
                 let block_hash_bytes: [u8; 32] =
                     tx_data.block_hash.as_slice().try_into().map_err(|_| {
@@ -190,17 +243,9 @@ impl BlockDataConverter {
                     }
                 };
 
-                // Recover sender address from signature
-                let sender = match tx.recover_sender() {
-                    Some(addr) => addr,
-                    None => {
-                        warn!(
-                            "Failed to recover sender for block {} tx {} - skipping",
-                            block.block_num, tx_data.tx_index
-                        );
-                        continue;
-                    }
-                };
+                // Get sender address from TxSender table (precomputed by Erigon)
+                // This is a simple array lookup instead of expensive signature recovery
+                let sender = senders[tx_index_in_block].clone();
 
                 // Build context for conversion
                 let ctx = TransactionContext {
@@ -225,19 +270,19 @@ impl BlockDataConverter {
         Ok(arrays.into_record_batch())
     }
 
-    /// Convert a ReceiptBatch to Arrow RecordBatch (logs)
+    /// Convert receipts to Arrow RecordBatch (logs)
     /// Receipts contain logs - we extract all logs from all receipts
     ///
     /// Note: Block timestamps must be provided as we don't have them in receipts
     pub fn receipts_to_logs_arrow(
-        batch: ReceiptBatch,
+        receipts: Vec<ReceiptData>,
         block_timestamps: &HashMap<u64, i64>, // block_number -> timestamp in nanos
     ) -> Result<RecordBatch, ErigonBridgeError> {
         // Estimate total logs (rough)
-        let estimated_logs = batch.receipts.len() * 2;
+        let estimated_logs = receipts.len() * 2;
         let mut builders = LogRecord::new_builders(estimated_logs);
 
-        for receipt_data in &batch.receipts {
+        for receipt_data in &receipts {
             // Decode RLP → alloy ReceiptEnvelope
             let receipt_envelope =
                 match ReceiptEnvelope::decode(&mut receipt_data.rlp_receipt.as_slice()) {
@@ -315,7 +360,7 @@ impl BlockDataConverter {
             }
         }
 
-        debug!("Extracted logs from {} receipts", batch.receipts.len());
+        debug!("Extracted logs from {} receipts", receipts.len());
 
         let arrays = builders.finish();
         Ok(arrays.into_record_batch())

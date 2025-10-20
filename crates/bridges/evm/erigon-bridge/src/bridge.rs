@@ -35,11 +35,13 @@ pub struct ErigonFlightBridge {
     validator: Option<Arc<dyn ValidationExecutor>>,
     segment_config: SegmentConfig,
     endpoint: String,
+    kv_endpoint: String,
 }
 
 impl ErigonFlightBridge {
     pub async fn new(
         endpoint: String,
+        kv_endpoint: String,
         chain_id: u64,
         validator_config: Option<validators_evm::ExecutorConfig>,
         segment_config: Option<SegmentConfig>,
@@ -100,6 +102,7 @@ impl ErigonFlightBridge {
             validator,
             segment_config: segment_config.unwrap_or_default(),
             endpoint,
+            kv_endpoint,
         })
     }
 
@@ -185,6 +188,7 @@ impl ErigonFlightBridge {
     /// Extracted as a separate function to avoid lifetime capture issues
     fn process_transactions_with_segments(
         blockdata_client: BlockDataClient,
+        kv_endpoint: String,
         config: SegmentConfig,
         validator: Option<Arc<dyn ValidationExecutor>>,
         start: u64,
@@ -201,7 +205,10 @@ impl ErigonFlightBridge {
         // Process segments in parallel but emit results in order
         futures::stream::iter(segments)
             .map(move |(seg_start, seg_end): (u64, u64)| {
+                // Derive worker_id from segment to make it unique across all requests
+                let worker_id = (seg_start / config.segment_size) as usize;
                 let client = blockdata_client.clone(); // Clone shares the underlying HTTP/2 connection
+                let kv_endpoint = kv_endpoint.clone();
                 let config = config.clone();
                 let validator = if should_validate {
                     validator.clone()
@@ -210,7 +217,15 @@ impl ErigonFlightBridge {
                 };
 
                 async move {
-                    let worker = SegmentWorker::new(seg_start, seg_end, client, config, validator);
+                    let worker = SegmentWorker::new(
+                        worker_id,
+                        seg_start,
+                        seg_end,
+                        client,
+                        kv_endpoint,
+                        config,
+                        validator,
+                    );
 
                     // Convert the stream to handle FlightError
                     worker.process().map(move |result| {
@@ -238,6 +253,7 @@ impl ErigonFlightBridge {
     /// Extracted as a separate function to avoid lifetime capture issues
     fn process_logs_with_segments(
         blockdata_client: BlockDataClient,
+        kv_endpoint: String,
         config: SegmentConfig,
         validator: Option<Arc<dyn ValidationExecutor>>,
         start: u64,
@@ -254,7 +270,10 @@ impl ErigonFlightBridge {
         // Process segments in parallel but emit results in order
         futures::stream::iter(segments)
             .map(move |(seg_start, seg_end): (u64, u64)| {
+                // Derive worker_id from segment to make it unique across all requests
+                let worker_id = (seg_start / config.segment_size) as usize;
                 let client = blockdata_client.clone(); // Clone shares the underlying HTTP/2 connection
+                let kv_endpoint = kv_endpoint.clone();
                 let config = config.clone();
                 let validator = if should_validate {
                     validator.clone()
@@ -263,8 +282,15 @@ impl ErigonFlightBridge {
                 };
 
                 async move {
-                    let worker =
-                        SegmentWorker::new_for_logs(seg_start, seg_end, client, config, validator);
+                    let worker = SegmentWorker::new_for_logs(
+                        worker_id,
+                        seg_start,
+                        seg_end,
+                        client,
+                        kv_endpoint,
+                        config,
+                        validator,
+                    );
 
                     // Convert the stream to handle FlightError
                     worker.process().map(move |result| {
@@ -315,6 +341,7 @@ impl ErigonFlightBridge {
             let client = self.blockdata_client.lock().await.clone();
             let stream = Self::process_transactions_with_segments(
                 client,
+                self.kv_endpoint.clone(),
                 self.segment_config.clone(),
                 self.validator.clone(),
                 start,
@@ -328,6 +355,7 @@ impl ErigonFlightBridge {
             let client = self.blockdata_client.lock().await.clone();
             let stream = Self::process_logs_with_segments(
                 client,
+                self.kv_endpoint.clone(),
                 self.segment_config.clone(),
                 self.validator.clone(),
                 start,

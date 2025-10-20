@@ -8,6 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "proto/types/types.proto",
                 "proto/remote/bor.proto",
                 "proto/remote/ethbackend.proto",
+                "proto/remote/kv.proto",
                 "proto/customized-erigon/trie.proto",
                 "proto/customized-erigon/blockdata.proto",
             ],
