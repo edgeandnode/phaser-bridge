@@ -38,25 +38,83 @@
 /// the sender is computed state. However, since Erigon has already computed this
 /// and made it available via their KV API, we treat this as source data to query.
 use crate::error::ErigonBridgeError;
-use crate::generated::remote::{kv_client::KvClient, RangeReq};
+use crate::generated::remote::{kv_client::KvClient, Cursor, Op, Pair, RangeReq};
 use evm_common::types::Address20;
-use tonic::transport::Channel;
-use tracing::{debug, warn};
+use futures::StreamExt;
+use tokio::sync::mpsc;
+use tonic::{transport::Channel, Streaming};
+use tracing::{debug, info, warn};
 
 const TX_SENDER_TABLE: &str = "TxSender";
 
 /// Client for querying Erigon's KV database
+///
+/// Holds a long-lived read-only transaction for the entire segment.
+/// This minimizes database transaction overhead - instead of opening/closing
+/// thousands of transactions, we open ONE transaction per worker and reuse it
+/// for all queries within that segment (500K blocks).
 pub struct ErigonKvClient {
     client: KvClient<Channel>,
+    tx_id: u64,
+    _tx_stream: Streaming<Pair>, // Keep response stream alive
+    _tx_sender: mpsc::UnboundedSender<Cursor>, // Keep outbound stream alive
 }
 
 impl ErigonKvClient {
-    /// Connect to Erigon's KV gRPC endpoint
+    /// Connect to Erigon's KV gRPC endpoint and open a read-only transaction
     ///
+    /// The transaction remains open for the lifetime of this client.
     /// Default endpoint is localhost:9090 (--private.api.addr in Erigon)
     pub async fn connect(endpoint: &str) -> Result<Self, ErigonBridgeError> {
-        let client = KvClient::connect(format!("http://{}", endpoint)).await?;
-        Ok(Self { client })
+        let mut client = KvClient::connect(format!("http://{}", endpoint)).await?;
+
+        // Create a channel to keep the outbound stream alive
+        // The Tx RPC is bidirectional - if we close the outbound stream,
+        // the transaction closes even if we're still reading responses
+        let (tx_sender, mut tx_receiver) = mpsc::unbounded_channel();
+
+        // Send initial message to open transaction
+        tx_sender.send(Cursor {
+            op: Op::First as i32,
+            bucket_name: String::new(),
+            cursor: 0,
+            k: vec![],
+            v: vec![],
+        }).map_err(|e| ErigonBridgeError::Internal(anyhow::anyhow!("Failed to send initial cursor: {}", e)))?;
+
+        // Create the outbound stream from the receiver
+        let outbound = async_stream::stream! {
+            while let Some(cursor) = tx_receiver.recv().await {
+                yield cursor;
+            }
+        };
+
+        let mut response_stream = client.tx(outbound).await?.into_inner();
+
+        // Receive the tx_id from the first response
+        let tx_id = if let Some(pair) = response_stream.next().await {
+            let pair = pair?;
+            if pair.tx_id == 0 {
+                return Err(ErigonBridgeError::Internal(anyhow::anyhow!(
+                    "Erigon returned invalid tx_id=0"
+                )));
+            }
+            info!("Opened KV transaction with tx_id={}", pair.tx_id);
+            pair.tx_id
+        } else {
+            return Err(ErigonBridgeError::Internal(anyhow::anyhow!(
+                "Erigon Tx stream ended without returning tx_id"
+            )));
+        };
+
+        // Keep both the response stream AND the sender alive
+        // When this client is dropped, both close and the transaction ends
+        Ok(Self {
+            client,
+            tx_id,
+            _tx_stream: response_stream,
+            _tx_sender: tx_sender,
+        })
     }
 
     /// Query sender addresses for all transactions in a block
@@ -88,12 +146,11 @@ impl ErigonKvClient {
         key.extend_from_slice(&block_number.to_be_bytes());
         key.extend_from_slice(block_hash);
 
-        debug!(block_number, "Querying TxSender table for block senders");
+        debug!(block_number, tx_id = self.tx_id, "Querying TxSender table for block senders");
 
-        // Query the TxSender table using Range API
-        // Note: tx_id = 0 means no explicit transaction context needed for simple range queries
+        // Query the TxSender table using our long-lived transaction
         let request = RangeReq {
-            tx_id: 0,
+            tx_id: self.tx_id,
             table: TX_SENDER_TABLE.to_string(),
             from_prefix: key.clone(),
             to_prefix: key, // Same key for exact match
