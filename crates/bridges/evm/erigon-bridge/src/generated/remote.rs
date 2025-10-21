@@ -1278,3 +1278,913 @@ pub mod ethbackend_client {
         }
     }
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Cursor {
+    #[prost(enumeration = "Op", tag = "1")]
+    pub op: i32,
+    #[prost(string, tag = "2")]
+    pub bucket_name: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "3")]
+    pub cursor: u32,
+    #[prost(bytes = "vec", tag = "4")]
+    pub k: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub v: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Pair {
+    #[prost(bytes = "vec", tag = "1")]
+    pub k: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub v: ::prost::alloc::vec::Vec<u8>,
+    /// send once after new cursor open
+    #[prost(uint32, tag = "3")]
+    pub cursor_id: u32,
+    /// return once after tx open. mdbx's tx.ViewID() - id of write transaction in db
+    #[prost(uint64, tag = "4")]
+    pub view_id: u64,
+    /// return once after tx open. internal identifier - use it in other methods - to achieve consistent DB view (to read data from same DB tx on server).
+    #[prost(uint64, tag = "5")]
+    pub tx_id: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StorageChange {
+    #[prost(message, optional, tag = "1")]
+    pub location: ::core::option::Option<super::types::H256>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AccountChange {
+    #[prost(message, optional, tag = "1")]
+    pub address: ::core::option::Option<super::types::H160>,
+    #[prost(uint64, tag = "2")]
+    pub incarnation: u64,
+    #[prost(enumeration = "Action", tag = "3")]
+    pub action: i32,
+    /// nil if there is no UPSERT in action
+    #[prost(bytes = "vec", tag = "4")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+    /// nil if there is no CODE in action
+    #[prost(bytes = "vec", tag = "5")]
+    pub code: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "6")]
+    pub storage_changes: ::prost::alloc::vec::Vec<StorageChange>,
+}
+/// StateChangeBatch - list of StateDiff done in one DB transaction
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StateChangeBatch {
+    /// mdbx's tx.ID() - id of write transaction in db - where this changes happened
+    #[prost(uint64, tag = "1")]
+    pub state_version_id: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub change_batch: ::prost::alloc::vec::Vec<StateChange>,
+    /// BaseFee of the next block to be produced
+    #[prost(uint64, tag = "3")]
+    pub pending_block_base_fee: u64,
+    /// GasLimit of the latest block - proxy for the gas limit of the next block to be produced
+    #[prost(uint64, tag = "4")]
+    pub block_gas_limit: u64,
+    #[prost(uint64, tag = "5")]
+    pub finalized_block: u64,
+    /// Base Blob Fee for the next block to be produced
+    #[prost(uint64, tag = "6")]
+    pub pending_blob_fee_per_gas: u64,
+}
+/// StateChange - changes done by 1 block or by 1 unwind
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StateChange {
+    #[prost(enumeration = "Direction", tag = "1")]
+    pub direction: i32,
+    #[prost(uint64, tag = "2")]
+    pub block_height: u64,
+    #[prost(message, optional, tag = "3")]
+    pub block_hash: ::core::option::Option<super::types::H256>,
+    #[prost(message, repeated, tag = "4")]
+    pub changes: ::prost::alloc::vec::Vec<AccountChange>,
+    /// enable by withTransactions=true
+    #[prost(bytes = "vec", repeated, tag = "5")]
+    pub txs: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(uint64, tag = "6")]
+    pub block_time: u64,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct StateChangeRequest {
+    #[prost(bool, tag = "1")]
+    pub with_storage: bool,
+    #[prost(bool, tag = "2")]
+    pub with_transactions: bool,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct SnapshotsRequest {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SnapshotsReply {
+    #[prost(string, repeated, tag = "1")]
+    pub blocks_files: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "2")]
+    pub history_files: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RangeReq {
+    /// returned by .Tx()
+    #[prost(uint64, tag = "1")]
+    pub tx_id: u64,
+    /// query params
+    #[prost(string, tag = "2")]
+    pub table: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub from_prefix: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub to_prefix: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "5")]
+    pub order_ascend: bool,
+    /// <= 0 means no limit
+    #[prost(sint64, tag = "6")]
+    pub limit: i64,
+    /// pagination params
+    ///
+    /// <= 0 means server will choose
+    #[prost(int32, tag = "7")]
+    pub page_size: i32,
+    #[prost(string, tag = "8")]
+    pub page_token: ::prost::alloc::string::String,
+}
+/// `kv.Sequence` method
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SequenceReq {
+    /// returned by .Tx()
+    #[prost(uint64, tag = "1")]
+    pub tx_id: u64,
+    /// query params
+    #[prost(string, tag = "2")]
+    pub table: ::prost::alloc::string::String,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct SequenceReply {
+    #[prost(uint64, tag = "1")]
+    pub value: u64,
+}
+/// Temporal methods
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetLatestReq {
+    /// returned by .Tx()
+    #[prost(uint64, tag = "1")]
+    pub tx_id: u64,
+    /// query params
+    #[prost(string, tag = "2")]
+    pub table: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub k: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub ts: u64,
+    #[prost(bytes = "vec", tag = "5")]
+    pub k2: ::prost::alloc::vec::Vec<u8>,
+    /// if true, then `ts` ignored and return latest state (without history lookup)
+    #[prost(bool, tag = "6")]
+    pub latest: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetLatestReply {
+    #[prost(bytes = "vec", tag = "1")]
+    pub v: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "2")]
+    pub ok: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HistorySeekReq {
+    /// returned by .Tx()
+    #[prost(uint64, tag = "1")]
+    pub tx_id: u64,
+    #[prost(string, tag = "2")]
+    pub table: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub k: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub ts: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HistorySeekReply {
+    #[prost(bytes = "vec", tag = "1")]
+    pub v: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "2")]
+    pub ok: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IndexRangeReq {
+    /// returned by .Tx()
+    #[prost(uint64, tag = "1")]
+    pub tx_id: u64,
+    /// query params
+    #[prost(string, tag = "2")]
+    pub table: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub k: ::prost::alloc::vec::Vec<u8>,
+    /// -1 means Inf
+    #[prost(sint64, tag = "4")]
+    pub from_ts: i64,
+    /// -1 means Inf
+    #[prost(sint64, tag = "5")]
+    pub to_ts: i64,
+    #[prost(bool, tag = "6")]
+    pub order_ascend: bool,
+    /// <= 0 means no limit
+    #[prost(sint64, tag = "7")]
+    pub limit: i64,
+    /// pagination params
+    ///
+    /// <= 0 means server will choose
+    #[prost(int32, tag = "8")]
+    pub page_size: i32,
+    #[prost(string, tag = "9")]
+    pub page_token: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IndexRangeReply {
+    /// TODO: it can be a bitmap
+    #[prost(uint64, repeated, tag = "1")]
+    pub timestamps: ::prost::alloc::vec::Vec<u64>,
+    #[prost(string, tag = "2")]
+    pub next_page_token: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HistoryRangeReq {
+    /// returned by .Tx()
+    #[prost(uint64, tag = "1")]
+    pub tx_id: u64,
+    /// query params
+    #[prost(string, tag = "2")]
+    pub table: ::prost::alloc::string::String,
+    /// -1 means Inf
+    #[prost(sint64, tag = "4")]
+    pub from_ts: i64,
+    /// -1 means Inf
+    #[prost(sint64, tag = "5")]
+    pub to_ts: i64,
+    #[prost(bool, tag = "6")]
+    pub order_ascend: bool,
+    /// <= 0 means no limit
+    #[prost(sint64, tag = "7")]
+    pub limit: i64,
+    /// pagination params
+    ///
+    /// <= 0 means server will choose
+    #[prost(int32, tag = "8")]
+    pub page_size: i32,
+    #[prost(string, tag = "9")]
+    pub page_token: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RangeAsOfReq {
+    /// returned by .Tx()
+    #[prost(uint64, tag = "1")]
+    pub tx_id: u64,
+    /// query params
+    #[prost(string, tag = "2")]
+    pub table: ::prost::alloc::string::String,
+    /// nil means Inf
+    #[prost(bytes = "vec", tag = "3")]
+    pub from_key: ::prost::alloc::vec::Vec<u8>,
+    /// nil means Inf
+    #[prost(bytes = "vec", tag = "4")]
+    pub to_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub ts: u64,
+    /// if true, then `ts` ignored and return latest state (without history lookup)
+    #[prost(bool, tag = "6")]
+    pub latest: bool,
+    #[prost(bool, tag = "7")]
+    pub order_ascend: bool,
+    /// <= 0 means no limit
+    #[prost(sint64, tag = "8")]
+    pub limit: i64,
+    /// pagination params
+    ///
+    /// <= 0 means server will choose
+    #[prost(int32, tag = "9")]
+    pub page_size: i32,
+    #[prost(string, tag = "10")]
+    pub page_token: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Pairs {
+    /// TODO: replace by lengtsh+arena? Anyway on server we need copy (serialization happening outside tx)
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub keys: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub values: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    ///   uint32 estimateTotal = 3; // send once after stream creation
+    #[prost(string, tag = "3")]
+    pub next_page_token: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PairsPagination {
+    #[prost(bytes = "vec", tag = "1")]
+    pub next_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(sint64, tag = "2")]
+    pub limit: i64,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct IndexPagination {
+    #[prost(sint64, tag = "1")]
+    pub next_time_stamp: i64,
+    #[prost(sint64, tag = "2")]
+    pub limit: i64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HasPrefixReq {
+    #[prost(uint64, tag = "1")]
+    pub tx_id: u64,
+    #[prost(string, tag = "2")]
+    pub table: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub prefix: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HasPrefixReply {
+    #[prost(bytes = "vec", tag = "1")]
+    pub first_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub first_val: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "3")]
+    pub has_prefix: bool,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct HistoryStartFromReq {
+    #[prost(uint32, tag = "1")]
+    pub domain: u32,
+    /// returned by .Tx()
+    #[prost(uint64, tag = "2")]
+    pub tx_id: u64,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct HistoryStartFromReply {
+    #[prost(uint64, tag = "1")]
+    pub start_from: u64,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct CurrentDomainVersionReq {
+    #[prost(uint64, tag = "1")]
+    pub tx_id: u64,
+    #[prost(uint32, tag = "2")]
+    pub domain: u32,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct CurrentDomainVersionReply {
+    #[prost(uint64, tag = "1")]
+    pub major: u64,
+    #[prost(uint64, tag = "2")]
+    pub minor: u64,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct StepSizeReq {
+    #[prost(uint64, tag = "1")]
+    pub tx_id: u64,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct StepSizeReply {
+    #[prost(uint64, tag = "1")]
+    pub step: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Op {
+    First = 0,
+    FirstDup = 1,
+    Seek = 2,
+    SeekBoth = 3,
+    Current = 4,
+    Last = 6,
+    LastDup = 7,
+    Next = 8,
+    NextDup = 9,
+    NextNoDup = 11,
+    Prev = 12,
+    PrevDup = 13,
+    PrevNoDup = 14,
+    SeekExact = 15,
+    SeekBothExact = 16,
+    Open = 30,
+    Close = 31,
+    OpenDupSort = 32,
+}
+impl Op {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::First => "FIRST",
+            Self::FirstDup => "FIRST_DUP",
+            Self::Seek => "SEEK",
+            Self::SeekBoth => "SEEK_BOTH",
+            Self::Current => "CURRENT",
+            Self::Last => "LAST",
+            Self::LastDup => "LAST_DUP",
+            Self::Next => "NEXT",
+            Self::NextDup => "NEXT_DUP",
+            Self::NextNoDup => "NEXT_NO_DUP",
+            Self::Prev => "PREV",
+            Self::PrevDup => "PREV_DUP",
+            Self::PrevNoDup => "PREV_NO_DUP",
+            Self::SeekExact => "SEEK_EXACT",
+            Self::SeekBothExact => "SEEK_BOTH_EXACT",
+            Self::Open => "OPEN",
+            Self::Close => "CLOSE",
+            Self::OpenDupSort => "OPEN_DUP_SORT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "FIRST" => Some(Self::First),
+            "FIRST_DUP" => Some(Self::FirstDup),
+            "SEEK" => Some(Self::Seek),
+            "SEEK_BOTH" => Some(Self::SeekBoth),
+            "CURRENT" => Some(Self::Current),
+            "LAST" => Some(Self::Last),
+            "LAST_DUP" => Some(Self::LastDup),
+            "NEXT" => Some(Self::Next),
+            "NEXT_DUP" => Some(Self::NextDup),
+            "NEXT_NO_DUP" => Some(Self::NextNoDup),
+            "PREV" => Some(Self::Prev),
+            "PREV_DUP" => Some(Self::PrevDup),
+            "PREV_NO_DUP" => Some(Self::PrevNoDup),
+            "SEEK_EXACT" => Some(Self::SeekExact),
+            "SEEK_BOTH_EXACT" => Some(Self::SeekBothExact),
+            "OPEN" => Some(Self::Open),
+            "CLOSE" => Some(Self::Close),
+            "OPEN_DUP_SORT" => Some(Self::OpenDupSort),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Action {
+    /// Change only in the storage
+    Storage = 0,
+    /// Change of balance or nonce (and optionally storage)
+    Upsert = 1,
+    /// Change of code (and optionally storage)
+    Code = 2,
+    /// Change in (balance or nonce) and code (and optionally storage)
+    UpsertCode = 3,
+    /// Account is deleted
+    Remove = 4,
+}
+impl Action {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Storage => "STORAGE",
+            Self::Upsert => "UPSERT",
+            Self::Code => "CODE",
+            Self::UpsertCode => "UPSERT_CODE",
+            Self::Remove => "REMOVE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "STORAGE" => Some(Self::Storage),
+            "UPSERT" => Some(Self::Upsert),
+            "CODE" => Some(Self::Code),
+            "UPSERT_CODE" => Some(Self::UpsertCode),
+            "REMOVE" => Some(Self::Remove),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Direction {
+    Forward = 0,
+    Unwind = 1,
+}
+impl Direction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Forward => "FORWARD",
+            Self::Unwind => "UNWIND",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "FORWARD" => Some(Self::Forward),
+            "UNWIND" => Some(Self::Unwind),
+            _ => None,
+        }
+    }
+}
+/// Generated client implementations.
+pub mod kv_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// Provides methods to access key-value data
+    #[derive(Debug, Clone)]
+    pub struct KvClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl KvClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> KvClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> KvClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            KvClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Version returns the service version number
+        pub async fn version(
+            &mut self,
+            request: impl tonic::IntoRequest<()>,
+        ) -> std::result::Result<
+            tonic::Response<super::super::types::VersionReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/Version");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "Version"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Tx exposes read-only transactions for the key-value store
+        ///
+        /// When tx open, client must receive 1 message from server with txID
+        /// When cursor open, client must receive 1 message from server with cursorID
+        /// Then only client can initiate messages from server
+        pub async fn tx(
+            &mut self,
+            request: impl tonic::IntoStreamingRequest<Message = super::Cursor>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::Pair>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/Tx");
+            let mut req = request.into_streaming_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "Tx"));
+            self.inner.streaming(req, path, codec).await
+        }
+        pub async fn state_changes(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StateChangeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::StateChangeBatch>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/StateChanges");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "StateChanges"));
+            self.inner.server_streaming(req, path, codec).await
+        }
+        /// Snapshots returns list of current snapshot files. Then client can just open all of them.
+        pub async fn snapshots(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SnapshotsRequest>,
+        ) -> std::result::Result<tonic::Response<super::SnapshotsReply>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/Snapshots");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "Snapshots"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Range [from, to)
+        /// Range(from, nil) means [from, EndOfTable)
+        /// Range(nil, to)   means [StartOfTable, to)
+        /// If orderAscend=false server expecting `from`<`to`. Example: Range("B", "A")
+        pub async fn range(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RangeReq>,
+        ) -> std::result::Result<tonic::Response<super::Pairs>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/Range");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "Range"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn sequence(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SequenceReq>,
+        ) -> std::result::Result<tonic::Response<super::SequenceReply>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/Sequence");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "Sequence"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Temporal methods
+        pub async fn get_latest(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetLatestReq>,
+        ) -> std::result::Result<tonic::Response<super::GetLatestReply>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/GetLatest");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "GetLatest"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn history_seek(
+            &mut self,
+            request: impl tonic::IntoRequest<super::HistorySeekReq>,
+        ) -> std::result::Result<
+            tonic::Response<super::HistorySeekReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/HistorySeek");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "HistorySeek"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn index_range(
+            &mut self,
+            request: impl tonic::IntoRequest<super::IndexRangeReq>,
+        ) -> std::result::Result<
+            tonic::Response<super::IndexRangeReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/IndexRange");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "IndexRange"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn history_range(
+            &mut self,
+            request: impl tonic::IntoRequest<super::HistoryRangeReq>,
+        ) -> std::result::Result<tonic::Response<super::Pairs>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/HistoryRange");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "HistoryRange"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn range_as_of(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RangeAsOfReq>,
+        ) -> std::result::Result<tonic::Response<super::Pairs>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/RangeAsOf");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "RangeAsOf"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn has_prefix(
+            &mut self,
+            request: impl tonic::IntoRequest<super::HasPrefixReq>,
+        ) -> std::result::Result<tonic::Response<super::HasPrefixReply>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/HasPrefix");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "HasPrefix"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn history_start_from(
+            &mut self,
+            request: impl tonic::IntoRequest<super::HistoryStartFromReq>,
+        ) -> std::result::Result<
+            tonic::Response<super::HistoryStartFromReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.KV/HistoryStartFrom",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("remote.KV", "HistoryStartFrom"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn current_domain_version(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CurrentDomainVersionReq>,
+        ) -> std::result::Result<
+            tonic::Response<super::CurrentDomainVersionReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.KV/CurrentDomainVersion",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("remote.KV", "CurrentDomainVersion"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn step_size(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StepSizeReq>,
+        ) -> std::result::Result<tonic::Response<super::StepSizeReply>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/remote.KV/StepSize");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "StepSize"));
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}

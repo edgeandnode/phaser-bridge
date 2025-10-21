@@ -7,3 +7,5 @@ test-data/rocksdb
 erigon-bridge.log
 commit-changes.sh
 *config.yaml
+cargo-build.log
+heaptrack.*.zst

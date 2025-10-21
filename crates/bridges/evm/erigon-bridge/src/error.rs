@@ -34,6 +34,9 @@ pub enum ErigonBridgeError {
 
     #[error("Conversion error: {0}")]
     ConversionError(String),
+
+    #[error("Validation error: {0}")]
+    ValidationError(String),
 }
 
 /// Implements conversion from our error to a gRPC Status for proper error reporting
@@ -55,6 +58,7 @@ impl From<ErigonBridgeError> for Status {
             ErigonBridgeError::Internal(_) => Status::internal("Internal bridge error"),
             ErigonBridgeError::InvalidData(msg) => Status::invalid_argument(msg),
             ErigonBridgeError::ConversionError(msg) => Status::internal(msg),
+            ErigonBridgeError::ValidationError(msg) => Status::failed_precondition(msg),
         }
     }
 }

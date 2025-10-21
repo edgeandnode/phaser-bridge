@@ -5,6 +5,7 @@ use jsonrpc_bridge::JsonRpcFlightBridge;
 use std::net::SocketAddr;
 use tonic::transport::Server;
 use tracing::{error, info};
+use validators_evm::ExecutorType;
 
 #[derive(Parser, Debug)]
 #[command(name = "jsonrpc-bridge")]
@@ -31,6 +32,14 @@ struct Args {
     #[arg(long, env = "FLIGHT_IPC_PATH", conflicts_with = "flight_addr")]
     ipc_path: Option<String>,
 
+    /// Validation executor type (tokio or core)
+    #[arg(long, env = "EXECUTOR", value_parser = clap::value_parser!(ExecutorType))]
+    executor: Option<ExecutorType>,
+
+    /// Number of threads for validation executor (defaults to core count)
+    #[arg(long, env = "EXECUTOR_THREADS")]
+    threads: Option<usize>,
+
     /// Enable debug logging
     #[arg(long, short, env = "DEBUG")]
     debug: bool,
@@ -52,13 +61,23 @@ async fn main() -> Result<()> {
     info!("Starting JSON-RPC Flight Bridge");
     info!("Connecting to JSON-RPC endpoint: {}", args.jsonrpc_url);
 
+    // Build validator config if executor is specified
+    let validator_config = args
+        .executor
+        .map(|executor_type| executor_type.build_config(args.threads));
+
+    if let Some(ref config) = validator_config {
+        info!("Validation enabled with executor: {:?}", config);
+    }
+
     // Create the bridge
-    let bridge = JsonRpcFlightBridge::new(args.jsonrpc_url.clone(), args.chain_id)
-        .await
-        .map_err(|e| {
-            error!("Failed to create JSON-RPC bridge: {}", e);
-            e
-        })?;
+    let bridge =
+        JsonRpcFlightBridge::new(args.jsonrpc_url.clone(), args.chain_id, validator_config)
+            .await
+            .map_err(|e| {
+                error!("Failed to create JSON-RPC bridge: {}", e);
+                e
+            })?;
 
     let bridge_info = bridge.bridge_info();
     info!(

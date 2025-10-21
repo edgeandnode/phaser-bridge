@@ -6,7 +6,7 @@ use phaser_query::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber;
 
 #[derive(Parser, Debug)]
@@ -83,6 +83,52 @@ async fn main() -> Result<()> {
             "  - Chain {}: {} at {}",
             bridge.chain_id, bridge.name, bridge.endpoint
         );
+    }
+
+    // Clean up any .tmp files from previous incomplete syncs
+    info!("Cleaning up temporary files from previous syncs...");
+    let mut total_removed = 0;
+    for bridge in &config.bridges {
+        let data_dir = config.bridge_data_dir(bridge.chain_id, &bridge.name);
+        if data_dir.exists() {
+            match std::fs::read_dir(&data_dir) {
+                Ok(entries) => {
+                    let mut removed_count = 0;
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            if name.ends_with(".tmp") {
+                                if let Err(e) = std::fs::remove_file(entry.path()) {
+                                    error!("Failed to remove {}: {}", name, e);
+                                } else {
+                                    removed_count += 1;
+                                }
+                            }
+                        }
+                    }
+                    if removed_count > 0 {
+                        info!(
+                            "Removed {} temporary file(s) from {}",
+                            removed_count,
+                            data_dir.display()
+                        );
+                        total_removed += removed_count;
+                    }
+                }
+                Err(e) => warn!(
+                    "Could not read data directory {}: {}",
+                    data_dir.display(),
+                    e
+                ),
+            }
+        }
+    }
+    if total_removed > 0 {
+        info!(
+            "Cleanup complete: removed {} temporary file(s) total",
+            total_removed
+        );
+    } else {
+        info!("No temporary files found to clean up");
     }
 
     // Initialize phaser-query
@@ -296,9 +342,20 @@ async fn start_sync_admin_server(
     config: PhaserConfig,
     live_state: Arc<LiveStreamingState>,
 ) -> Result<()> {
+    use core_executor::ThreadPoolExecutor;
     use phaser_query::sync::SyncServer;
+    use std::sync::{Arc as StdArc, Mutex};
 
-    let server = SyncServer::new(Arc::new(config.clone()), live_state);
+    // Create thread pool executor for I/O-bound work (parquet metadata scanning)
+    // Regular pool is sufficient since we're I/O-bound, not CPU-bound
+    let num_threads = num_cpus::get();
+    info!(
+        "DataScanner: Creating thread pool with {} threads for I/O-bound parquet scanning",
+        num_threads
+    );
+    let executor = StdArc::new(Mutex::new(ThreadPoolExecutor::new(num_threads)));
+
+    let server = SyncServer::new(Arc::new(config.clone()), live_state, executor);
     server.start(config.sync_admin_port).await?;
 
     Ok(())

@@ -3,14 +3,29 @@ use crate::sync::data_scanner::DataScanner;
 use crate::ParquetConfig;
 use anyhow::{Context, Result};
 use arrow::array as arrow_array;
+use evm_common::proof::{generate_transaction_proof, MerkleProofRecord};
+use evm_common::transaction::TransactionRecord;
 use futures::StreamExt;
 use phaser_bridge::client::FlightBridgeClient;
-use phaser_bridge::descriptors::{BlockchainDescriptor, StreamType};
+use phaser_bridge::descriptors::{BlockchainDescriptor, StreamType, ValidationStage};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+use typed_arrow::prelude::*;
+
+/// Check if an error is transient and should trigger a retry
+fn is_transient_error(err: &anyhow::Error) -> bool {
+    let err_str = err.to_string();
+    err_str.contains("txn 0 already rollback")
+        || err_str.contains("Timeout expired")
+        || err_str.contains("connection")
+        || err_str.contains("Cancelled")
+        || err_str.contains("Failed to receive")
+        || err_str.contains("stream")
+}
 
 /// Write a 0-byte .empty file to mark a range as checked but containing no data
 fn write_empty_marker(
@@ -63,6 +78,9 @@ pub struct SyncWorker {
     _batch_size: u32,
     parquet_config: Option<ParquetConfig>,
     progress_tracker: Option<ProgressTracker>,
+    validation_stage: ValidationStage,
+    segment_work: crate::sync::data_scanner::SegmentWork, // Pre-computed missing ranges
+    current_progress: Arc<RwLock<WorkerProgress>>, // Real-time progress state
 }
 
 impl SyncWorker {
@@ -76,7 +94,25 @@ impl SyncWorker {
         max_file_size_mb: u64,
         batch_size: u32,
         parquet_config: Option<ParquetConfig>,
+        validation_stage: ValidationStage,
+        segment_work: crate::sync::data_scanner::SegmentWork,
     ) -> Self {
+        // Initialize progress state
+        let current_progress = Arc::new(RwLock::new(WorkerProgress {
+            worker_id,
+            from_block,
+            to_block,
+            current_phase: "initializing".to_string(),
+            blocks_completed: false,
+            transactions_completed: false,
+            logs_completed: false,
+            started_at: std::time::SystemTime::now(),
+            current_block: from_block,
+            blocks_processed: 0,
+            bytes_written: 0,
+            files_created: 0,
+        }));
+
         Self {
             worker_id,
             bridge_endpoint,
@@ -88,12 +124,49 @@ impl SyncWorker {
             _batch_size: batch_size,
             parquet_config,
             progress_tracker: None,
+            validation_stage,
+            segment_work,
+            current_progress,
         }
     }
 
     pub fn with_progress_tracker(mut self, tracker: ProgressTracker) -> Self {
         self.progress_tracker = Some(tracker);
+
+        // Spawn background progress reporter if tracker is set
+        if self.progress_tracker.is_some() {
+            let tracker = self.progress_tracker.clone().unwrap();
+            let current_progress = self.current_progress.clone();
+            let worker_id = self.worker_id;
+
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                loop {
+                    interval.tick().await;
+
+                    // Clone current progress and report it
+                    let progress = current_progress.read().await.clone();
+                    let mut tracker_lock = tracker.write().await;
+                    tracker_lock.insert(worker_id, progress);
+                }
+            });
+        }
+
         self
+    }
+
+    /// Update the current progress state (call frequently during batch processing)
+    async fn update_current_progress(&self, bytes_delta: u64) {
+        let mut progress = self.current_progress.write().await;
+        progress.bytes_written += bytes_delta;
+    }
+
+    /// Update the current stage
+    async fn update_stage(&self, stage: &str) {
+        let mut progress = self.current_progress.write().await;
+        progress.current_phase = stage.to_string();
     }
 
     async fn update_progress(
@@ -142,25 +215,35 @@ impl SyncWorker {
             self.worker_id, self.from_block, self.to_block, self.bridge_endpoint
         );
 
-        // Initialize progress
-        self.update_progress("scanning", false, false, false, self.from_block, 0, 0, 0)
-            .await;
-
-        // Scan for missing ranges using DataScanner
-        let scanner = DataScanner::new(self.data_dir.clone());
-        let missing_blocks =
-            scanner.find_missing_ranges("blocks", self.from_block, self.to_block)?;
-        let missing_txs =
-            scanner.find_missing_ranges("transactions", self.from_block, self.to_block)?;
-        let missing_logs = scanner.find_missing_ranges("logs", self.from_block, self.to_block)?;
+        // Use pre-computed missing ranges from segment_work (no file I/O needed!)
+        let missing_blocks = self.segment_work.missing_blocks.clone();
+        let missing_txs = self.segment_work.missing_transactions.clone();
+        let missing_logs = self.segment_work.missing_logs.clone();
 
         let blocks_complete = missing_blocks.is_empty();
         let txs_complete = missing_txs.is_empty();
         let logs_complete = missing_logs.is_empty();
 
-        // Note: We don't skip work even if scanner reports everything complete
-        // Empty parquet files may exist but contain no actual data
-        // Always attempt to sync missing ranges to verify data exists
+        info!(
+            "Worker {} segment work: blocks={} ranges, txs={} ranges, logs={} ranges",
+            self.worker_id,
+            missing_blocks.len(),
+            missing_txs.len(),
+            missing_logs.len()
+        );
+
+        // Initialize progress
+        self.update_progress(
+            "connecting",
+            blocks_complete,
+            txs_complete,
+            logs_complete,
+            self.from_block,
+            0,
+            0,
+            0,
+        )
+        .await;
 
         // Connect to bridge via Arrow Flight
         let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
@@ -175,6 +258,7 @@ impl SyncWorker {
 
         // Sync missing blocks ranges
         if !blocks_complete {
+            self.update_stage("blocks").await;
             self.update_progress(
                 "blocks",
                 false,
@@ -203,6 +287,7 @@ impl SyncWorker {
 
         // Sync missing transaction ranges
         if !txs_complete {
+            self.update_stage("transactions").await;
             self.update_progress(
                 "transactions",
                 true,
@@ -231,6 +316,7 @@ impl SyncWorker {
 
         // Sync missing log ranges
         if !logs_complete {
+            self.update_stage("logs").await;
             self.update_progress(
                 "logs",
                 true,
@@ -287,6 +373,56 @@ impl SyncWorker {
             self.parquet_config.clone(),
         )?;
 
+        // Retry with resume logic
+        const INITIAL_BACKOFF_SECS: u64 = 1;
+        const MAX_BACKOFF_SECS: u64 = 60;
+        let mut retry_count = 0u32;
+        let mut resume_from = from_block;
+
+        let (batches_processed, bytes_written) = loop {
+            match self.try_sync_blocks_stream(client, resume_from, to_block, &mut writer, from_block).await {
+                Ok(result) => break result,
+                Err(e) if is_transient_error(&e) => {
+                    // Get the last block we successfully wrote
+                    let last_written = writer.last_written_block().unwrap_or(resume_from - 1);
+                    resume_from = last_written + 1;
+
+                    if resume_from > to_block {
+                        // We actually completed, the error was after all data
+                        info!(
+                            "Worker {} completed blocks {}-{} before stream error",
+                            self.worker_id, from_block, to_block
+                        );
+                        break (0, 0); // Already finalized
+                    }
+
+                    retry_count += 1;
+                    let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
+                        .min(MAX_BACKOFF_SECS);
+
+                    warn!(
+                        "Worker {} blocks stream failed at block {} (attempt {}): {}. Resuming from block {} in {}s...",
+                        self.worker_id, last_written, retry_count, e, resume_from, backoff_secs
+                    );
+
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        };
+
+        Ok((batches_processed, bytes_written))
+    }
+
+    async fn try_sync_blocks_stream(
+        &mut self,
+        client: &mut FlightBridgeClient,
+        from_block: u64,
+        to_block: u64,
+        writer: &mut ParquetWriter,
+        original_from: u64,
+    ) -> Result<(u64, u64)> {
         // Create historical query descriptor
         let descriptor = BlockchainDescriptor::historical(StreamType::Blocks, from_block, to_block);
 
@@ -300,7 +436,6 @@ impl SyncWorker {
         let mut bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
-        let mut schema: Option<arrow::datatypes::SchemaRef> = None;
 
         while let Some(batch_result) = stream.next().await {
             let batch = batch_result.context("Failed to receive block batch")?;
@@ -328,22 +463,24 @@ impl SyncWorker {
                 }
             }
 
-            let batch_bytes = batch.get_array_memory_size() as u64;
-            bytes_written += batch_bytes;
-
-            // Write Arrow RecordBatch directly to parquet
-            writer
+            // Write Arrow RecordBatch directly to parquet and get actual bytes written
+            let batch_bytes = writer
                 .write_batch(batch)
                 .await
                 .context("Failed to write block batch")?;
 
+            bytes_written += batch_bytes;
+
+            // Update progress with actual disk bytes
+            self.update_current_progress(batch_bytes).await;
+
             batches_processed += 1;
         }
 
-        // Validate we got the expected range
+        // Validate we got the expected range (only if this is not a resume)
         if batches_processed > 0 {
             if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
-                if first != from_block {
+                if from_block == original_from && first != from_block {
                     anyhow::bail!(
                         "Bridge returned blocks starting at {} but requested range started at {}",
                         first,
@@ -359,9 +496,9 @@ impl SyncWorker {
                 }
             }
             writer.finalize_current_file()?;
-        } else {
-            // No data received - write empty marker to mark range as checked
-            write_empty_marker(&self.data_dir, "blocks", from_block, to_block)?;
+        } else if from_block == original_from {
+            // No data received for original request - write empty marker
+            write_empty_marker(&self.data_dir, "blocks", original_from, to_block)?;
         }
 
         Ok((batches_processed, bytes_written))
@@ -381,9 +518,84 @@ impl SyncWorker {
             self.parquet_config.clone(),
         )?;
 
-        // Create historical query descriptor for transactions
+        // Check if proof generation is enabled
+        let generate_proofs = self
+            .parquet_config
+            .as_ref()
+            .map(|c| c.generate_proofs)
+            .unwrap_or(false);
+
+        let mut proof_writer = if generate_proofs {
+            info!(
+                "Worker {} will generate merkle proofs for transactions",
+                self.worker_id
+            );
+            Some(ParquetWriter::with_config(
+                self.data_dir.clone(),
+                self.max_file_size_mb,
+                self.segment_size,
+                "proofs".to_string(),
+                self.parquet_config.clone(),
+            )?)
+        } else {
+            None
+        };
+
+        // Retry with resume logic
+        const INITIAL_BACKOFF_SECS: u64 = 1;
+        const MAX_BACKOFF_SECS: u64 = 60;
+        let mut retry_count = 0u32;
+        let mut resume_from = from_block;
+
+        let (batches_processed, bytes_written) = loop {
+            match self.try_sync_transactions_stream(client, resume_from, to_block, &mut writer, &mut proof_writer, from_block).await {
+                Ok(result) => break result,
+                Err(e) if is_transient_error(&e) => {
+                    // Get the last block we successfully wrote
+                    let last_written = writer.last_written_block().unwrap_or(resume_from - 1);
+                    resume_from = last_written + 1;
+
+                    if resume_from > to_block {
+                        // We actually completed, the error was after all data
+                        info!(
+                            "Worker {} completed transactions {}-{} before stream error",
+                            self.worker_id, from_block, to_block
+                        );
+                        break (0, 0); // Already finalized
+                    }
+
+                    retry_count += 1;
+                    let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
+                        .min(MAX_BACKOFF_SECS);
+
+                    warn!(
+                        "Worker {} transactions stream failed at block {} (attempt {}): {}. Resuming from block {} in {}s...",
+                        self.worker_id, last_written, retry_count, e, resume_from, backoff_secs
+                    );
+
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        };
+
+        Ok((batches_processed, bytes_written))
+    }
+
+    async fn try_sync_transactions_stream(
+        &mut self,
+        client: &mut FlightBridgeClient,
+        from_block: u64,
+        to_block: u64,
+        writer: &mut ParquetWriter,
+        proof_writer: &mut Option<ParquetWriter>,
+        original_from: u64,
+    ) -> Result<(u64, u64)> {
+        // Create historical query descriptor for transactions with configured validation stage
         let descriptor =
-            BlockchainDescriptor::historical(StreamType::Transactions, from_block, to_block);
+            BlockchainDescriptor::historical(StreamType::Transactions, from_block, to_block)
+                .with_validation(self.validation_stage);
 
         // Subscribe to the transaction stream (returns Arrow RecordBatches)
         let mut stream = client
@@ -422,43 +634,123 @@ impl SyncWorker {
                 }
             }
 
-            let batch_bytes = batch.get_array_memory_size() as u64;
-            bytes_written += batch_bytes;
+            // Generate proofs if enabled
+            if let Some(ref mut proof_w) = proof_writer {
+                if let Ok(proof_batch) = self.generate_proofs_for_batch(&batch) {
+                    proof_w
+                        .write_batch(proof_batch)
+                        .await
+                        .context("Failed to write proof batch")?;
+                } else {
+                    warn!(
+                        "Worker {} failed to generate proofs for batch",
+                        self.worker_id
+                    );
+                }
+            }
 
-            // Write Arrow RecordBatch directly to parquet
-            writer
+            // Write Arrow RecordBatch directly to parquet and get actual bytes written
+            let batch_bytes = writer
                 .write_batch(batch)
                 .await
                 .context("Failed to write transaction batch")?;
 
+            bytes_written += batch_bytes;
+
+            // Update progress with actual disk bytes
+            self.update_current_progress(batch_bytes).await;
+
             batches_processed += 1;
         }
 
-        // Validate we got the expected range
+        // Validate we got data within the expected range
+        // Note: Early blocks may have no transactions, so first block can be > from_block
         if batches_processed > 0 {
             if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
-                if first != from_block {
+                if first < from_block || first > to_block {
                     anyhow::bail!(
-                        "Bridge returned transactions starting at block {} but requested range started at {}",
+                        "Bridge returned transactions starting at block {} which is outside requested range {}-{}",
                         first,
-                        from_block
+                        from_block,
+                        to_block
                     );
                 }
-                if last != to_block {
+                if last < from_block || last > to_block {
                     anyhow::bail!(
-                        "Bridge returned transactions ending at block {} but requested range ended at {}",
+                        "Bridge returned transactions ending at block {} which is outside requested range {}-{}",
                         last,
+                        from_block,
                         to_block
                     );
                 }
             }
             writer.finalize_current_file()?;
-        } else {
-            // No data received - write empty marker to mark range as checked
-            write_empty_marker(&self.data_dir, "transactions", from_block, to_block)?;
+            if let Some(ref mut proof_w) = proof_writer {
+                proof_w.finalize_current_file()?;
+            }
+        } else if from_block == original_from {
+            // No data received for original request - write empty marker
+            write_empty_marker(&self.data_dir, "transactions", original_from, to_block)?;
         }
 
         Ok((batches_processed, bytes_written))
+    }
+
+    fn generate_proofs_for_batch(
+        &self,
+        batch: &arrow::array::RecordBatch,
+    ) -> Result<arrow::array::RecordBatch> {
+        use alloy_consensus::TxEnvelope;
+        use std::collections::BTreeMap;
+
+        // Convert RecordBatch to TransactionRecords
+        let views = batch.iter_views::<TransactionRecord>()?;
+        let tx_records: Vec<TransactionRecord> = views
+            .try_flatten()?
+            .into_iter()
+            .map(|v| v.try_into())
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Group transactions by block number
+        let mut txs_by_block: BTreeMap<u64, Vec<TransactionRecord>> = BTreeMap::new();
+        for tx in tx_records {
+            txs_by_block.entry(tx.block_num).or_default().push(tx);
+        }
+
+        // Generate proofs for each block
+        let mut all_proofs = Vec::new();
+        for (block_num, txs) in txs_by_block {
+            // Convert transactions to RLP
+            let tx_rlps: Vec<Vec<u8>> = txs
+                .iter()
+                .filter_map(|tx| {
+                    TxEnvelope::try_from(tx)
+                        .ok()
+                        .map(|envelope| alloy_rlp::encode(&envelope))
+                })
+                .collect();
+
+            // Generate proof for each transaction
+            for (index, _tx) in txs.iter().enumerate() {
+                if let Ok((root, proof_nodes, value)) = generate_transaction_proof(&tx_rlps, index)
+                {
+                    let proof = MerkleProofRecord::new_transaction_proof(
+                        block_num,
+                        index as u64,
+                        root,
+                        proof_nodes,
+                        value,
+                    );
+                    all_proofs.push(proof);
+                }
+            }
+        }
+
+        // Convert proofs to RecordBatch
+        let mut builder = <MerkleProofRecord as BuildRows>::new_builders(all_proofs.len());
+        builder.append_rows(all_proofs);
+        let arrays = builder.finish();
+        Ok(arrays.into_record_batch())
     }
 
     async fn sync_logs_range(
@@ -475,8 +767,59 @@ impl SyncWorker {
             self.parquet_config.clone(),
         )?;
 
-        // Create historical query descriptor for logs (uses ExecuteBlocks)
-        let descriptor = BlockchainDescriptor::historical(StreamType::Logs, from_block, to_block);
+        // Retry with resume logic
+        const INITIAL_BACKOFF_SECS: u64 = 1;
+        const MAX_BACKOFF_SECS: u64 = 60;
+        let mut retry_count = 0u32;
+        let mut resume_from = from_block;
+
+        let (batches_processed, bytes_written) = loop {
+            match self.try_sync_logs_stream(client, resume_from, to_block, &mut writer, from_block).await {
+                Ok(result) => break result,
+                Err(e) if is_transient_error(&e) => {
+                    // Get the last block we successfully wrote
+                    let last_written = writer.last_written_block().unwrap_or(resume_from - 1);
+                    resume_from = last_written + 1;
+
+                    if resume_from > to_block {
+                        // We actually completed, the error was after all data
+                        info!(
+                            "Worker {} completed logs {}-{} before stream error",
+                            self.worker_id, from_block, to_block
+                        );
+                        break (0, 0); // Already finalized
+                    }
+
+                    retry_count += 1;
+                    let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
+                        .min(MAX_BACKOFF_SECS);
+
+                    warn!(
+                        "Worker {} logs stream failed at block {} (attempt {}): {}. Resuming from block {} in {}s...",
+                        self.worker_id, last_written, retry_count, e, resume_from, backoff_secs
+                    );
+
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        };
+
+        Ok((batches_processed, bytes_written))
+    }
+
+    async fn try_sync_logs_stream(
+        &mut self,
+        client: &mut FlightBridgeClient,
+        from_block: u64,
+        to_block: u64,
+        writer: &mut ParquetWriter,
+        original_from: u64,
+    ) -> Result<(u64, u64)> {
+        // Create historical query descriptor for logs with configured validation stage
+        let descriptor = BlockchainDescriptor::historical(StreamType::Logs, from_block, to_block)
+            .with_validation(self.validation_stage);
 
         // Subscribe to the log stream (returns Arrow RecordBatches)
         let mut stream = client
@@ -515,40 +858,45 @@ impl SyncWorker {
                 }
             }
 
-            let batch_bytes = batch.get_array_memory_size() as u64;
-            bytes_written += batch_bytes;
-
-            // Write Arrow RecordBatch directly to parquet
-            writer
+            // Write Arrow RecordBatch directly to parquet and get actual bytes written
+            let batch_bytes = writer
                 .write_batch(batch)
                 .await
                 .context("Failed to write log batch")?;
 
+            bytes_written += batch_bytes;
+
+            // Update progress with actual disk bytes
+            self.update_current_progress(batch_bytes).await;
+
             batches_processed += 1;
         }
 
-        // Validate we got the expected range
+        // Validate we got data within the expected range
+        // Note: Early blocks may have no logs, so first block can be > from_block
         if batches_processed > 0 {
             if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
-                if first != from_block {
+                if first < from_block || first > to_block {
                     anyhow::bail!(
-                        "Bridge returned logs starting at block {} but requested range started at {}",
+                        "Bridge returned logs starting at block {} which is outside requested range {}-{}",
                         first,
-                        from_block
+                        from_block,
+                        to_block
                     );
                 }
-                if last != to_block {
+                if last < from_block || last > to_block {
                     anyhow::bail!(
-                        "Bridge returned logs ending at block {} but requested range ended at {}",
+                        "Bridge returned logs ending at block {} which is outside requested range {}-{}",
                         last,
+                        from_block,
                         to_block
                     );
                 }
             }
             writer.finalize_current_file()?;
-        } else {
-            // No data received - write empty marker to mark range as checked
-            write_empty_marker(&self.data_dir, "logs", from_block, to_block)?;
+        } else if from_block == original_from {
+            // No data received for original request - write empty marker
+            write_empty_marker(&self.data_dir, "logs", original_from, to_block)?;
         }
 
         Ok((batches_processed, bytes_written))

@@ -7,6 +7,7 @@ use typed_arrow::schema::SchemaMeta;
 pub mod block;
 pub mod error;
 pub mod log;
+pub mod proof;
 pub mod rpc_conversions;
 pub mod transaction;
 pub mod trie;
@@ -33,4 +34,9 @@ pub fn log_arrow_schema() -> arrow::datatypes::SchemaRef {
 /// Get the Arrow schema for trie nodes
 pub fn trie_arrow_schema() -> arrow::datatypes::SchemaRef {
     crate::trie::TrieNodeRecord::schema()
+}
+
+/// Get the Arrow schema for merkle proofs
+pub fn proof_arrow_schema() -> arrow::datatypes::SchemaRef {
+    crate::proof::MerkleProofRecord::schema()
 }

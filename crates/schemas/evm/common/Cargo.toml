@@ -3,13 +3,21 @@ name = "evm-common"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+views = []
+
 [dependencies]
-typed-arrow = { workspace = true }
+typed-arrow = { workspace = true, features = ["views"] }
 arrow = { workspace = true }
 arrow-array = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 alloy-network = { workspace = true }
+alloy-eip2930 = "0.2"
+alloy-eip7702 = "0.6"
+alloy-rlp = { workspace = true }
+alloy-trie = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+anyhow = { workspace = true }

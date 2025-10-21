@@ -4,29 +4,35 @@ use crate::sync::data_scanner::DataScanner;
 use crate::sync::worker::{ProgressTracker, SyncWorker};
 use crate::PhaserConfig;
 use anyhow::Result;
+use core_executor::ThreadPoolExecutor;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::proto::admin::{GapAnalysis as ProtoGapAnalysis, IncompleteSegment};
-use crate::sync::data_scanner::GapAnalysis as DataGapAnalysis;
+use crate::proto::admin::{
+    DataProgress as ProtoDataProgress, DataTypeProgress as ProtoDataTypeProgress,
+    FileStatistics as ProtoFileStatistics, GapAnalysis as ProtoGapAnalysis, IncompleteSegment,
+};
+use crate::sync::data_scanner::{
+    DataProgress, DataTypeProgress, FileStatistics, GapAnalysis as DataGapAnalysis,
+};
 
 /// Convert internal GapAnalysis to proto
 fn gap_analysis_to_proto(analysis: &DataGapAnalysis, segment_size: u64) -> ProtoGapAnalysis {
     let incomplete_details = analysis
-        .incomplete_segments
+        .segments_needing_work
         .iter()
-        .map(|(segment_num, missing_types)| {
-            let from_block = segment_num * segment_size;
+        .map(|work| {
+            let from_block = work.segment_num * segment_size;
             let to_block = from_block + segment_size - 1;
             IncompleteSegment {
-                segment_num: *segment_num,
+                segment_num: work.segment_num,
                 from_block,
                 to_block,
-                missing_data_types: missing_types.clone(),
+                missing_data_types: work.missing_types(),
             }
         })
         .collect();
@@ -37,8 +43,48 @@ fn gap_analysis_to_proto(analysis: &DataGapAnalysis, segment_size: u64) -> Proto
         missing_segments: analysis.missing_count() as u64,
         completion_percentage: analysis.completion_percentage(),
         cleaned_temp_files: analysis.cleaned_temp_files as u64,
-        segments_to_sync: analysis.missing_segments.clone(),
+        segments_to_sync: analysis
+            .segments_needing_work
+            .iter()
+            .map(|w| w.segment_num)
+            .collect(),
         incomplete_details,
+    }
+}
+
+/// Convert internal DataProgress to proto
+fn data_progress_to_proto(progress: &DataProgress) -> ProtoDataProgress {
+    ProtoDataProgress {
+        blocks: Some(data_type_progress_to_proto(&progress.blocks)),
+        transactions: Some(data_type_progress_to_proto(&progress.transactions)),
+        logs: Some(data_type_progress_to_proto(&progress.logs)),
+        file_stats: Some(file_statistics_to_proto(&progress.file_stats)),
+    }
+}
+
+/// Convert internal DataTypeProgress to proto
+fn data_type_progress_to_proto(progress: &DataTypeProgress) -> ProtoDataTypeProgress {
+    ProtoDataTypeProgress {
+        blocks_on_disk: progress.blocks_on_disk,
+        gap_count: progress.gap_count,
+        coverage_percentage: progress.coverage_percentage,
+        highest_continuous: progress.highest_continuous,
+    }
+}
+
+/// Convert internal FileStatistics to proto
+fn file_statistics_to_proto(stats: &FileStatistics) -> ProtoFileStatistics {
+    ProtoFileStatistics {
+        total_files: stats.total_files,
+        blocks_files: stats.blocks_files,
+        transactions_files: stats.transactions_files,
+        logs_files: stats.logs_files,
+        proofs_files: stats.proofs_files,
+        total_disk_bytes: stats.total_disk_bytes,
+        blocks_disk_bytes: stats.blocks_disk_bytes,
+        transactions_disk_bytes: stats.transactions_disk_bytes,
+        logs_disk_bytes: stats.logs_disk_bytes,
+        proofs_disk_bytes: stats.proofs_disk_bytes,
     }
 }
 
@@ -64,14 +110,20 @@ pub struct SyncServer {
     config: Arc<PhaserConfig>,
     jobs: Arc<RwLock<HashMap<String, SyncJobState>>>,
     live_state: Arc<crate::LiveStreamingState>,
+    executor: Arc<Mutex<ThreadPoolExecutor>>,
 }
 
 impl SyncServer {
-    pub fn new(config: Arc<PhaserConfig>, live_state: Arc<crate::LiveStreamingState>) -> Self {
+    pub fn new(
+        config: Arc<PhaserConfig>,
+        live_state: Arc<crate::LiveStreamingState>,
+        executor: Arc<Mutex<ThreadPoolExecutor>>,
+    ) -> Self {
         Self {
             config,
             jobs: Arc::new(RwLock::new(HashMap::new())),
             live_state,
+            executor,
         }
     }
 
@@ -102,6 +154,7 @@ impl SyncServer {
         to_block: u64,
         progress_tracker: ProgressTracker,
         historical_boundary: Option<u64>,
+        executor: Arc<Mutex<ThreadPoolExecutor>>,
     ) -> Result<()> {
         // Update status to RUNNING
         {
@@ -121,7 +174,7 @@ impl SyncServer {
 
         // Find which segments need to be synced (supports resume)
         let data_dir = config.bridge_data_dir(chain_id, &bridge_name);
-        let scanner = DataScanner::new(data_dir.clone());
+        let scanner = DataScanner::new(data_dir.clone(), executor);
 
         // Use boundary from LiveStreamingState (already computed in start_sync)
         // This is more reliable than scanning temp files
@@ -129,19 +182,24 @@ impl SyncServer {
         // Analyze what needs syncing
         let mut analysis = scanner
             .analyze_sync_range(from_block, to_block, segment_size)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to analyze sync range: {}", e))?;
 
         // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
         let segments_to_clean: Vec<u64> = if let Some(boundary) = historical_boundary {
             let live_segment = (boundary + 1) / segment_size;
             analysis
-                .missing_segments
+                .segments_needing_work
                 .iter()
-                .filter(|&seg| *seg < live_segment)
-                .copied()
+                .filter(|w| w.segment_num < live_segment)
+                .map(|w| w.segment_num)
                 .collect()
         } else {
-            analysis.missing_segments.clone()
+            analysis
+                .segments_needing_work
+                .iter()
+                .map(|w| w.segment_num)
+                .collect()
         };
 
         // Clean only temp files that conflict with segments we're about to sync (excluding live sync segments)
@@ -176,16 +234,14 @@ impl SyncServer {
             return Ok(());
         }
 
-        let missing_segments = analysis.missing_segments;
-        let total_segments = missing_segments.len() as u64;
+        // Use the segments_needing_work from analysis
+        let total_segments = analysis.missing_count() as u64;
+        let segment_queue = Arc::new(tokio::sync::Mutex::new(analysis.segments_needing_work));
 
         info!(
             "Found {} segments to sync ({} blocks per segment)",
             total_segments, segment_size
         );
-
-        // Convert missing segments to a shared queue
-        let segment_queue = Arc::new(tokio::sync::Mutex::new(missing_segments));
 
         // Spawn worker tasks that pull segments from the queue
         let mut worker_handles = vec![];
@@ -202,13 +258,14 @@ impl SyncServer {
             let progress_tracker = progress_tracker.clone();
             let parquet_config = config.parquet.clone();
             let failed_segments = failed_segments.clone();
+            let validation_stage = config.validation_stage;
 
             let handle = tokio::spawn(async move {
                 let mut worker_errors = 0u32;
 
                 loop {
-                    // Get next segment to process
-                    let segment_num = {
+                    // Get next segment work item
+                    let work = {
                         let mut queue = segment_queue.lock().await;
                         if queue.is_empty() {
                             info!(
@@ -220,17 +277,17 @@ impl SyncServer {
                         queue.remove(0)
                     };
 
-                    // Calculate block range for this segment
-                    let segment_from = segment_num * segment_size;
-                    let segment_to = (segment_num + 1) * segment_size - 1;
-
-                    // Clamp to the requested range (both start and end)
-                    let segment_from = std::cmp::max(segment_from, from_block);
-                    let segment_to = std::cmp::min(segment_to, to_block);
+                    let segment_num = work.segment_num;
+                    let segment_from = work.segment_from;
+                    let segment_to = work.segment_to;
 
                     info!(
-                        "Worker {} processing segment {} (blocks {}-{})",
-                        worker_id, segment_num, segment_from, segment_to
+                        "Worker {} processing segment {} (blocks {}-{}) - syncing: {:?}",
+                        worker_id,
+                        segment_num,
+                        segment_from,
+                        segment_to,
+                        work.missing_types()
                     );
 
                     // Create and run worker for this segment
@@ -244,6 +301,8 @@ impl SyncServer {
                         max_file_size_mb,
                         1000, // batch_size
                         parquet_config.clone(),
+                        validation_stage,
+                        work,
                     )
                     .with_progress_tracker(progress_tracker.clone());
 
@@ -355,10 +414,10 @@ impl SyncService for SyncServer {
             req.chain_id, req.bridge_name, req.from_block, req.to_block
         );
 
-        // Validate request
-        if req.from_block >= req.to_block {
+        // Validate request (allow single-block syncs where from == to)
+        if req.from_block > req.to_block {
             return Err(Status::invalid_argument(
-                "from_block must be less than to_block",
+                "from_block must be less than or equal to to_block",
             ));
         }
 
@@ -406,25 +465,30 @@ impl SyncService for SyncServer {
 
         // Perform gap analysis before starting job
         let data_dir = self.config.bridge_data_dir(req.chain_id, &req.bridge_name);
-        let scanner = DataScanner::new(data_dir.clone());
+        let scanner = DataScanner::new(data_dir.clone(), self.executor.clone());
 
         // Analyze what needs syncing
         let mut gap_analysis = scanner
             .analyze_sync_range(req.from_block, to_block, self.config.segment_size)
+            .await
             .map_err(|e| Status::internal(format!("Failed to analyze sync range: {}", e)))?;
 
         // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
         let segments_to_clean: Vec<u64> = if let Some(boundary_block) = historical_boundary {
             let live_segment = boundary_block / self.config.segment_size;
             gap_analysis
-                .missing_segments
+                .segments_needing_work
                 .iter()
-                .filter(|&seg| *seg < live_segment)
-                .copied()
+                .filter(|w| w.segment_num < live_segment)
+                .map(|w| w.segment_num)
                 .collect()
         } else {
             // No live streaming - safe to clean all missing segments
-            gap_analysis.missing_segments.clone()
+            gap_analysis
+                .segments_needing_work
+                .iter()
+                .map(|w| w.segment_num)
+                .collect()
         };
 
         // Clean only temp files that conflict with segments we're about to sync (excluding live sync segments)
@@ -467,6 +531,7 @@ impl SyncService for SyncServer {
         let bridge_name = req.bridge_name.clone();
         let chain_id = req.chain_id;
         let from_block = req.from_block;
+        let executor = self.executor.clone();
 
         tokio::spawn(async move {
             if let Err(e) = Self::run_sync_job(
@@ -480,6 +545,7 @@ impl SyncService for SyncServer {
                 to_block,
                 progress_tracker,
                 historical_boundary,
+                executor,
             )
             .await
             {
@@ -525,9 +591,10 @@ impl SyncService for SyncServer {
 
         // Scan disk for ground truth - what's actually completed
         let data_dir = self.config.bridge_data_dir(job.chain_id, &job.bridge_name);
-        let scanner = DataScanner::new(data_dir);
+        let scanner = DataScanner::new(data_dir, self.executor.clone());
         let analysis = scanner
             .analyze_sync_range(job.from_block, job.to_block, self.config.segment_size)
+            .await
             .map_err(|e| Status::internal(format!("Failed to analyze sync progress: {}", e)))?;
 
         // Calculate actual progress from disk
@@ -549,7 +616,29 @@ impl SyncService for SyncServer {
         let progress = job.progress_tracker.read().await;
         let active_workers = progress.len() as u32;
 
+        // Calculate download rate from active workers
+        let now = std::time::SystemTime::now();
+        let download_rate_bytes_per_sec = progress
+            .values()
+            .filter_map(|p| {
+                if let Ok(elapsed) = now.duration_since(p.started_at) {
+                    let secs = elapsed.as_secs_f64();
+                    if secs > 0.0 {
+                        return Some(p.bytes_written as f64 / secs);
+                    }
+                }
+                None
+            })
+            .sum();
+
         let total_blocks = job.to_block - job.from_block + 1;
+
+        // Calculate detailed progress metrics
+        let data_progress = scanner
+            .calculate_data_progress(job.from_block, job.to_block)
+            .await
+            .ok()
+            .map(|dp| data_progress_to_proto(&dp));
 
         Ok(Response::new(SyncStatusResponse {
             job_id: job.job_id.clone(),
@@ -564,6 +653,8 @@ impl SyncService for SyncServer {
             from_block: job.from_block,
             to_block: job.to_block,
             gap_analysis: Some(gap_analysis_to_proto(&analysis, self.config.segment_size)),
+            data_progress,
+            download_rate_bytes_per_sec,
         }))
     }
 
@@ -587,9 +678,10 @@ impl SyncService for SyncServer {
 
             // Scan disk for actual progress
             let data_dir = self.config.bridge_data_dir(job.chain_id, &job.bridge_name);
-            let scanner = DataScanner::new(data_dir);
-            let (blocks_synced, max_completed_block, gap_analysis) = match scanner
+            let scanner = DataScanner::new(data_dir, self.executor.clone());
+            let (blocks_synced, max_completed_block, gap_analysis, data_progress) = match scanner
                 .analyze_sync_range(job.from_block, job.to_block, self.config.segment_size)
+                .await
             {
                 Ok(analysis) => {
                     let complete_segments = analysis.complete_segments.len() as u64;
@@ -603,17 +695,42 @@ impl SyncService for SyncServer {
                             std::cmp::min(seg_end, job.to_block)
                         })
                         .unwrap_or(job.from_block);
+
+                    // Calculate detailed progress
+                    let data_progress = scanner
+                        .calculate_data_progress(job.from_block, job.to_block)
+                        .await
+                        .ok()
+                        .map(|dp| data_progress_to_proto(&dp));
+
                     (
                         blocks,
                         max_block,
                         Some(gap_analysis_to_proto(&analysis, self.config.segment_size)),
+                        data_progress,
                     )
                 }
-                Err(_) => (0, job.from_block, None),
+                Err(_) => (0, job.from_block, None, None),
             };
 
-            // Count active workers
-            let active_workers = job.progress_tracker.read().await.len() as u32;
+            // Count active workers and calculate download rate
+            let progress = job.progress_tracker.read().await;
+            let active_workers = progress.len() as u32;
+
+            // Calculate download rate from active workers
+            let now = std::time::SystemTime::now();
+            let download_rate_bytes_per_sec = progress
+                .values()
+                .filter_map(|p| {
+                    if let Ok(elapsed) = now.duration_since(p.started_at) {
+                        let secs = elapsed.as_secs_f64();
+                        if secs > 0.0 {
+                            return Some(p.bytes_written as f64 / secs);
+                        }
+                    }
+                    None
+                })
+                .sum();
 
             job_list.push(SyncStatusResponse {
                 job_id: job.job_id.clone(),
@@ -628,6 +745,8 @@ impl SyncService for SyncServer {
                 from_block: job.from_block,
                 to_block: job.to_block,
                 gap_analysis,
+                data_progress,
+                download_rate_bytes_per_sec,
             });
         }
 
@@ -684,11 +803,12 @@ impl SyncService for SyncServer {
 
         // Perform gap analysis
         let data_dir = self.config.bridge_data_dir(req.chain_id, &req.bridge_name);
-        let scanner = DataScanner::new(data_dir.clone());
+        let scanner = DataScanner::new(data_dir.clone(), self.executor.clone());
 
         // Analyze what needs syncing
         let mut gap_analysis = scanner
             .analyze_sync_range(req.from_block, req.to_block, self.config.segment_size)
+            .await
             .map_err(|e| Status::internal(format!("Failed to analyze sync range: {}", e)))?;
 
         // Get historical boundary from LiveStreamingState to avoid cleaning live streaming temp files
@@ -701,14 +821,18 @@ impl SyncService for SyncServer {
         let segments_to_clean: Vec<u64> = if let Some(boundary_block) = historical_boundary {
             let live_segment = boundary_block / self.config.segment_size;
             gap_analysis
-                .missing_segments
+                .segments_needing_work
                 .iter()
-                .filter(|&seg| *seg < live_segment)
-                .copied()
+                .filter(|w| w.segment_num < live_segment)
+                .map(|w| w.segment_num)
                 .collect()
         } else {
             // No live streaming - safe to clean all missing segments
-            gap_analysis.missing_segments.clone()
+            gap_analysis
+                .segments_needing_work
+                .iter()
+                .map(|w| w.segment_num)
+                .collect()
         };
 
         // Clean only temp files that conflict with segments we're analyzing (excluding live sync segments)
@@ -760,6 +884,7 @@ impl SyncService for SyncServer {
         let jobs = self.jobs.clone();
         let job_id = req.job_id.clone();
         let config = self.config.clone();
+        let executor = self.executor.clone();
 
         let stream = async_stream::stream! {
             loop {
@@ -769,18 +894,41 @@ impl SyncService for SyncServer {
                     if let Some(job) = jobs_lock.get(&job_id) {
                         // Scan disk for actual progress
                         let data_dir = config.bridge_data_dir(job.chain_id, &job.bridge_name);
-                        let scanner = DataScanner::new(data_dir);
+                        let scanner = DataScanner::new(data_dir, executor.clone());
                         let total_blocks_synced = match scanner.analyze_sync_range(
                             job.from_block,
                             job.to_block,
                             config.segment_size,
-                        ) {
+                        ).await {
                             Ok(analysis) => analysis.complete_segments.len() as u64 * config.segment_size,
                             Err(_) => 0, // Fallback if scan fails
                         };
 
+                        // Calculate detailed progress
+                        let data_progress = scanner
+                            .calculate_data_progress(job.from_block, job.to_block)
+                            .await
+                            .ok()
+                            .map(|dp| data_progress_to_proto(&dp));
+
                         // Read worker progress for UX visibility
                         let progress_lock = job.progress_tracker.read().await;
+
+                        // Calculate download rate from active workers
+                        let now = std::time::SystemTime::now();
+                        let download_rate_bytes_per_sec = progress_lock
+                            .values()
+                            .filter_map(|p| {
+                                if let Ok(elapsed) = now.duration_since(p.started_at) {
+                                    let secs = elapsed.as_secs_f64();
+                                    if secs > 0.0 {
+                                        return Some(p.bytes_written as f64 / secs);
+                                    }
+                                }
+                                None
+                            })
+                            .sum();
+
                         let workers: Vec<WorkerProgress> = progress_lock
                             .values()
                             .map(|p| {
@@ -823,6 +971,8 @@ impl SyncService for SyncServer {
                             total_blocks: job.to_block - job.from_block + 1,
                             overall_rate: 0.0,
                             total_bytes_written: 0,
+                            data_progress,
+                            download_rate_bytes_per_sec,
                         })
                     } else {
                         None

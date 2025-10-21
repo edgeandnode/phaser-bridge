@@ -1,5 +1,6 @@
 use crate::types::{Address20, Hash32, Wei};
 use alloy_consensus::Header;
+use alloy_primitives::B256;
 use typed_arrow::Record;
 
 /// EVM Block schema - common across all EVM chains
@@ -72,14 +73,12 @@ pub struct BlockRecord {
     pub parent_beacon_root: Option<Hash32>,
 }
 
-impl From<&Header> for BlockRecord {
-    fn from(header: &Header) -> Self {
-        let block_num = header.number;
-        let hash = header.hash_slow();
-
+impl BlockRecord {
+    /// Create BlockRecord from Header with known hash
+    pub fn from_header_with_hash(hash: B256, header: &Header) -> Self {
         BlockRecord {
-            _block_num: block_num,
-            block_num,
+            _block_num: header.number,
+            block_num: header.number,
             timestamp: header.timestamp as i64 * 1_000_000_000,
             hash: hash.into(),
             parent_hash: header.parent_hash.into(),
@@ -101,5 +100,58 @@ impl From<&Header> for BlockRecord {
             excess_blob_gas: header.excess_blob_gas,
             parent_beacon_root: header.parent_beacon_block_root.map(Into::into),
         }
+    }
+}
+
+impl From<&Header> for BlockRecord {
+    fn from(header: &Header) -> Self {
+        let hash = header.hash_slow();
+        BlockRecord::from_header_with_hash(hash, header)
+    }
+}
+
+/// Reverse conversion: BlockRecord → Header
+impl From<&BlockRecord> for Header {
+    fn from(record: &BlockRecord) -> Self {
+        use alloy_primitives::{Address, Bloom, Bytes, FixedBytes, B64, U256};
+
+        Header {
+            parent_hash: FixedBytes::from(record.parent_hash.bytes),
+            ommers_hash: FixedBytes::from(record.ommers_hash.bytes),
+            beneficiary: Address::from(record.miner.bytes),
+            state_root: FixedBytes::from(record.state_root.bytes),
+            transactions_root: FixedBytes::from(record.transactions_root.bytes),
+            receipts_root: FixedBytes::from(record.receipts_root.bytes),
+            logs_bloom: Bloom::from_slice(&record.logs_bloom),
+            difficulty: U256::from_le_bytes(record.difficulty.bytes),
+            number: record.block_num,
+            gas_limit: record.gas_limit,
+            gas_used: record.gas_used,
+            timestamp: (record.timestamp / 1_000_000_000) as u64,
+            extra_data: Bytes::copy_from_slice(&record.extra_data),
+            mix_hash: FixedBytes::from(record.mix_hash.bytes),
+            nonce: B64::from(record.nonce.to_be_bytes()),
+            base_fee_per_gas: record
+                .base_fee_per_gas
+                .as_ref()
+                .map(|w| U256::from_le_bytes(w.bytes).to::<u64>()),
+            withdrawals_root: record
+                .withdrawals_root
+                .as_ref()
+                .map(|h| FixedBytes::from(h.bytes)),
+            blob_gas_used: record.blob_gas_used,
+            excess_blob_gas: record.excess_blob_gas,
+            parent_beacon_block_root: record
+                .parent_beacon_root
+                .as_ref()
+                .map(|h| FixedBytes::from(h.bytes)),
+            requests_hash: None,
+        }
+    }
+}
+
+impl From<BlockRecord> for Header {
+    fn from(record: BlockRecord) -> Self {
+        Self::from(&record)
     }
 }

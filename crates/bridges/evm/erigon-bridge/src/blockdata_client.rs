@@ -4,6 +4,7 @@ use crate::proto::custom::{
     block_data_backend_client::BlockDataBackendClient, BlockBatch, BlockRangeRequest, ReceiptBatch,
     TransactionBatch,
 };
+use std::time::Duration;
 use tonic::transport::Channel;
 use tonic::Streaming;
 use tracing::{debug, error, info, warn};
@@ -28,6 +29,11 @@ impl BlockDataClient {
             let path = endpoint.clone();
 
             Channel::builder(uri.parse()?)
+                .timeout(Duration::from_secs(300)) // 5 minute timeout for long-running operations
+                .http2_keep_alive_interval(Duration::from_secs(10)) // Send keepalive ping every 10s
+                .keep_alive_timeout(Duration::from_secs(20)) // Wait 20s for keepalive response
+                .keep_alive_while_idle(true) // Send pings even when no active requests
+                .tcp_keepalive(Some(Duration::from_secs(60))) // TCP-level keepalive
                 .connect_with_connector(tower::service_fn(move |_| {
                     let socket_path = path.clone();
                     async move {
@@ -47,7 +53,14 @@ impl BlockDataClient {
                 endpoint.clone()
             };
 
-            Channel::builder(uri.parse()?).connect().await?
+            Channel::builder(uri.parse()?)
+                .timeout(Duration::from_secs(300)) // 5 minute timeout for long-running operations
+                .http2_keep_alive_interval(Duration::from_secs(10)) // Send keepalive ping every 10s
+                .keep_alive_timeout(Duration::from_secs(20)) // Wait 20s for keepalive response
+                .keep_alive_while_idle(true) // Send pings even when no active requests
+                .tcp_keepalive(Some(Duration::from_secs(60))) // TCP-level keepalive
+                .connect()
+                .await?
         };
 
         let client = BlockDataBackendClient::new(channel);
@@ -120,7 +133,6 @@ impl BlockDataClient {
             "Starting receipt stream via block execution (blocks {}-{}, batch_size: {})",
             from_block, to_block, batch_size
         );
-        warn!("ExecuteBlocks is SLOW - it executes blocks to generate receipts");
 
         let response = self.client.execute_blocks(request).await?;
         Ok(response.into_inner())

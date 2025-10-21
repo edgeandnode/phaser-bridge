@@ -127,6 +127,8 @@ pub struct ParquetConfig {
     pub row_group_size_mb: usize,
     #[serde(default)]
     pub column_options: HashMap<String, ColumnOptions>,
+    #[serde(default)]
+    pub generate_proofs: bool, // Generate merkle proofs for transactions
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +176,8 @@ pub struct PhaserConfig {
     pub sync_parallelism: u32, // Number of parallel workers for historical sync (4)
     #[serde(default)]
     pub parquet: Option<ParquetConfig>,
+    #[serde(default)]
+    pub validation_stage: phaser_bridge::ValidationStage, // Validation stage for sync (none, ingestion, conversion, both)
 }
 
 fn default_segment_size() -> u64 {

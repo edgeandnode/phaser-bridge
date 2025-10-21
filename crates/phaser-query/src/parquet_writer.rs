@@ -29,6 +29,7 @@ struct CurrentFile {
     row_count: usize,
     start_block: u64,
     end_block: u64,
+    bytes_written: u64, // Track actual bytes written to disk
 }
 
 impl ParquetWriter {
@@ -80,7 +81,7 @@ impl ParquetWriter {
         })
     }
 
-    pub async fn write_batch(&mut self, batch: RecordBatch) -> Result<()> {
+    pub async fn write_batch(&mut self, batch: RecordBatch) -> Result<u64> {
         // Extract first and last block numbers from the batch (assuming _block_num is first column)
         let (first_block, last_block) = if let Some(array) = batch
             .column(0)
@@ -92,11 +93,11 @@ impl ParquetWriter {
                 let last = array.value(array.len() - 1);
                 (first, last)
             } else {
-                return Ok(()); // Skip empty batch
+                return Ok(0); // Skip empty batch
             }
         } else {
             error!("Failed to extract block number from batch");
-            return Ok(());
+            return Ok(0);
         };
 
         // Check if we need to start a new file (use first block for boundary check)
@@ -110,23 +111,37 @@ impl ParquetWriter {
             self.start_new_file(first_block, batch.schema())?;
         }
 
-        // Write the batch
+        // Write the batch and track actual bytes written to disk
         if let Some(ref mut current) = self.current_file {
+            // Get file size before writing
+            let size_before = std::fs::metadata(&current.temp_path)?.len();
+
             current.writer.write(&batch)?;
             current.row_count += batch.num_rows();
             current.end_block = last_block; // Track the last block we've written
 
+            // Flush to disk after each batch to avoid buffering everything in RAM
+            current.writer.flush()?;
+
+            // Get file size after writing and flushing
+            let size_after = std::fs::metadata(&current.temp_path)?.len();
+            let bytes_written = size_after.saturating_sub(size_before);
+            current.bytes_written += bytes_written;
+
             debug!(
-                "Wrote batch with {} rows to {}, total rows: {}, blocks: {}-{}",
+                "Wrote batch with {} rows to {}, total rows: {}, blocks: {}-{}, bytes: {}",
                 batch.num_rows(),
                 current.temp_path.display(),
                 current.row_count,
                 first_block,
-                last_block
+                last_block,
+                bytes_written
             );
+
+            return Ok(bytes_written);
         }
 
-        Ok(())
+        Ok(0)
     }
 
     fn should_start_new_file(&self, block_num: u64) -> Result<bool> {
@@ -153,17 +168,10 @@ impl ParquetWriter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let filename = if self.is_live {
-            format!(
-                "live_{}_from_{}_{}.tmp",
-                self.data_type, block_num, timestamp
-            )
-        } else {
-            format!(
-                "{}_from_{}_{}.parquet.tmp",
-                self.data_type, block_num, timestamp
-            )
-        };
+        let filename = format!(
+            "{}_from_{}_{}.parquet.tmp",
+            self.data_type, block_num, timestamp
+        );
         let temp_path = self.data_dir.join(filename);
 
         info!(
@@ -183,6 +191,7 @@ impl ParquetWriter {
             row_count: 0,
             start_block: block_num,
             end_block: block_num,
+            bytes_written: 0,
         });
 
         Ok(())
@@ -259,6 +268,11 @@ impl ParquetWriter {
         }
 
         builder
+    }
+
+    /// Get the last block number that was successfully written to the current file
+    pub fn last_written_block(&self) -> Option<u64> {
+        self.current_file.as_ref().map(|f| f.end_block)
     }
 
     pub fn finalize_current_file(&mut self) -> Result<()> {
