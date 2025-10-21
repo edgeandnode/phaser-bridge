@@ -70,7 +70,6 @@ pub struct SegmentWorker {
     segment_start: u64,
     segment_end: u64,
     blockdata_client: BlockDataClient,
-    kv_endpoint: String,
     config: SegmentConfig,
     validator: Option<Arc<dyn ValidationExecutor>>,
     data_type: SegmentDataType,
@@ -83,7 +82,6 @@ impl SegmentWorker {
         segment_start: u64,
         segment_end: u64,
         blockdata_client: BlockDataClient,
-        kv_endpoint: String,
         config: SegmentConfig,
         validator: Option<Arc<dyn ValidationExecutor>>,
     ) -> Self {
@@ -92,7 +90,6 @@ impl SegmentWorker {
             segment_start,
             segment_end,
             blockdata_client,
-            kv_endpoint,
             config,
             validator,
             data_type: SegmentDataType::Transactions,
@@ -105,7 +102,6 @@ impl SegmentWorker {
         segment_start: u64,
         segment_end: u64,
         blockdata_client: BlockDataClient,
-        kv_endpoint: String,
         config: SegmentConfig,
         validator: Option<Arc<dyn ValidationExecutor>>,
     ) -> Self {
@@ -114,7 +110,6 @@ impl SegmentWorker {
             segment_start,
             segment_end,
             blockdata_client,
-            kv_endpoint,
             config,
             validator,
             data_type: SegmentDataType::Logs,
@@ -159,19 +154,6 @@ impl SegmentWorker {
 
             // Clone the client at the start (shares underlying HTTP/2 connection)
             let mut client = self.blockdata_client.clone();
-
-            // Create KV client for TxSender table access
-            let mut kv_client = match crate::kv_client::ErigonKvClient::connect(&self.kv_endpoint).await {
-                Ok(kv) => kv,
-                Err(e) => {
-                    error!("Worker {}: Failed to connect to Erigon KV API: {}", worker_id, e);
-                    metrics::record_segment_complete("transactions", false);
-                    yield Err(ErigonBridgeError::Internal(anyhow::anyhow!(
-                        "KV client connection failed: {}", e
-                    )));
-                    return;
-                }
-            };
 
             // Process blocks in chunks, fetching headers only as needed
             let mut current_block = self.segment_start;
@@ -232,81 +214,22 @@ impl SegmentWorker {
                 worker_id, segment_id, start_block, end_block
             );
 
-            // Retry logic for stream operations (handles transient failures like erigon GC pauses)
-            // Uses infinite retry with exponential backoff
-            let all_transactions = {
-                const INITIAL_BACKOFF_SECS: u64 = 1;
-                const MAX_BACKOFF_SECS: u64 = 60;
-                let mut retry_count = 0u32;
+            let mut tx_stream = client.stream_transactions(start_block, end_block, 100).await.map_err(|e| {
+                error!("Worker {} segment {}: Failed to create transaction stream: {}", worker_id, segment_id, e);
+                e
+            })?;
+            let mut all_transactions = Vec::new();
 
-                loop {
-                    let mut tx_stream = match client
-                        .stream_transactions(start_block, end_block, 100)
-                        .await {
-                            Ok(s) => s,
-                            Err(e) => {
-                                retry_count += 1;
-                                // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s (capped)
-                                let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
-                                    .min(MAX_BACKOFF_SECS);
-
-                                metrics::STREAM_RETRIES
-                                    .with_label_values(&["transactions", "retry"])
-                                    .inc();
-                                warn!(
-                                    "Worker {} segment {}: Failed to create transaction stream (attempt {}): {}. Retrying in {}s...",
-                                    worker_id, segment_id, retry_count, e, backoff_secs
-                                );
-                                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-                                continue;
-                            }
-                        };
-
-                    // Collect all transactions from stream (in block order)
-                    let mut all_transactions = Vec::new();
-                    let mut stream_failed = false;
-
-                    while let Some(batch_result) = tx_stream.message().await.transpose() {
-                        match batch_result {
-                            Ok(tx_batch) => {
-                                debug!("Worker {} segment {}: Received {} transactions",
-                                    worker_id, segment_id, tx_batch.transactions.len());
-                                let tx_count = tx_batch.transactions.len() as u64;
-                                all_transactions.extend(tx_batch.transactions);
-                                metrics::TRANSACTIONS_PROCESSED
-                                    .with_label_values(&[&worker_id.to_string(), &segment_id.to_string()])
-                                    .inc_by(tx_count);
-                            }
-                            Err(e) => {
-                                retry_count += 1;
-                                // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s (capped)
-                                let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
-                                    .min(MAX_BACKOFF_SECS);
-
-                                metrics::STREAM_RETRIES
-                                    .with_label_values(&["transactions", "retry"])
-                                    .inc();
-                                warn!(
-                                    "Worker {} segment {}: Stream failed mid-read (attempt {}): {}. Reconnecting in {}s...",
-                                    worker_id, segment_id, retry_count, e, backoff_secs
-                                );
-                                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-                                stream_failed = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    // If stream completed successfully, break out of retry loop
-                    if !stream_failed {
-                        metrics::STREAM_RETRIES
-                            .with_label_values(&["transactions", "success"])
-                            .inc();
-                        break all_transactions;
-                    }
-                    // Otherwise, retry from the beginning
-                }
-            };
+            while let Some(batch_result) = tx_stream.message().await.transpose() {
+                let tx_batch = batch_result?;
+                debug!("Worker {} segment {}: Received {} transactions",
+                    worker_id, segment_id, tx_batch.transactions.len());
+                let tx_count = tx_batch.transactions.len() as u64;
+                all_transactions.extend(tx_batch.transactions);
+                metrics::TRANSACTIONS_PROCESSED
+                    .with_label_values(&[&worker_id.to_string(), &segment_id.to_string()])
+                    .inc_by(tx_count);
+            }
 
             // Stream completed successfully
             metrics::GRPC_STREAMS_ACTIVE.with_label_values(&["transactions"]).dec();
@@ -367,7 +290,6 @@ impl SegmentWorker {
                 self.segment_end,
                 blocks,
                 validation_futures,
-                &mut kv_client,
             )
             .await {
                 Ok(batch) => batch,
@@ -527,23 +449,17 @@ impl SegmentWorker {
         segment_end: u64,
         client: &mut BlockDataClient,
     ) -> Result<HashMap<u64, (Header, i64)>, ErigonBridgeError> {
+        let mut block_stream = client.stream_blocks(segment_start, segment_end, 100).await?;
         let mut headers = HashMap::new();
-
-        let mut block_stream = client
-            .stream_blocks(segment_start, segment_end, 100)
-            .await?;
-
         let mut batch_count = 0;
+
         while let Some(batch_result) = block_stream.message().await.transpose() {
             let block_batch = batch_result?;
             batch_count += 1;
 
             debug!(
                 "Segment {}-{}: Received header batch {} with {} blocks",
-                segment_start,
-                segment_end,
-                batch_count,
-                block_batch.blocks.len()
+                segment_start, segment_end, batch_count, block_batch.blocks.len()
             );
 
             for block in block_batch.blocks {
@@ -553,10 +469,7 @@ impl SegmentWorker {
                         headers.insert(block.block_number, (header, timestamp));
                     }
                     Err(e) => {
-                        warn!(
-                            "Failed to decode header for block {}: {}",
-                            block.block_number, e
-                        );
+                        warn!("Failed to decode header for block {}: {}", block.block_number, e);
                     }
                 }
             }
@@ -574,7 +487,6 @@ impl SegmentWorker {
         segment_end: u64,
         blocks: Vec<BlockData>,
         validation_futures: Vec<(u64, ValidationFuture)>,
-        kv_client: &mut crate::kv_client::ErigonKvClient,
     ) -> Result<RecordBatch, ErigonBridgeError> {
         // Await validation results if any exist
         if !validation_futures.is_empty() {
@@ -614,7 +526,7 @@ impl SegmentWorker {
         }
 
         // Convert validated blocks to Arrow (takes ownership to avoid cloning)
-        let arrow_batch = Self::convert_batch_to_arrow(blocks, kv_client).await?;
+        let arrow_batch = Self::convert_batch_to_arrow(blocks).await?;
 
         Ok(arrow_batch)
     }
@@ -624,10 +536,9 @@ impl SegmentWorker {
     /// Takes ownership of blocks to avoid cloning transaction data
     async fn convert_batch_to_arrow(
         blocks: Vec<BlockData>,
-        kv_client: &mut crate::kv_client::ErigonKvClient,
     ) -> Result<RecordBatch, ErigonBridgeError> {
         // Use the optimized converter that takes ownership and avoids cloning
-        BlockDataConverter::block_transactions_to_arrow(blocks, kv_client).await
+        BlockDataConverter::block_transactions_to_arrow(blocks).await
     }
 
     /// Collect receipts for a single block
@@ -635,20 +546,12 @@ impl SegmentWorker {
         block_num: u64,
         client: &mut BlockDataClient,
     ) -> Result<Vec<crate::proto::custom::ReceiptData>, ErigonBridgeError> {
-        let mut receipts = Vec::new();
-
-        // Request just this one block's receipts (start = end = block_num)
         let mut receipt_stream = client.execute_blocks(block_num, block_num, 100).await?;
+        let mut receipts = Vec::new();
 
         while let Some(batch_result) = receipt_stream.message().await.transpose() {
             let receipt_batch = batch_result?;
-
-            debug!(
-                "Block {}: Received {} receipts",
-                block_num,
-                receipt_batch.receipts.len()
-            );
-
+            debug!("Block {}: Received {} receipts", block_num, receipt_batch.receipts.len());
             receipts.extend(receipt_batch.receipts);
         }
 

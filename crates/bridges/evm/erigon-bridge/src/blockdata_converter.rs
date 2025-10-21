@@ -4,6 +4,7 @@
 /// then uses the From impls in evm-common to convert to typed-arrow records
 use crate::error::ErigonBridgeError;
 use crate::proto::custom::{BlockBatch, ReceiptBatch, ReceiptData, TransactionBatch};
+use alloy_consensus::transaction::SignerRecoverable;
 use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_rlp::Decodable;
 use arrow::datatypes::Schema;
@@ -172,7 +173,6 @@ impl BlockDataConverter {
     /// that should be investigated rather than silently falling back to slow recovery.
     pub async fn block_transactions_to_arrow(
         blocks: Vec<crate::segment_worker::BlockData>,
-        kv_client: &mut crate::kv_client::ErigonKvClient,
     ) -> Result<RecordBatch, ErigonBridgeError> {
         // Pre-calculate total transactions for builder capacity
         let total_transactions: usize = blocks.iter().map(|b| b.transactions.len()).sum();
@@ -181,39 +181,6 @@ impl BlockDataConverter {
         // Process each block, moving transactions out
         for block in blocks {
             let timestamp = block.header.timestamp as i64 * 1_000_000_000;
-
-            // Get block hash from header (authoritative source)
-            // Don't use tx_data.block_hash as that's a validation target
-            let block_hash_bytes = block.header.hash_slow().0;
-
-            // Get precomputed senders from TxSender table using header hash
-            let senders = if block.transactions.is_empty() {
-                // Skip KV lookup for blocks with no transactions
-                Vec::new()
-            } else {
-                match kv_client
-                    .get_block_senders(block.block_num, &block_hash_bytes)
-                    .await?
-                {
-                    Some(senders) => {
-                        if senders.len() != block.transactions.len() {
-                            return Err(ErigonBridgeError::InvalidData(format!(
-                                "TxSender count mismatch for block {}: expected {} transactions, got {} senders",
-                                block.block_num,
-                                block.transactions.len(),
-                                senders.len()
-                            )));
-                        }
-                        senders
-                    }
-                    None => {
-                        return Err(ErigonBridgeError::InvalidData(format!(
-                            "No TxSender entry found for block {} - Erigon database may be incomplete",
-                            block.block_num
-                        )));
-                    }
-                }
-            };
 
             // Process all transactions in this block (moving, not cloning)
             for (tx_index_in_block, tx_data) in block.transactions.into_iter().enumerate() {
@@ -243,9 +210,27 @@ impl BlockDataConverter {
                     }
                 };
 
-                // Get sender address from TxSender table (precomputed by Erigon)
-                // This is a simple array lookup instead of expensive signature recovery
-                let sender = senders[tx_index_in_block].clone();
+                // Get sender address from TransactionData (precomputed by Erigon from TxSender table)
+                // If not available (snapshot blocks), fall back to signature recovery
+                let sender = if tx_data.sender.len() == 20 {
+                    // Use precomputed sender from TxSender table (fast path)
+                    let mut bytes = [0u8; 20];
+                    bytes.copy_from_slice(&tx_data.sender);
+                    Address20 { bytes }
+                } else {
+                    // Fall back to expensive ECDSA signature recovery
+                    // This happens for snapshot blocks where TxSender table isn't populated
+                    let sender_addr = tx.recover_sender().ok_or_else(|| {
+                        ErigonBridgeError::InvalidData(format!(
+                            "Failed to recover sender for block {} tx {} (signature invalid)",
+                            block.block_num,
+                            tx_data.tx_index
+                        ))
+                    })?;
+                    let mut bytes = [0u8; 20];
+                    bytes.copy_from_slice(sender_addr.as_ref()); // Convert alloy Address to [u8; 20]
+                    Address20 { bytes }
+                };
 
                 // Build context for conversion
                 let ctx = TransactionContext {
