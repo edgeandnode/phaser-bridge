@@ -358,6 +358,9 @@ pub struct TransactionData {
     /// 32-byte transaction hash
     #[prost(bytes = "vec", tag = "5")]
     pub tx_hash: ::prost::alloc::vec::Vec<u8>,
+    /// 20-byte sender address (from TxSender table)
+    #[prost(bytes = "vec", tag = "6")]
+    pub sender: ::prost::alloc::vec::Vec<u8>,
 }
 /// A batch of RLP-encoded receipts
 #[derive(Clone, PartialEq, ::prost::Message)]
