@@ -87,7 +87,7 @@ pub struct SyncStatusResponse {
     /// Total blocks to sync
     #[prost(uint64, tag = "4")]
     pub total_blocks: u64,
-    /// Number of blocks synced so far
+    /// Number of blocks synced so far (based on complete segments)
     #[prost(uint64, tag = "5")]
     pub blocks_synced: u64,
     /// Error message if failed
@@ -110,6 +110,12 @@ pub struct SyncStatusResponse {
     /// Gap analysis from when job started
     #[prost(message, optional, tag = "12")]
     pub gap_analysis: ::core::option::Option<GapAnalysis>,
+    /// Detailed progress metrics
+    #[prost(message, optional, tag = "13")]
+    pub data_progress: ::core::option::Option<DataProgress>,
+    /// Download rate (bytes per second)
+    #[prost(double, tag = "14")]
+    pub download_rate_bytes_per_sec: f64,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ListSyncJobsRequest {
@@ -168,6 +174,12 @@ pub struct SyncProgressUpdate {
     pub overall_rate: f64,
     #[prost(uint64, tag = "8")]
     pub total_bytes_written: u64,
+    /// Detailed progress metrics
+    #[prost(message, optional, tag = "9")]
+    pub data_progress: ::core::option::Option<DataProgress>,
+    /// Download rate (bytes per second)
+    #[prost(double, tag = "10")]
+    pub download_rate_bytes_per_sec: f64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerProgress {
@@ -223,6 +235,66 @@ pub struct AnalyzeGapsResponse {
     /// Message summarizing the analysis
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
+}
+/// Detailed progress tracking for each data type
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct DataProgress {
+    /// Blocks progress
+    #[prost(message, optional, tag = "1")]
+    pub blocks: ::core::option::Option<DataTypeProgress>,
+    /// Transactions progress
+    #[prost(message, optional, tag = "2")]
+    pub transactions: ::core::option::Option<DataTypeProgress>,
+    /// Logs progress
+    #[prost(message, optional, tag = "3")]
+    pub logs: ::core::option::Option<DataTypeProgress>,
+    /// File statistics
+    #[prost(message, optional, tag = "4")]
+    pub file_stats: ::core::option::Option<FileStatistics>,
+}
+/// Progress for a specific data type (blocks, transactions, or logs)
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct DataTypeProgress {
+    /// Number of blocks covered by files on disk (may have gaps)
+    #[prost(uint64, tag = "1")]
+    pub blocks_on_disk: u64,
+    /// Number of gaps (missing ranges)
+    #[prost(uint32, tag = "2")]
+    pub gap_count: u32,
+    /// Percentage of target range covered (0-100)
+    #[prost(double, tag = "3")]
+    pub coverage_percentage: f64,
+    /// Highest continuous block number (no gaps before this)
+    #[prost(uint64, tag = "4")]
+    pub highest_continuous: u64,
+}
+/// File and disk statistics
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct FileStatistics {
+    /// Total number of parquet files
+    #[prost(uint32, tag = "1")]
+    pub total_files: u32,
+    /// Files by type
+    #[prost(uint32, tag = "2")]
+    pub blocks_files: u32,
+    #[prost(uint32, tag = "3")]
+    pub transactions_files: u32,
+    #[prost(uint32, tag = "4")]
+    pub logs_files: u32,
+    #[prost(uint32, tag = "5")]
+    pub proofs_files: u32,
+    /// Total disk usage in bytes
+    #[prost(uint64, tag = "6")]
+    pub total_disk_bytes: u64,
+    /// Disk usage by type
+    #[prost(uint64, tag = "7")]
+    pub blocks_disk_bytes: u64,
+    #[prost(uint64, tag = "8")]
+    pub transactions_disk_bytes: u64,
+    #[prost(uint64, tag = "9")]
+    pub logs_disk_bytes: u64,
+    #[prost(uint64, tag = "10")]
+    pub proofs_disk_bytes: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

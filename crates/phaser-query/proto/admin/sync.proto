@@ -104,7 +104,7 @@ message SyncStatusResponse {
   // Total blocks to sync
   uint64 total_blocks = 4;
 
-  // Number of blocks synced so far
+  // Number of blocks synced so far (based on complete segments)
   uint64 blocks_synced = 5;
 
   // Error message if failed
@@ -125,6 +125,12 @@ message SyncStatusResponse {
 
   // Gap analysis from when job started
   GapAnalysis gap_analysis = 12;
+
+  // Detailed progress metrics
+  DataProgress data_progress = 13;
+
+  // Download rate (bytes per second)
+  double download_rate_bytes_per_sec = 14;
 }
 
 message ListSyncJobsRequest {
@@ -173,6 +179,12 @@ message SyncProgressUpdate {
   uint64 total_blocks = 6;
   double overall_rate = 7; // blocks per second
   uint64 total_bytes_written = 8;
+
+  // Detailed progress metrics
+  DataProgress data_progress = 9;
+
+  // Download rate (bytes per second)
+  double download_rate_bytes_per_sec = 10;
 }
 
 message WorkerProgress {
@@ -223,6 +235,57 @@ message AnalyzeGapsResponse {
 
   // Message summarizing the analysis
   string message = 2;
+}
+
+// Detailed progress tracking for each data type
+message DataProgress {
+  // Blocks progress
+  DataTypeProgress blocks = 1;
+
+  // Transactions progress
+  DataTypeProgress transactions = 2;
+
+  // Logs progress
+  DataTypeProgress logs = 3;
+
+  // File statistics
+  FileStatistics file_stats = 4;
+}
+
+// Progress for a specific data type (blocks, transactions, or logs)
+message DataTypeProgress {
+  // Number of blocks covered by files on disk (may have gaps)
+  uint64 blocks_on_disk = 1;
+
+  // Number of gaps (missing ranges)
+  uint32 gap_count = 2;
+
+  // Percentage of target range covered (0-100)
+  double coverage_percentage = 3;
+
+  // Highest continuous block number (no gaps before this)
+  uint64 highest_continuous = 4;
+}
+
+// File and disk statistics
+message FileStatistics {
+  // Total number of parquet files
+  uint32 total_files = 1;
+
+  // Files by type
+  uint32 blocks_files = 2;
+  uint32 transactions_files = 3;
+  uint32 logs_files = 4;
+  uint32 proofs_files = 5;
+
+  // Total disk usage in bytes
+  uint64 total_disk_bytes = 6;
+
+  // Disk usage by type
+  uint64 blocks_disk_bytes = 7;
+  uint64 transactions_disk_bytes = 8;
+  uint64 logs_disk_bytes = 9;
+  uint64 proofs_disk_bytes = 10;
 }
 
 enum SyncStatus {

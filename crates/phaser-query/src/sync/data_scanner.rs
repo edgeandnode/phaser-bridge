@@ -78,6 +78,39 @@ impl GapAnalysis {
     }
 }
 
+/// Detailed progress for a specific data type
+#[derive(Debug, Clone)]
+pub struct DataTypeProgress {
+    pub blocks_on_disk: u64,
+    pub gap_count: u32,
+    pub coverage_percentage: f64,
+    pub highest_continuous: u64,
+}
+
+/// File statistics
+#[derive(Debug, Clone)]
+pub struct FileStatistics {
+    pub total_files: u32,
+    pub blocks_files: u32,
+    pub transactions_files: u32,
+    pub logs_files: u32,
+    pub proofs_files: u32,
+    pub total_disk_bytes: u64,
+    pub blocks_disk_bytes: u64,
+    pub transactions_disk_bytes: u64,
+    pub logs_disk_bytes: u64,
+    pub proofs_disk_bytes: u64,
+}
+
+/// Comprehensive data progress metrics
+#[derive(Debug, Clone)]
+pub struct DataProgress {
+    pub blocks: DataTypeProgress,
+    pub transactions: DataTypeProgress,
+    pub logs: DataTypeProgress,
+    pub file_stats: FileStatistics,
+}
+
 /// In-memory catalog of existing data files
 /// Maps data_type -> Vec<BlockRange> for fast lookups
 #[derive(Debug, Clone)]
@@ -1209,6 +1242,158 @@ impl DataScanner {
         }
 
         Ok(missing)
+    }
+
+    /// Calculate detailed progress metrics for all data types
+    /// Shows actual blocks on disk, gaps, coverage %, and disk usage
+    pub async fn calculate_data_progress(
+        &self,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<DataProgress> {
+        let catalog = self.build_catalog().await?;
+        let total_blocks = to_block - from_block + 1;
+
+        // Calculate progress for each data type
+        let blocks =
+            Self::calculate_type_progress(&catalog, "blocks", from_block, to_block, total_blocks);
+        let transactions = Self::calculate_type_progress(
+            &catalog,
+            "transactions",
+            from_block,
+            to_block,
+            total_blocks,
+        );
+        let logs =
+            Self::calculate_type_progress(&catalog, "logs", from_block, to_block, total_blocks);
+
+        // Calculate file statistics
+        let file_stats = self.calculate_file_statistics().await?;
+
+        Ok(DataProgress {
+            blocks,
+            transactions,
+            logs,
+            file_stats,
+        })
+    }
+
+    /// Calculate progress for a specific data type
+    fn calculate_type_progress(
+        catalog: &DataCatalog,
+        data_type: &str,
+        from_block: u64,
+        to_block: u64,
+        total_blocks: u64,
+    ) -> DataTypeProgress {
+        let ranges = catalog.get_ranges(data_type);
+
+        // Count blocks covered by files on disk (sum of all range sizes)
+        let blocks_on_disk: u64 = ranges
+            .iter()
+            .filter(|r| r.start <= to_block && r.end >= from_block)
+            .map(|r| {
+                let start = r.start.max(from_block);
+                let end = r.end.min(to_block);
+                end - start + 1
+            })
+            .sum();
+
+        // Count gaps using existing gap computation
+        let gaps = Self::compute_gaps_in_segment(catalog, data_type, from_block, to_block);
+        let gap_count = gaps.len() as u32;
+
+        // Coverage percentage
+        let coverage_percentage = if total_blocks > 0 {
+            (blocks_on_disk as f64 / total_blocks as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        // Highest continuous block (first gap's start - 1, or to_block if no gaps)
+        let highest_continuous = if gaps.is_empty() {
+            to_block
+        } else if gaps[0].start > from_block {
+            gaps[0].start - 1
+        } else {
+            // Gap starts at or before from_block - use saturating_sub to prevent underflow
+            from_block.saturating_sub(1)
+        };
+
+        DataTypeProgress {
+            blocks_on_disk,
+            gap_count,
+            coverage_percentage,
+            highest_continuous,
+        }
+    }
+
+    /// Calculate file statistics (count and disk usage)
+    async fn calculate_file_statistics(&self) -> Result<FileStatistics> {
+        let mut stats = FileStatistics {
+            total_files: 0,
+            blocks_files: 0,
+            transactions_files: 0,
+            logs_files: 0,
+            proofs_files: 0,
+            total_disk_bytes: 0,
+            blocks_disk_bytes: 0,
+            transactions_disk_bytes: 0,
+            logs_disk_bytes: 0,
+            proofs_disk_bytes: 0,
+        };
+
+        if !self.data_dir.exists() {
+            return Ok(stats);
+        }
+
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let filename = entry.file_name();
+            let filename_str = filename.to_string_lossy();
+
+            // Skip non-data files
+            if !filename_str.contains(".parquet") && !filename_str.ends_with(".empty") {
+                continue;
+            }
+
+            // Skip temp files
+            if filename_str.ends_with(".parquet.tmp") {
+                continue;
+            }
+
+            // Get file size (0 for .empty files)
+            let size = if filename_str.ends_with(".empty") {
+                0
+            } else {
+                entry.metadata()?.len()
+            };
+
+            // Categorize by type
+            if filename_str.starts_with("blocks_") {
+                stats.blocks_files += 1;
+                stats.blocks_disk_bytes += size;
+            } else if filename_str.starts_with("transactions_") {
+                stats.transactions_files += 1;
+                stats.transactions_disk_bytes += size;
+            } else if filename_str.starts_with("logs_") {
+                stats.logs_files += 1;
+                stats.logs_disk_bytes += size;
+            } else if filename_str.starts_with("proofs_") {
+                stats.proofs_files += 1;
+                stats.proofs_disk_bytes += size;
+            }
+        }
+
+        stats.total_files =
+            stats.blocks_files + stats.transactions_files + stats.logs_files + stats.proofs_files;
+        stats.total_disk_bytes = stats.blocks_disk_bytes
+            + stats.transactions_disk_bytes
+            + stats.logs_disk_bytes
+            + stats.proofs_disk_bytes;
+
+        Ok(stats)
     }
 }
 

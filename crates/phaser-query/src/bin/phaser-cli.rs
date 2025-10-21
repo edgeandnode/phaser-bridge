@@ -561,13 +561,127 @@ async fn main() -> Result<()> {
                     println!("Chain: {} / Bridge: {}", job.chain_id, job.bridge_name);
                     println!("Blocks: {}-{}", job.from_block, job.to_block);
 
+                    // Show detailed progress if available
+                    if let Some(ref progress) = job.data_progress {
+                        println!("\nData Progress:");
+
+                        // Format helper for file size
+                        let format_size = |bytes: u64| -> String {
+                            if bytes >= 1_000_000_000_000 {
+                                format!("{:.2} TB", bytes as f64 / 1_000_000_000_000.0)
+                            } else if bytes >= 1_000_000_000 {
+                                format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+                            } else if bytes >= 1_000_000 {
+                                format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+                            } else if bytes >= 1_000 {
+                                format!("{:.1} KB", bytes as f64 / 1_000.0)
+                            } else {
+                                format!("{} bytes", bytes)
+                            }
+                        };
+
+                        // Blocks progress
+                        if let Some(ref blocks) = progress.blocks {
+                            println!(
+                                "  Blocks:        {:>12} / {} ({:>5.1}%) - {} files, {}",
+                                blocks.blocks_on_disk,
+                                job.total_blocks,
+                                blocks.coverage_percentage,
+                                progress
+                                    .file_stats
+                                    .as_ref()
+                                    .map(|s| s.blocks_files)
+                                    .unwrap_or(0),
+                                format_size(
+                                    progress
+                                        .file_stats
+                                        .as_ref()
+                                        .map(|s| s.blocks_disk_bytes)
+                                        .unwrap_or(0)
+                                )
+                            );
+                            if blocks.gap_count > 0 {
+                                println!(
+                                    "                 {} gaps, highest continuous: {}",
+                                    blocks.gap_count, blocks.highest_continuous
+                                );
+                            }
+                        }
+
+                        // Transactions progress
+                        if let Some(ref txs) = progress.transactions {
+                            println!(
+                                "  Transactions:  {:>12} / {} ({:>5.1}%) - {} files, {}",
+                                txs.blocks_on_disk,
+                                job.total_blocks,
+                                txs.coverage_percentage,
+                                progress
+                                    .file_stats
+                                    .as_ref()
+                                    .map(|s| s.transactions_files)
+                                    .unwrap_or(0),
+                                format_size(
+                                    progress
+                                        .file_stats
+                                        .as_ref()
+                                        .map(|s| s.transactions_disk_bytes)
+                                        .unwrap_or(0)
+                                )
+                            );
+                            if txs.gap_count > 0 {
+                                println!(
+                                    "                 {} gaps, highest continuous: {}",
+                                    txs.gap_count, txs.highest_continuous
+                                );
+                            }
+                        }
+
+                        // Logs progress
+                        if let Some(ref logs) = progress.logs {
+                            println!(
+                                "  Logs:          {:>12} / {} ({:>5.1}%) - {} files, {}",
+                                logs.blocks_on_disk,
+                                job.total_blocks,
+                                logs.coverage_percentage,
+                                progress
+                                    .file_stats
+                                    .as_ref()
+                                    .map(|s| s.logs_files)
+                                    .unwrap_or(0),
+                                format_size(
+                                    progress
+                                        .file_stats
+                                        .as_ref()
+                                        .map(|s| s.logs_disk_bytes)
+                                        .unwrap_or(0)
+                                )
+                            );
+                            if logs.gap_count > 0 {
+                                println!(
+                                    "                 {} gaps, highest continuous: {}",
+                                    logs.gap_count, logs.highest_continuous
+                                );
+                            }
+                        }
+
+                        // Total files and disk usage
+                        if let Some(ref stats) = progress.file_stats {
+                            println!(
+                                "\nTotal Files: {} ({})",
+                                stats.total_files,
+                                format_size(stats.total_disk_bytes)
+                            );
+                        }
+                        println!();
+                    }
+
                     let percent = if job.total_blocks > 0 {
                         (job.blocks_synced as f64 / job.total_blocks as f64) * 100.0
                     } else {
                         0.0
                     };
                     println!(
-                        "Progress: {}/{} blocks ({:.1}% - includes blocks+txs+logs)",
+                        "Complete Segments: {}/{} blocks ({:.1}%)",
                         job.blocks_synced, job.total_blocks, percent
                     );
 
@@ -575,6 +689,21 @@ async fn main() -> Result<()> {
                         println!("Highest completed: block {}", job.current_block);
                     }
                     println!("Active workers: {}", job.active_workers);
+
+                    // Display download rate
+                    if job.download_rate_bytes_per_sec > 0.0 {
+                        let rate = if job.download_rate_bytes_per_sec >= 1_000_000_000.0 {
+                            format!("{:.2} GB/s", job.download_rate_bytes_per_sec / 1_000_000_000.0)
+                        } else if job.download_rate_bytes_per_sec >= 1_000_000.0 {
+                            format!("{:.1} MB/s", job.download_rate_bytes_per_sec / 1_000_000.0)
+                        } else if job.download_rate_bytes_per_sec >= 1_000.0 {
+                            format!("{:.1} KB/s", job.download_rate_bytes_per_sec / 1_000.0)
+                        } else {
+                            format!("{:.0} B/s", job.download_rate_bytes_per_sec)
+                        };
+                        println!("Download rate: {}", rate);
+                    }
+
                     if !job.error.is_empty() {
                         println!("Error: {}", job.error);
                     }

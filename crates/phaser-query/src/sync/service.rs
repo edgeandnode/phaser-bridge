@@ -12,8 +12,13 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::proto::admin::{GapAnalysis as ProtoGapAnalysis, IncompleteSegment};
-use crate::sync::data_scanner::GapAnalysis as DataGapAnalysis;
+use crate::proto::admin::{
+    DataProgress as ProtoDataProgress, DataTypeProgress as ProtoDataTypeProgress,
+    FileStatistics as ProtoFileStatistics, GapAnalysis as ProtoGapAnalysis, IncompleteSegment,
+};
+use crate::sync::data_scanner::{
+    DataProgress, DataTypeProgress, FileStatistics, GapAnalysis as DataGapAnalysis,
+};
 
 /// Convert internal GapAnalysis to proto
 fn gap_analysis_to_proto(analysis: &DataGapAnalysis, segment_size: u64) -> ProtoGapAnalysis {
@@ -44,6 +49,42 @@ fn gap_analysis_to_proto(analysis: &DataGapAnalysis, segment_size: u64) -> Proto
             .map(|w| w.segment_num)
             .collect(),
         incomplete_details,
+    }
+}
+
+/// Convert internal DataProgress to proto
+fn data_progress_to_proto(progress: &DataProgress) -> ProtoDataProgress {
+    ProtoDataProgress {
+        blocks: Some(data_type_progress_to_proto(&progress.blocks)),
+        transactions: Some(data_type_progress_to_proto(&progress.transactions)),
+        logs: Some(data_type_progress_to_proto(&progress.logs)),
+        file_stats: Some(file_statistics_to_proto(&progress.file_stats)),
+    }
+}
+
+/// Convert internal DataTypeProgress to proto
+fn data_type_progress_to_proto(progress: &DataTypeProgress) -> ProtoDataTypeProgress {
+    ProtoDataTypeProgress {
+        blocks_on_disk: progress.blocks_on_disk,
+        gap_count: progress.gap_count,
+        coverage_percentage: progress.coverage_percentage,
+        highest_continuous: progress.highest_continuous,
+    }
+}
+
+/// Convert internal FileStatistics to proto
+fn file_statistics_to_proto(stats: &FileStatistics) -> ProtoFileStatistics {
+    ProtoFileStatistics {
+        total_files: stats.total_files,
+        blocks_files: stats.blocks_files,
+        transactions_files: stats.transactions_files,
+        logs_files: stats.logs_files,
+        proofs_files: stats.proofs_files,
+        total_disk_bytes: stats.total_disk_bytes,
+        blocks_disk_bytes: stats.blocks_disk_bytes,
+        transactions_disk_bytes: stats.transactions_disk_bytes,
+        logs_disk_bytes: stats.logs_disk_bytes,
+        proofs_disk_bytes: stats.proofs_disk_bytes,
     }
 }
 
@@ -575,7 +616,29 @@ impl SyncService for SyncServer {
         let progress = job.progress_tracker.read().await;
         let active_workers = progress.len() as u32;
 
+        // Calculate download rate from active workers
+        let now = std::time::SystemTime::now();
+        let download_rate_bytes_per_sec = progress
+            .values()
+            .filter_map(|p| {
+                if let Ok(elapsed) = now.duration_since(p.started_at) {
+                    let secs = elapsed.as_secs_f64();
+                    if secs > 0.0 {
+                        return Some(p.bytes_written as f64 / secs);
+                    }
+                }
+                None
+            })
+            .sum();
+
         let total_blocks = job.to_block - job.from_block + 1;
+
+        // Calculate detailed progress metrics
+        let data_progress = scanner
+            .calculate_data_progress(job.from_block, job.to_block)
+            .await
+            .ok()
+            .map(|dp| data_progress_to_proto(&dp));
 
         Ok(Response::new(SyncStatusResponse {
             job_id: job.job_id.clone(),
@@ -590,6 +653,8 @@ impl SyncService for SyncServer {
             from_block: job.from_block,
             to_block: job.to_block,
             gap_analysis: Some(gap_analysis_to_proto(&analysis, self.config.segment_size)),
+            data_progress,
+            download_rate_bytes_per_sec,
         }))
     }
 
@@ -614,7 +679,7 @@ impl SyncService for SyncServer {
             // Scan disk for actual progress
             let data_dir = self.config.bridge_data_dir(job.chain_id, &job.bridge_name);
             let scanner = DataScanner::new(data_dir, self.executor.clone());
-            let (blocks_synced, max_completed_block, gap_analysis) = match scanner
+            let (blocks_synced, max_completed_block, gap_analysis, data_progress) = match scanner
                 .analyze_sync_range(job.from_block, job.to_block, self.config.segment_size)
                 .await
             {
@@ -630,17 +695,42 @@ impl SyncService for SyncServer {
                             std::cmp::min(seg_end, job.to_block)
                         })
                         .unwrap_or(job.from_block);
+
+                    // Calculate detailed progress
+                    let data_progress = scanner
+                        .calculate_data_progress(job.from_block, job.to_block)
+                        .await
+                        .ok()
+                        .map(|dp| data_progress_to_proto(&dp));
+
                     (
                         blocks,
                         max_block,
                         Some(gap_analysis_to_proto(&analysis, self.config.segment_size)),
+                        data_progress,
                     )
                 }
-                Err(_) => (0, job.from_block, None),
+                Err(_) => (0, job.from_block, None, None),
             };
 
-            // Count active workers
-            let active_workers = job.progress_tracker.read().await.len() as u32;
+            // Count active workers and calculate download rate
+            let progress = job.progress_tracker.read().await;
+            let active_workers = progress.len() as u32;
+
+            // Calculate download rate from active workers
+            let now = std::time::SystemTime::now();
+            let download_rate_bytes_per_sec = progress
+                .values()
+                .filter_map(|p| {
+                    if let Ok(elapsed) = now.duration_since(p.started_at) {
+                        let secs = elapsed.as_secs_f64();
+                        if secs > 0.0 {
+                            return Some(p.bytes_written as f64 / secs);
+                        }
+                    }
+                    None
+                })
+                .sum();
 
             job_list.push(SyncStatusResponse {
                 job_id: job.job_id.clone(),
@@ -655,6 +745,8 @@ impl SyncService for SyncServer {
                 from_block: job.from_block,
                 to_block: job.to_block,
                 gap_analysis,
+                data_progress,
+                download_rate_bytes_per_sec,
             });
         }
 
@@ -812,8 +904,31 @@ impl SyncService for SyncServer {
                             Err(_) => 0, // Fallback if scan fails
                         };
 
+                        // Calculate detailed progress
+                        let data_progress = scanner
+                            .calculate_data_progress(job.from_block, job.to_block)
+                            .await
+                            .ok()
+                            .map(|dp| data_progress_to_proto(&dp));
+
                         // Read worker progress for UX visibility
                         let progress_lock = job.progress_tracker.read().await;
+
+                        // Calculate download rate from active workers
+                        let now = std::time::SystemTime::now();
+                        let download_rate_bytes_per_sec = progress_lock
+                            .values()
+                            .filter_map(|p| {
+                                if let Ok(elapsed) = now.duration_since(p.started_at) {
+                                    let secs = elapsed.as_secs_f64();
+                                    if secs > 0.0 {
+                                        return Some(p.bytes_written as f64 / secs);
+                                    }
+                                }
+                                None
+                            })
+                            .sum();
+
                         let workers: Vec<WorkerProgress> = progress_lock
                             .values()
                             .map(|p| {
@@ -856,6 +971,8 @@ impl SyncService for SyncServer {
                             total_blocks: job.to_block - job.from_block + 1,
                             overall_rate: 0.0,
                             total_bytes_written: 0,
+                            data_progress,
+                            download_rate_bytes_per_sec,
                         })
                     } else {
                         None
