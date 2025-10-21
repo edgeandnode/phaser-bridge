@@ -161,7 +161,6 @@ async fn main() -> Result<()> {
     let bridge = Arc::new(
         ErigonFlightBridge::new(
             args.erigon_grpc.clone(),
-            args.erigon_grpc, // KV endpoint is the same as main gRPC endpoint
             args.chain_id,
             validator_config,
             Some(segment_config),
