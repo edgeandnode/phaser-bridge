@@ -30,9 +30,8 @@ fn bench_index_file_sizes(c: &mut Criterion) {
                     .map(|spec| spec.column_family)
                     .collect();
 
-                let storage = Arc::new(
-                    RocksDbIndexStorage::open(&storage_path, column_families).unwrap(),
-                );
+                let storage =
+                    Arc::new(RocksDbIndexStorage::open(&storage_path, column_families).unwrap());
                 let file_registry = Arc::new(RocksDbFileRegistry::open(&registry_path).unwrap());
 
                 let builder = IndexBuilder::<EvmTransactionIndexer, _, _>::new(
@@ -85,5 +84,9 @@ fn bench_rocksdb_write_patterns(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_index_file_sizes, bench_rocksdb_write_patterns);
+criterion_group!(
+    benches,
+    bench_index_file_sizes,
+    bench_rocksdb_write_patterns
+);
 criterion_main!(benches);
