@@ -1,7 +1,7 @@
 /// Page-level reader for indexed parquet files
 ///
 /// Uses PagePointers from indexes to read specific row groups from parquet files.
-use anyhow::Result;
+use crate::{FileRegistry, ReaderError};
 use arrow::record_batch::RecordBatch;
 use fusio::disk::LocalFs;
 use fusio::path::Path;
@@ -10,8 +10,6 @@ use fusio_parquet::reader::AsyncReader;
 use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
 use parquet_index_schema::PagePointer;
 use std::sync::Arc;
-
-use crate::FileRegistry;
 
 /// Async reader for fetching specific row groups from parquet files
 ///
@@ -29,16 +27,31 @@ impl<FR: FileRegistry> PageReader<FR> {
     /// Read the row group containing the indexed row (async)
     ///
     /// Returns the entire row group as a RecordBatch.
-    pub async fn read_row_group_async(&self, pointer: &PagePointer) -> Result<RecordBatch> {
+    pub async fn read_row_group_async(
+        &self,
+        pointer: &PagePointer,
+    ) -> Result<RecordBatch, ReaderError> {
         // Get the file path from the registry
-        let file_path = self.file_registry.get_file_path(pointer.file_id)?;
+        let file_path = self
+            .file_registry
+            .get_file_path(pointer.file_id)
+            .map_err(|_| ReaderError::FileNotFound(pointer.file_id))?;
 
         // Open the parquet file using fusio
-        let path = Path::from_filesystem_path(file_path.to_str().unwrap())?;
+        let path = Path::from_filesystem_path(
+            file_path
+                .to_str()
+                .ok_or_else(|| ReaderError::InvalidPath(format!("{:?}", file_path)))?,
+        )
+        .map_err(|e| ReaderError::InvalidPath(e.to_string()))?;
         let fs = LocalFs {};
         let file = fs
             .open_options(&path, fusio::fs::OpenOptions::default())
-            .await?;
+            .await
+            .map_err(|e| ReaderError::FileOpen {
+                path: file_path.clone(),
+                source: e,
+            })?;
 
         // Get file size for AsyncReader
         let content_length = file.size().await?;
@@ -61,11 +74,10 @@ impl<FR: FileRegistry> PageReader<FR> {
         }
 
         if batches.is_empty() {
-            anyhow::bail!(
+            return Err(ReaderError::ParquetRead(format!(
                 "No data found in row group {} of file {:?}",
-                pointer.row_group,
-                file_path
-            );
+                pointer.row_group, file_path
+            )));
         }
 
         // If there's only one batch, return it
@@ -85,7 +97,7 @@ impl<FR: FileRegistry> PageReader<FR> {
     pub async fn read_row_groups_async(
         &self,
         pointers: &[PagePointer],
-    ) -> Result<Vec<RecordBatch>> {
+    ) -> Result<Vec<RecordBatch>, ReaderError> {
         // TODO: Optimize by grouping pointers by file_id to reuse file handles
         let mut batches = Vec::new();
         for pointer in pointers {
@@ -97,12 +109,15 @@ impl<FR: FileRegistry> PageReader<FR> {
     /// Synchronous wrapper for read_row_group_async
     ///
     /// Uses tokio runtime to run the async version.
-    pub fn read_row_group(&self, pointer: &PagePointer) -> Result<RecordBatch> {
+    pub fn read_row_group(&self, pointer: &PagePointer) -> Result<RecordBatch, ReaderError> {
         tokio::runtime::Handle::current().block_on(self.read_row_group_async(pointer))
     }
 
     /// Synchronous wrapper for read_row_groups_async
-    pub fn read_row_groups(&self, pointers: &[PagePointer]) -> Result<Vec<RecordBatch>> {
+    pub fn read_row_groups(
+        &self,
+        pointers: &[PagePointer],
+    ) -> Result<Vec<RecordBatch>, ReaderError> {
         tokio::runtime::Handle::current().block_on(self.read_row_groups_async(pointers))
     }
 }
@@ -110,7 +125,7 @@ impl<FR: FileRegistry> PageReader<FR> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FileRegistry;
+    use crate::{FileRegistry, StorageError};
     use parquet_index_schema::FileId;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -135,19 +150,19 @@ mod tests {
     }
 
     impl FileRegistry for MockFileRegistry {
-        fn register_file(&self, path: &Path) -> Result<FileId> {
+        fn register_file(&self, path: &Path) -> Result<FileId, StorageError> {
             let id = FileId(self.files.lock().unwrap().len() as u32);
             self.files.lock().unwrap().insert(id, path.to_path_buf());
             Ok(id)
         }
 
-        fn get_file_path(&self, file_id: FileId) -> Result<PathBuf> {
+        fn get_file_path(&self, file_id: FileId) -> Result<PathBuf, StorageError> {
             self.files
                 .lock()
                 .unwrap()
                 .get(&file_id)
                 .cloned()
-                .ok_or_else(|| anyhow::anyhow!("File not found: {:?}", file_id))
+                .ok_or_else(|| StorageError::FileNotFound(file_id))
         }
     }
 

@@ -3,7 +3,7 @@
 /// The IndexBuilder reads parquet files, uses the IndexableSchema to extract
 /// keys from typed-arrow Record views, and writes PagePointers to the IndexStorage.
 use crate::storage::{FileRegistry, IndexStorage, WriteBatch};
-use anyhow::Result;
+use crate::BuilderError;
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::metadata::ParquetMetaData;
@@ -50,14 +50,17 @@ impl<S: IndexableSchema, ST: IndexStorage, FR: FileRegistry> IndexBuilder<S, ST,
     ///        - Find which page the row is in (using OffsetIndex)
     ///        - Build PagePointer
     ///        - Write to IndexStorage
-    pub fn index_file(&self, path: &Path) -> Result<FileId> {
+    pub fn index_file(&self, path: &Path) -> Result<FileId, BuilderError> {
         info!(path = ?path, schema = S::schema_name(), "Building indexes for parquet file");
 
         // 1. Register file and get FileId
         let file_id = self.file_registry.register_file(path)?;
 
         // 2. Open parquet file and get metadata
-        let file = File::open(path)?;
+        let file = File::open(path).map_err(|source| BuilderError::FileOpen {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
         let metadata = builder.metadata().clone();
         let mut reader = builder.build()?;
@@ -101,7 +104,7 @@ impl<S: IndexableSchema, ST: IndexStorage, FR: FileRegistry> IndexBuilder<S, ST,
         row_group: usize,
         batch: RecordBatch,
         metadata: &ParquetMetaData,
-    ) -> Result<()> {
+    ) -> Result<(), BuilderError> {
         debug!(
             file_id = file_id.0,
             row_group,
@@ -201,6 +204,7 @@ fn find_page_for_row(
 mod tests {
     use super::*;
     use crate::storage::WriteOp;
+    use crate::StorageError;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -218,18 +222,18 @@ mod tests {
     }
 
     impl IndexStorage for MockStorage {
-        fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
             let data = self.data.lock().unwrap();
             Ok(data.get(&(cf.to_string(), key.to_vec())).cloned())
         }
 
-        fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
+        fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
             let mut data = self.data.lock().unwrap();
             data.insert((cf.to_string(), key.to_vec()), value.to_vec());
             Ok(())
         }
 
-        fn write_batch(&self, batch: WriteBatch) -> Result<()> {
+        fn write_batch(&self, batch: WriteBatch) -> Result<(), StorageError> {
             let mut data = self.data.lock().unwrap();
             for op in batch.operations {
                 match op {
@@ -252,6 +256,4 @@ mod tests {
             Box::new(std::iter::empty())
         }
     }
-
-    // TODO: Add actual tests once we implement index_file
 }

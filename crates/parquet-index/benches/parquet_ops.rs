@@ -2,7 +2,7 @@
 ///
 /// Measures PageReader performance and compares indexed reads vs full scans.
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use evm_index::EvmTransactionIndexer;
+use evm_index::{EvmTransactionIndexer, CF_TX_BY_HASH};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet_index::{FileRegistry, IndexBuilder, IndexStorage, IndexableSchema, PageReader};
 use parquet_index_rocksdb::{RocksDbFileRegistry, RocksDbIndexStorage};
@@ -69,7 +69,7 @@ fn bench_page_reader(c: &mut Criterion) {
         // Get pointer for middle transaction
         let target_tx = &txs[txs.len() / 2];
         let pointer_bytes = storage
-            .get("tx_by_hash", &target_tx.tx_hash.bytes)
+            .get(CF_TX_BY_HASH, &target_tx.tx_hash.bytes)
             .unwrap()
             .unwrap();
         let pointer = PagePointer::from_bytes(&pointer_bytes).unwrap();
@@ -138,7 +138,7 @@ fn bench_indexed_vs_scan(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             // 1. Lookup in index
             let pointer_bytes = storage
-                .get("tx_by_hash", &target_tx.tx_hash.bytes)
+                .get(CF_TX_BY_HASH, &target_tx.tx_hash.bytes)
                 .unwrap()
                 .unwrap();
             let pointer = PagePointer::from_bytes(&pointer_bytes).unwrap();

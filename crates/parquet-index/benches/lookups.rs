@@ -2,7 +2,7 @@
 ///
 /// Measures how fast we can lookup transactions from indexes.
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use evm_index::EvmTransactionIndexer;
+use evm_index::{EvmTransactionIndexer, CF_TX_BY_FROM, CF_TX_BY_HASH};
 use parquet_index::{FileRegistry, IndexBuilder, IndexStorage, IndexableSchema};
 use parquet_index_rocksdb::{RocksDbFileRegistry, RocksDbIndexStorage};
 use parquet_index_schema::PagePointer;
@@ -56,7 +56,9 @@ fn bench_hash_lookups(c: &mut Criterion) {
             let target_tx = &txs[txs.len() / 2];
 
             b.iter(|| {
-                let result = storage.get("tx_by_hash", &target_tx.tx_hash.bytes).unwrap();
+                let result = storage
+                    .get(CF_TX_BY_HASH, &target_tx.tx_hash.bytes)
+                    .unwrap();
                 black_box(result);
             });
         });
@@ -84,7 +86,7 @@ fn bench_prefix_scans(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &_size| {
             b.iter(|| {
                 let results: Vec<_> = storage
-                    .prefix_iterator("tx_by_from", &target_address.bytes)
+                    .prefix_iterator(CF_TX_BY_FROM, &target_address.bytes)
                     .collect();
                 black_box(results);
             });
@@ -113,7 +115,7 @@ fn bench_batch_lookups(c: &mut Criterion) {
             |b, &_size| {
                 b.iter(|| {
                     for tx in &lookup_txs {
-                        let result = storage.get("tx_by_hash", &tx.tx_hash.bytes).unwrap();
+                        let result = storage.get(CF_TX_BY_HASH, &tx.tx_hash.bytes).unwrap();
                         black_box(result);
                     }
                 });
@@ -130,7 +132,7 @@ fn bench_pointer_deserialization(c: &mut Criterion) {
 
     let target_tx = &txs[0];
     let pointer_bytes = storage
-        .get("tx_by_hash", &target_tx.tx_hash.bytes)
+        .get(CF_TX_BY_HASH, &target_tx.tx_hash.bytes)
         .unwrap()
         .unwrap();
 

@@ -8,7 +8,7 @@
 mod fixtures;
 
 use anyhow::Result;
-use evm_index::EvmTransactionIndexer;
+use evm_index::{EvmTransactionIndexer, CF_TX_BY_FROM, CF_TX_BY_HASH, CF_TX_BY_TO};
 use fixtures::{generate_test_parquet, make_address};
 use parquet_index::{FileRegistry, IndexBuilder, IndexStorage, IndexableSchema};
 use parquet_index_rocksdb::{RocksDbFileRegistry, RocksDbIndexStorage};
@@ -45,7 +45,7 @@ fn test_end_to_end_indexing_small() -> Result<()> {
     // Verify all transactions are indexed by hash
     for (i, tx) in expected_txs.iter().enumerate() {
         let pointer_bytes = storage
-            .get("tx_by_hash", &tx.tx_hash.bytes)?
+            .get(CF_TX_BY_HASH, &tx.tx_hash.bytes)?
             .unwrap_or_else(|| {
                 panic!(
                     "Transaction {} (hash {:?}) should be indexed in tx_by_hash",
@@ -81,7 +81,7 @@ fn test_end_to_end_indexing_small() -> Result<()> {
         key.extend_from_slice(&tx.block_num.to_be_bytes());
         key.extend_from_slice(&tx.tx_index.to_be_bytes());
 
-        let pointer_bytes = storage.get("tx_by_from", &key)?.unwrap_or_else(|| {
+        let pointer_bytes = storage.get(CF_TX_BY_FROM, &key)?.unwrap_or_else(|| {
             panic!(
                 "Transaction {} (from {:?}, block {}) should be indexed in tx_by_from",
                 i, tx.from.bytes, tx.block_num
@@ -107,7 +107,7 @@ fn test_end_to_end_indexing_small() -> Result<()> {
         key.extend_from_slice(&tx.block_num.to_be_bytes());
         key.extend_from_slice(&tx.tx_index.to_be_bytes());
 
-        let pointer_bytes = storage.get("tx_by_to", &key)?.unwrap_or_else(|| {
+        let pointer_bytes = storage.get(CF_TX_BY_TO, &key)?.unwrap_or_else(|| {
             panic!(
                 "Transaction with to={:?} should be indexed in tx_by_to",
                 to_addr.bytes
@@ -168,7 +168,7 @@ fn test_end_to_end_indexing_medium() -> Result<()> {
         let tx = &expected_txs[i];
 
         // Check tx_by_hash
-        let pointer_bytes = storage.get("tx_by_hash", &tx.tx_hash.bytes)?.unwrap();
+        let pointer_bytes = storage.get(CF_TX_BY_HASH, &tx.tx_hash.bytes)?.unwrap();
         let pointer = PagePointer::from_bytes(&pointer_bytes)?;
         assert_eq!(pointer.file_id, file_id);
 
@@ -177,7 +177,7 @@ fn test_end_to_end_indexing_medium() -> Result<()> {
         key.extend_from_slice(&tx.from.bytes);
         key.extend_from_slice(&tx.block_num.to_be_bytes());
         key.extend_from_slice(&tx.tx_index.to_be_bytes());
-        storage.get("tx_by_from", &key)?.unwrap();
+        storage.get(CF_TX_BY_FROM, &key)?.unwrap();
     }
 
     println!("✓ Verified sample of 1000 transactions indexed correctly");
@@ -225,7 +225,7 @@ fn test_prefix_scan_by_address() -> Result<()> {
 
     // Prefix scan with just the address (20 bytes)
     let results: Vec<_> = storage
-        .prefix_iterator("tx_by_from", &target_address.bytes)
+        .prefix_iterator(CF_TX_BY_FROM, &target_address.bytes)
         .collect();
 
     println!("Found {} transactions via prefix scan", results.len());
@@ -338,7 +338,9 @@ async fn test_page_reader_integration() -> Result<()> {
 
     // Get pointer for first transaction
     let first_tx = &expected_txs[0];
-    let pointer_bytes = storage.get("tx_by_hash", &first_tx.tx_hash.bytes)?.unwrap();
+    let pointer_bytes = storage
+        .get(CF_TX_BY_HASH, &first_tx.tx_hash.bytes)?
+        .unwrap();
     let pointer = PagePointer::from_bytes(&pointer_bytes)?;
 
     // Read the row group (async)
