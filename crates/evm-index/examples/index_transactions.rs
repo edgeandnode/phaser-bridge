@@ -3,14 +3,13 @@
 /// This demonstrates how to use the indexing system to build page-level
 /// indexes for transaction lookups.
 use anyhow::Result;
-use arrow::record_batch::RecordBatch;
 use evm_index::EvmTransactionIndexer;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet_index::{FileRegistry, IndexBuilder, IndexStorage, WriteBatch, WriteOp};
 use parquet_index_schema::{FileId, IndexableSchema};
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Simple in-memory storage for this example
@@ -51,7 +50,7 @@ impl MemoryFileRegistry {
 }
 
 impl FileRegistry for MemoryFileRegistry {
-    fn register_file(&self, path: &PathBuf) -> Result<FileId> {
+    fn register_file(&self, path: &Path) -> Result<FileId> {
         let mut files = self.files.lock().unwrap();
 
         // Return existing ID if file already registered
@@ -64,7 +63,7 @@ impl FileRegistry for MemoryFileRegistry {
         let file_id = FileId(*next_id);
         *next_id += 1;
 
-        files.insert(path.clone(), file_id);
+        files.insert(path.to_path_buf(), file_id);
         Ok(file_id)
     }
 
@@ -172,16 +171,7 @@ fn main() -> Result<()> {
 
     println!("Index specs:");
     for spec in EvmTransactionIndexer::index_specs() {
-        println!(
-            "  {} (column {}): uses {}",
-            spec.column_family,
-            spec.column_index,
-            if spec.key_extractor.extract_ref(&dummy_batch(), 0).is_some() {
-                "zero-copy extraction"
-            } else {
-                "composite key extraction"
-            }
-        );
+        println!("  {} (column {})", spec.column_family, spec.column_index,);
     }
 
     println!("\n Building indexes...");
@@ -203,19 +193,4 @@ fn main() -> Result<()> {
     println!("  tx_by_to entries: {}", tx_by_to_count);
 
     Ok(())
-}
-
-/// Helper to create a dummy batch for API demonstration
-fn dummy_batch() -> RecordBatch {
-    use arrow::array::UInt64Array;
-    use arrow::datatypes::{DataType, Field, Schema};
-    use std::sync::Arc as StdArc;
-
-    let schema = StdArc::new(Schema::new(vec![Field::new(
-        "_block_num",
-        DataType::UInt64,
-        false,
-    )]));
-
-    RecordBatch::try_new(schema, vec![StdArc::new(UInt64Array::from(vec![0u64]))]).unwrap()
 }

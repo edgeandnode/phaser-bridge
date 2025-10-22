@@ -196,7 +196,7 @@ impl RocksDbFileRegistry {
 }
 
 impl FileRegistry for RocksDbFileRegistry {
-    fn register_file(&self, path: &PathBuf) -> Result<FileId> {
+    fn register_file(&self, path: &Path) -> Result<FileId> {
         // Check cache first
         {
             let id_cache = self.id_cache.lock().unwrap();
@@ -225,8 +225,8 @@ impl FileRegistry for RocksDbFileRegistry {
                 // Update caches
                 let mut path_cache = self.path_cache.lock().unwrap();
                 let mut id_cache = self.id_cache.lock().unwrap();
-                path_cache.insert(file_id, path.clone());
-                id_cache.insert(path.clone(), file_id);
+                path_cache.insert(file_id, path.to_path_buf());
+                id_cache.insert(path.to_path_buf(), file_id);
 
                 debug!(path = ?path, file_id = file_id.0, "File already registered (db hit)");
                 return Ok(file_id);
@@ -256,8 +256,8 @@ impl FileRegistry for RocksDbFileRegistry {
         {
             let mut path_cache = self.path_cache.lock().unwrap();
             let mut id_cache = self.id_cache.lock().unwrap();
-            path_cache.insert(file_id, path.clone());
-            id_cache.insert(path.clone(), file_id);
+            path_cache.insert(file_id, path.to_path_buf());
+            id_cache.insert(path.to_path_buf(), file_id);
         }
 
         info!(path = ?path, file_id = file_id.0, "Registered new file");

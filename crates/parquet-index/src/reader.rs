@@ -113,7 +113,7 @@ mod tests {
     use crate::FileRegistry;
     use parquet_index_schema::FileId;
     use std::collections::HashMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
     /// Mock FileRegistry for testing
@@ -135,9 +135,9 @@ mod tests {
     }
 
     impl FileRegistry for MockFileRegistry {
-        fn register_file(&self, path: &PathBuf) -> Result<FileId> {
+        fn register_file(&self, path: &Path) -> Result<FileId> {
             let id = FileId(self.files.lock().unwrap().len() as u32);
-            self.files.lock().unwrap().insert(id, path.clone());
+            self.files.lock().unwrap().insert(id, path.to_path_buf());
             Ok(id)
         }
 

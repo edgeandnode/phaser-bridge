@@ -5,7 +5,7 @@
 /// in-memory storage for testing.
 use anyhow::Result;
 use parquet_index_schema::FileId;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Abstraction over index storage backend
 ///
@@ -74,7 +74,7 @@ pub trait FileRegistry: Send + Sync {
     /// Register a new file and get a FileId
     ///
     /// If the file is already registered, returns the existing FileId.
-    fn register_file(&self, path: &PathBuf) -> Result<FileId>;
+    fn register_file(&self, path: &Path) -> Result<FileId>;
 
     /// Get the file path for a given FileId
     fn get_file_path(&self, file_id: FileId) -> Result<PathBuf>;

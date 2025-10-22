@@ -54,7 +54,7 @@ impl<S: IndexableSchema, ST: IndexStorage, FR: FileRegistry> IndexBuilder<S, ST,
         info!(path = ?path, schema = S::schema_name(), "Building indexes for parquet file");
 
         // 1. Register file and get FileId
-        let file_id = self.file_registry.register_file(&path.to_path_buf())?;
+        let file_id = self.file_registry.register_file(path)?;
 
         // 2. Open parquet file and get metadata
         let file = File::open(path)?;
@@ -147,21 +147,11 @@ impl<S: IndexableSchema, ST: IndexStorage, FR: FileRegistry> IndexBuilder<S, ST,
                     row_in_page,
                 };
 
-                // Try zero-copy reference first (for simple keys like tx_hash)
-                if let Some(key_ref) = spec.key_extractor.extract_ref(&batch, row_idx) {
-                    // Zero-copy path! Only allocate when writing to index
-                    write_batch.put(
-                        &spec.column_family,
-                        key_ref.to_vec(),
-                        pointer.to_bytes().to_vec(),
-                    );
-                }
-                // Otherwise try composite key (uses reusable buffer)
-                else if spec
+                // Extract key into buffer (handles both zero-copy and composite keys)
+                if spec
                     .key_extractor
                     .extract_into(&batch, row_idx, &mut key_buffer)
                 {
-                    // Composite path - buffer is reused, only copy once for index
                     write_batch.put(
                         &spec.column_family,
                         key_buffer.clone(),
