@@ -8,6 +8,10 @@ members = [
     "crates/schemas/evm/common",
     "crates/validators/evm",
     "crates/phaser-integration-test",
+    "crates/parquet-index-schema",
+    "crates/parquet-index",
+    "crates/evm-index",
+    "crates/parquet-index-rocksdb",
 ]
 
 [workspace.dependencies]
@@ -18,6 +22,10 @@ phaser-bridge = { path = "crates/phaser-bridge" }
 evm-common = { path = "crates/schemas/evm/common", features = ["views"] }
 validators-evm = { path = "crates/validators/evm" }
 core-executor = { path = "../../core-executor" }
+parquet-index-schema = { path = "crates/parquet-index-schema" }
+parquet-index = { path = "crates/parquet-index" }
+evm-index = { path = "crates/evm-index" }
+parquet-index-rocksdb = { path = "crates/parquet-index-rocksdb" }
 
 # External dependencies
 tokio = { version = "1.41", features = ["full"] }
@@ -58,6 +66,10 @@ axum = "0.7"
 jsonrpsee = { version = "0.24", features = ["server"] }
 rayon = "1.10"
 num_cpus = "1.16"
+parquet = "56"
+fusio = { version = "0.4", features = ["tokio"] }
+fusio-parquet = "0.4"
+futures = "0.3"
 
 # gRPC dependencies
 tonic = "0.13"
