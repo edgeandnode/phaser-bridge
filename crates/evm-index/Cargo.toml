@@ -1,0 +1,18 @@
+[package]
+name = "evm-index"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+parquet-index-schema = { workspace = true }
+evm-common = { workspace = true }
+typed-arrow = { workspace = true, features = ["views"] }
+arrow = { workspace = true }
+alloy-primitives = { workspace = true }
+
+[dev-dependencies]
+parquet-index = { workspace = true }
+parquet-index-rocksdb = { workspace = true }
+parquet = { workspace = true }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }
