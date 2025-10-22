@@ -2,7 +2,7 @@
 ///
 /// This demonstrates production usage with persistent RocksDB storage.
 use anyhow::Result;
-use evm_index::EvmTransactionIndexer;
+use evm_index::{EvmTransactionIndexer, CF_TX_BY_FROM, CF_TX_BY_HASH};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet_index::{IndexBuilder, IndexableSchema};
 use parquet_index_rocksdb::{RocksDbFileRegistry, RocksDbIndexStorage};
@@ -88,8 +88,11 @@ fn main() -> Result<()> {
         rocksdb_path.display()
     );
     println!("You can query them by reopening the database and using:");
-    println!("  storage.get(\"tx_by_hash\", <32-byte-hash>)");
-    println!("  storage.prefix_iterator(\"tx_by_from\", <20-byte-address>)");
+    println!("  storage.get({:?}, <32-byte-hash>)", CF_TX_BY_HASH);
+    println!(
+        "  storage.prefix_iterator({:?}, <20-byte-address>)",
+        CF_TX_BY_FROM
+    );
 
     Ok(())
 }

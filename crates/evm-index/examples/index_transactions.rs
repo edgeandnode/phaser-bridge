@@ -2,10 +2,9 @@
 ///
 /// This demonstrates how to use the indexing system to build page-level
 /// indexes for transaction lookups.
-use anyhow::Result;
-use evm_index::EvmTransactionIndexer;
+use evm_index::{EvmTransactionIndexer, CF_TX_BY_FROM, CF_TX_BY_HASH, CF_TX_BY_TO};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet_index::{FileRegistry, IndexBuilder, IndexStorage, WriteBatch, WriteOp};
+use parquet_index::{FileRegistry, IndexBuilder, IndexStorage, StorageError, WriteBatch, WriteOp};
 use parquet_index_schema::{FileId, IndexableSchema};
 use std::collections::HashMap;
 use std::fs::File;
@@ -50,7 +49,7 @@ impl MemoryFileRegistry {
 }
 
 impl FileRegistry for MemoryFileRegistry {
-    fn register_file(&self, path: &Path) -> Result<FileId> {
+    fn register_file(&self, path: &Path) -> Result<FileId, StorageError> {
         let mut files = self.files.lock().unwrap();
 
         // Return existing ID if file already registered
@@ -67,29 +66,29 @@ impl FileRegistry for MemoryFileRegistry {
         Ok(file_id)
     }
 
-    fn get_file_path(&self, file_id: FileId) -> Result<PathBuf> {
+    fn get_file_path(&self, file_id: FileId) -> Result<PathBuf, StorageError> {
         let files = self.files.lock().unwrap();
         files
             .iter()
             .find(|(_, id)| **id == file_id)
             .map(|(path, _)| path.clone())
-            .ok_or_else(|| anyhow::anyhow!("File not found: {:?}", file_id))
+            .ok_or_else(|| StorageError::FileNotFound(file_id))
     }
 }
 
 impl IndexStorage for MemoryStorage {
-    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
         let data = self.data.lock().unwrap();
         Ok(data.get(&(cf.to_string(), key.to_vec())).cloned())
     }
 
-    fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
+    fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
         let mut data = self.data.lock().unwrap();
         data.insert((cf.to_string(), key.to_vec()), value.to_vec());
         Ok(())
     }
 
-    fn write_batch(&self, batch: WriteBatch) -> Result<()> {
+    fn write_batch(&self, batch: WriteBatch) -> Result<(), StorageError> {
         let mut data = self.data.lock().unwrap();
         for op in batch.operations {
             match op {
@@ -125,7 +124,7 @@ impl IndexStorage for MemoryStorage {
     }
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This is a minimal example showing the indexing API
     // In production, you'd:
     // 1. Use RocksDB instead of MemoryStorage
@@ -183,9 +182,9 @@ fn main() -> Result<()> {
     println!("  File ID: {}", file_id.0);
 
     // Show some stats
-    let tx_by_hash_count = storage.get_all("tx_by_hash").len();
-    let tx_by_from_count = storage.get_all("tx_by_from").len();
-    let tx_by_to_count = storage.get_all("tx_by_to").len();
+    let tx_by_hash_count = storage.get_all(CF_TX_BY_HASH).len();
+    let tx_by_from_count = storage.get_all(CF_TX_BY_FROM).len();
+    let tx_by_to_count = storage.get_all(CF_TX_BY_TO).len();
 
     println!("\nIndex statistics:");
     println!("  tx_by_hash entries: {}", tx_by_hash_count);

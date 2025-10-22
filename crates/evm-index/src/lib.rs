@@ -19,6 +19,14 @@ mod columns {
     pub const TO: usize = 7; // to field (Option<Address20>)
 }
 
+/// Column family names for EVM transaction indexes
+///
+/// These are the RocksDB column family names used by the EVM transaction indexer.
+/// Use these constants when querying indexes to ensure consistency.
+pub const CF_TX_BY_HASH: &str = "tx_by_hash";
+pub const CF_TX_BY_FROM: &str = "tx_by_from";
+pub const CF_TX_BY_TO: &str = "tx_by_to";
+
 /// IndexableSchema implementation for EVM transactions
 pub struct EvmTransactionIndexer;
 
@@ -32,17 +40,17 @@ impl IndexableSchema for EvmTransactionIndexer {
     fn index_specs() -> Vec<IndexSpec> {
         vec![
             IndexSpec {
-                column_family: "tx_by_hash".to_string(),
+                column_family: CF_TX_BY_HASH.to_string(),
                 key_extractor: Arc::new(TxHashExtractor),
                 column_index: columns::TX_HASH,
             },
             IndexSpec {
-                column_family: "tx_by_from".to_string(),
+                column_family: CF_TX_BY_FROM.to_string(),
                 key_extractor: Arc::new(FromAddressExtractor),
                 column_index: columns::FROM,
             },
             IndexSpec {
-                column_family: "tx_by_to".to_string(),
+                column_family: CF_TX_BY_TO.to_string(),
                 key_extractor: Arc::new(ToAddressExtractor),
                 column_index: columns::TO,
             },
@@ -199,13 +207,13 @@ mod tests {
         let specs = EvmTransactionIndexer::index_specs();
         assert_eq!(specs.len(), 3);
 
-        assert_eq!(specs[0].column_family, "tx_by_hash");
+        assert_eq!(specs[0].column_family, CF_TX_BY_HASH);
         assert_eq!(specs[0].column_index, columns::TX_HASH);
 
-        assert_eq!(specs[1].column_family, "tx_by_from");
+        assert_eq!(specs[1].column_family, CF_TX_BY_FROM);
         assert_eq!(specs[1].column_index, columns::FROM);
 
-        assert_eq!(specs[2].column_family, "tx_by_to");
+        assert_eq!(specs[2].column_family, CF_TX_BY_TO);
         assert_eq!(specs[2].column_index, columns::TO);
     }
 
