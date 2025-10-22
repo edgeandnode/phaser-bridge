@@ -693,7 +693,10 @@ async fn main() -> Result<()> {
                     // Display download rate
                     if job.download_rate_bytes_per_sec > 0.0 {
                         let rate = if job.download_rate_bytes_per_sec >= 1_000_000_000.0 {
-                            format!("{:.2} GB/s", job.download_rate_bytes_per_sec / 1_000_000_000.0)
+                            format!(
+                                "{:.2} GB/s",
+                                job.download_rate_bytes_per_sec / 1_000_000_000.0
+                            )
                         } else if job.download_rate_bytes_per_sec >= 1_000_000.0 {
                             format!("{:.1} MB/s", job.download_rate_bytes_per_sec / 1_000_000.0)
                         } else if job.download_rate_bytes_per_sec >= 1_000.0 {

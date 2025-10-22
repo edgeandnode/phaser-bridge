@@ -80,7 +80,7 @@ pub struct SyncWorker {
     progress_tracker: Option<ProgressTracker>,
     validation_stage: ValidationStage,
     segment_work: crate::sync::data_scanner::SegmentWork, // Pre-computed missing ranges
-    current_progress: Arc<RwLock<WorkerProgress>>, // Real-time progress state
+    current_progress: Arc<RwLock<WorkerProgress>>,        // Real-time progress state
 }
 
 impl SyncWorker {
@@ -380,7 +380,10 @@ impl SyncWorker {
         let mut resume_from = from_block;
 
         let (batches_processed, bytes_written) = loop {
-            match self.try_sync_blocks_stream(client, resume_from, to_block, &mut writer, from_block).await {
+            match self
+                .try_sync_blocks_stream(client, resume_from, to_block, &mut writer, from_block)
+                .await
+            {
                 Ok(result) => break result,
                 Err(e) if is_transient_error(&e) => {
                     // Get the last block we successfully wrote
@@ -397,8 +400,9 @@ impl SyncWorker {
                     }
 
                     retry_count += 1;
-                    let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
-                        .min(MAX_BACKOFF_SECS);
+                    let backoff_secs = (INITIAL_BACKOFF_SECS
+                        * 2u64.pow(retry_count.saturating_sub(1)))
+                    .min(MAX_BACKOFF_SECS);
 
                     warn!(
                         "Worker {} blocks stream failed at block {} (attempt {}): {}. Resuming from block {} in {}s...",
@@ -548,7 +552,17 @@ impl SyncWorker {
         let mut resume_from = from_block;
 
         let (batches_processed, bytes_written) = loop {
-            match self.try_sync_transactions_stream(client, resume_from, to_block, &mut writer, &mut proof_writer, from_block).await {
+            match self
+                .try_sync_transactions_stream(
+                    client,
+                    resume_from,
+                    to_block,
+                    &mut writer,
+                    &mut proof_writer,
+                    from_block,
+                )
+                .await
+            {
                 Ok(result) => break result,
                 Err(e) if is_transient_error(&e) => {
                     // Get the last block we successfully wrote
@@ -565,8 +579,9 @@ impl SyncWorker {
                     }
 
                     retry_count += 1;
-                    let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
-                        .min(MAX_BACKOFF_SECS);
+                    let backoff_secs = (INITIAL_BACKOFF_SECS
+                        * 2u64.pow(retry_count.saturating_sub(1)))
+                    .min(MAX_BACKOFF_SECS);
 
                     warn!(
                         "Worker {} transactions stream failed at block {} (attempt {}): {}. Resuming from block {} in {}s...",
@@ -774,7 +789,10 @@ impl SyncWorker {
         let mut resume_from = from_block;
 
         let (batches_processed, bytes_written) = loop {
-            match self.try_sync_logs_stream(client, resume_from, to_block, &mut writer, from_block).await {
+            match self
+                .try_sync_logs_stream(client, resume_from, to_block, &mut writer, from_block)
+                .await
+            {
                 Ok(result) => break result,
                 Err(e) if is_transient_error(&e) => {
                     // Get the last block we successfully wrote
@@ -791,8 +809,9 @@ impl SyncWorker {
                     }
 
                     retry_count += 1;
-                    let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
-                        .min(MAX_BACKOFF_SECS);
+                    let backoff_secs = (INITIAL_BACKOFF_SECS
+                        * 2u64.pow(retry_count.saturating_sub(1)))
+                    .min(MAX_BACKOFF_SECS);
 
                     warn!(
                         "Worker {} logs stream failed at block {} (attempt {}): {}. Resuming from block {} in {}s...",

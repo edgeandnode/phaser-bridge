@@ -449,7 +449,9 @@ impl SegmentWorker {
         segment_end: u64,
         client: &mut BlockDataClient,
     ) -> Result<HashMap<u64, (Header, i64)>, ErigonBridgeError> {
-        let mut block_stream = client.stream_blocks(segment_start, segment_end, 100).await?;
+        let mut block_stream = client
+            .stream_blocks(segment_start, segment_end, 100)
+            .await?;
         let mut headers = HashMap::new();
         let mut batch_count = 0;
 
@@ -459,7 +461,10 @@ impl SegmentWorker {
 
             debug!(
                 "Segment {}-{}: Received header batch {} with {} blocks",
-                segment_start, segment_end, batch_count, block_batch.blocks.len()
+                segment_start,
+                segment_end,
+                batch_count,
+                block_batch.blocks.len()
             );
 
             for block in block_batch.blocks {
@@ -469,7 +474,10 @@ impl SegmentWorker {
                         headers.insert(block.block_number, (header, timestamp));
                     }
                     Err(e) => {
-                        warn!("Failed to decode header for block {}: {}", block.block_number, e);
+                        warn!(
+                            "Failed to decode header for block {}: {}",
+                            block.block_number, e
+                        );
                     }
                 }
             }
@@ -551,7 +559,11 @@ impl SegmentWorker {
 
         while let Some(batch_result) = receipt_stream.message().await.transpose() {
             let receipt_batch = batch_result?;
-            debug!("Block {}: Received {} receipts", block_num, receipt_batch.receipts.len());
+            debug!(
+                "Block {}: Received {} receipts",
+                block_num,
+                receipt_batch.receipts.len()
+            );
             receipts.extend(receipt_batch.receipts);
         }
 

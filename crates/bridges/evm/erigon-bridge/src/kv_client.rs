@@ -74,13 +74,17 @@ impl ErigonKvClient {
         let (tx_sender, mut tx_receiver) = mpsc::unbounded_channel();
 
         // Send initial message to open transaction
-        tx_sender.send(Cursor {
-            op: Op::First as i32,
-            bucket_name: String::new(),
-            cursor: 0,
-            k: vec![],
-            v: vec![],
-        }).map_err(|e| ErigonBridgeError::Internal(anyhow::anyhow!("Failed to send initial cursor: {}", e)))?;
+        tx_sender
+            .send(Cursor {
+                op: Op::First as i32,
+                bucket_name: String::new(),
+                cursor: 0,
+                k: vec![],
+                v: vec![],
+            })
+            .map_err(|e| {
+                ErigonBridgeError::Internal(anyhow::anyhow!("Failed to send initial cursor: {}", e))
+            })?;
 
         // Create the outbound stream from the receiver
         let outbound = async_stream::stream! {
@@ -146,7 +150,11 @@ impl ErigonKvClient {
         key.extend_from_slice(&block_number.to_be_bytes());
         key.extend_from_slice(block_hash);
 
-        debug!(block_number, tx_id = self.tx_id, "Querying TxSender table for block senders");
+        debug!(
+            block_number,
+            tx_id = self.tx_id,
+            "Querying TxSender table for block senders"
+        );
 
         // Query the TxSender table using our long-lived transaction
         let request = RangeReq {

@@ -227,12 +227,7 @@ impl ErigonFlightBridge {
 
                 async move {
                     let worker = SegmentWorker::new(
-                        worker_id,
-                        seg_start,
-                        seg_end,
-                        client,
-                        config,
-                        validator,
+                        worker_id, seg_start, seg_end, client, config, validator,
                     );
 
                     // Convert the stream to handle FlightError
@@ -289,12 +284,7 @@ impl ErigonFlightBridge {
 
                 async move {
                     let worker = SegmentWorker::new_for_logs(
-                        worker_id,
-                        seg_start,
-                        seg_end,
-                        client,
-                        config,
-                        validator,
+                        worker_id, seg_start, seg_end, client, config, validator,
                     );
 
                     // Convert the stream to handle FlightError
