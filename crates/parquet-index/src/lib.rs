@@ -6,10 +6,12 @@
 /// - Reading specific pages using fusio async I/O (PageReader)
 /// - Abstracting over storage backends (IndexStorage trait)
 pub mod builder;
+pub mod error;
 pub mod reader;
 pub mod storage;
 
 pub use builder::IndexBuilder;
+pub use error::{BuilderError, ReaderError, StorageError};
 pub use reader::PageReader;
 pub use storage::{FileRegistry, IndexStorage, WriteBatch, WriteOp};
 

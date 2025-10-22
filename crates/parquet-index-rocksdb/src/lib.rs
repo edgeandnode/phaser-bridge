@@ -2,8 +2,7 @@
 ///
 /// This crate provides production-ready storage backends for the parquet
 /// indexing system using RocksDB.
-use anyhow::Result;
-use parquet_index::{FileRegistry, IndexStorage, WriteBatch, WriteOp};
+use parquet_index::{FileRegistry, IndexStorage, StorageError, WriteBatch, WriteOp};
 use parquet_index_schema::FileId;
 use rocksdb::{ColumnFamilyDescriptor, Options, DB};
 use std::collections::HashMap;
@@ -23,7 +22,10 @@ impl RocksDbIndexStorage {
     /// Open or create a RocksDB database for index storage
     ///
     /// Creates column families for all index types if they don't exist.
-    pub fn open<P: AsRef<Path>>(path: P, column_families: Vec<String>) -> Result<Self> {
+    pub fn open<P: AsRef<Path>>(
+        path: P,
+        column_families: Vec<String>,
+    ) -> Result<Self, StorageError> {
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
@@ -34,7 +36,8 @@ impl RocksDbIndexStorage {
             cfs.push(ColumnFamilyDescriptor::new(cf_name, Options::default()));
         }
 
-        let db = DB::open_cf_descriptors(&db_opts, path.as_ref(), cfs)?;
+        let db = DB::open_cf_descriptors(&db_opts, path.as_ref(), cfs)
+            .map_err(|e| StorageError::Backend(Box::new(e)))?;
 
         info!(
             path = ?path.as_ref(),
@@ -47,26 +50,29 @@ impl RocksDbIndexStorage {
 }
 
 impl IndexStorage for RocksDbIndexStorage {
-    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
         let cf_handle = self
             .db
             .cf_handle(cf)
-            .ok_or_else(|| anyhow::anyhow!("Column family not found: {}", cf))?;
+            .ok_or_else(|| StorageError::ColumnFamilyNotFound(cf.to_string()))?;
 
-        Ok(self.db.get_cf(&cf_handle, key)?)
+        self.db
+            .get_cf(&cf_handle, key)
+            .map_err(|e| StorageError::Backend(Box::new(e)))
     }
 
-    fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
+    fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), StorageError> {
         let cf_handle = self
             .db
             .cf_handle(cf)
-            .ok_or_else(|| anyhow::anyhow!("Column family not found: {}", cf))?;
+            .ok_or_else(|| StorageError::ColumnFamilyNotFound(cf.to_string()))?;
 
-        self.db.put_cf(&cf_handle, key, value)?;
-        Ok(())
+        self.db
+            .put_cf(&cf_handle, key, value)
+            .map_err(|e| StorageError::Backend(Box::new(e)))
     }
 
-    fn write_batch(&self, batch: WriteBatch) -> Result<()> {
+    fn write_batch(&self, batch: WriteBatch) -> Result<(), StorageError> {
         let mut rocksdb_batch = rocksdb::WriteBatch::default();
 
         for op in batch.operations {
@@ -75,21 +81,22 @@ impl IndexStorage for RocksDbIndexStorage {
                     let cf_handle = self
                         .db
                         .cf_handle(&cf)
-                        .ok_or_else(|| anyhow::anyhow!("Column family not found: {}", cf))?;
+                        .ok_or_else(|| StorageError::ColumnFamilyNotFound(cf.clone()))?;
                     rocksdb_batch.put_cf(&cf_handle, key, value);
                 }
                 WriteOp::Delete { cf, key } => {
                     let cf_handle = self
                         .db
                         .cf_handle(&cf)
-                        .ok_or_else(|| anyhow::anyhow!("Column family not found: {}", cf))?;
+                        .ok_or_else(|| StorageError::ColumnFamilyNotFound(cf.clone()))?;
                     rocksdb_batch.delete_cf(&cf_handle, key);
                 }
             }
         }
 
-        self.db.write(rocksdb_batch)?;
-        Ok(())
+        self.db
+            .write(rocksdb_batch)
+            .map_err(|e| StorageError::Backend(Box::new(e)))
     }
 
     fn prefix_iterator<'a>(
@@ -139,7 +146,7 @@ impl RocksDbFileRegistry {
     /// Uses two column families:
     /// - "file_id_to_path": FileId (u32) -> PathBuf (string)
     /// - "path_to_file_id": PathBuf (string) -> FileId (u32)
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
@@ -151,7 +158,8 @@ impl RocksDbFileRegistry {
             ColumnFamilyDescriptor::new("metadata", Options::default()),
         ];
 
-        let db = DB::open_cf_descriptors(&db_opts, path.as_ref(), cfs)?;
+        let db = DB::open_cf_descriptors(&db_opts, path.as_ref(), cfs)
+            .map_err(|e| StorageError::Backend(Box::new(e)))?;
 
         // Load existing mappings into cache
         let mut path_cache = HashMap::new();
@@ -160,13 +168,16 @@ impl RocksDbFileRegistry {
 
         let cf_handle = db.cf_handle("file_id_to_path").unwrap();
         for item in db.iterator_cf(&cf_handle, rocksdb::IteratorMode::Start) {
-            let (key_bytes, value_bytes) = item?;
+            let (key_bytes, value_bytes) = item.map_err(|e| StorageError::Backend(Box::new(e)))?;
 
             // Deserialize FileId from 4 bytes
             if key_bytes.len() == 4 {
                 let file_id =
                     u32::from_be_bytes([key_bytes[0], key_bytes[1], key_bytes[2], key_bytes[3]]);
-                let path = PathBuf::from(String::from_utf8(value_bytes.to_vec())?);
+                let path = PathBuf::from(
+                    String::from_utf8(value_bytes.to_vec())
+                        .map_err(|e| StorageError::InvalidFilePath(e.to_string()))?,
+                );
 
                 path_cache.insert(FileId(file_id), path.clone());
                 id_cache.insert(path, FileId(file_id));
@@ -196,7 +207,7 @@ impl RocksDbFileRegistry {
 }
 
 impl FileRegistry for RocksDbFileRegistry {
-    fn register_file(&self, path: &Path) -> Result<FileId> {
+    fn register_file(&self, path: &Path) -> Result<FileId, StorageError> {
         // Check cache first
         {
             let id_cache = self.id_cache.lock().unwrap();
@@ -210,10 +221,14 @@ impl FileRegistry for RocksDbFileRegistry {
         let path_to_id_cf = self
             .db
             .cf_handle("path_to_file_id")
-            .ok_or_else(|| anyhow::anyhow!("path_to_file_id CF not found"))?;
+            .ok_or_else(|| StorageError::ColumnFamilyNotFound("path_to_file_id".to_string()))?;
 
         let path_str = path.to_string_lossy();
-        if let Some(id_bytes) = self.db.get_cf(&path_to_id_cf, path_str.as_bytes())? {
+        if let Some(id_bytes) = self
+            .db
+            .get_cf(&path_to_id_cf, path_str.as_bytes())
+            .map_err(|e| StorageError::Backend(Box::new(e)))?
+        {
             if id_bytes.len() == 4 {
                 let file_id = FileId(u32::from_be_bytes([
                     id_bytes[0],
@@ -245,12 +260,14 @@ impl FileRegistry for RocksDbFileRegistry {
         let id_to_path_cf = self
             .db
             .cf_handle("file_id_to_path")
-            .ok_or_else(|| anyhow::anyhow!("file_id_to_path CF not found"))?;
+            .ok_or_else(|| StorageError::ColumnFamilyNotFound("file_id_to_path".to_string()))?;
 
         self.db
-            .put_cf(&id_to_path_cf, file_id.0.to_be_bytes(), path_str.as_bytes())?;
+            .put_cf(&id_to_path_cf, file_id.0.to_be_bytes(), path_str.as_bytes())
+            .map_err(|e| StorageError::Backend(Box::new(e)))?;
         self.db
-            .put_cf(&path_to_id_cf, path_str.as_bytes(), file_id.0.to_be_bytes())?;
+            .put_cf(&path_to_id_cf, path_str.as_bytes(), file_id.0.to_be_bytes())
+            .map_err(|e| StorageError::Backend(Box::new(e)))?;
 
         // Update caches
         {
@@ -264,7 +281,7 @@ impl FileRegistry for RocksDbFileRegistry {
         Ok(file_id)
     }
 
-    fn get_file_path(&self, file_id: FileId) -> Result<PathBuf> {
+    fn get_file_path(&self, file_id: FileId) -> Result<PathBuf, StorageError> {
         // Check cache first
         {
             let path_cache = self.path_cache.lock().unwrap();
@@ -277,10 +294,17 @@ impl FileRegistry for RocksDbFileRegistry {
         let id_to_path_cf = self
             .db
             .cf_handle("file_id_to_path")
-            .ok_or_else(|| anyhow::anyhow!("file_id_to_path CF not found"))?;
+            .ok_or_else(|| StorageError::ColumnFamilyNotFound("file_id_to_path".to_string()))?;
 
-        if let Some(path_bytes) = self.db.get_cf(&id_to_path_cf, file_id.0.to_be_bytes())? {
-            let path = PathBuf::from(String::from_utf8(path_bytes.to_vec())?);
+        if let Some(path_bytes) = self
+            .db
+            .get_cf(&id_to_path_cf, file_id.0.to_be_bytes())
+            .map_err(|e| StorageError::Backend(Box::new(e)))?
+        {
+            let path = PathBuf::from(
+                String::from_utf8(path_bytes.to_vec())
+                    .map_err(|e| StorageError::InvalidFilePath(e.to_string()))?,
+            );
 
             // Update cache
             let mut path_cache = self.path_cache.lock().unwrap();
@@ -288,7 +312,7 @@ impl FileRegistry for RocksDbFileRegistry {
 
             Ok(path)
         } else {
-            Err(anyhow::anyhow!("File not found: {:?}", file_id))
+            Err(StorageError::FileNotFound(file_id))
         }
     }
 }
@@ -299,7 +323,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_rocksdb_storage() -> Result<()> {
+    fn test_rocksdb_storage() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test_storage");
 
@@ -327,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn test_file_registry() -> Result<()> {
+    fn test_file_registry() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test_registry");
 
@@ -354,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn test_file_registry_persistence() -> Result<()> {
+    fn test_file_registry_persistence() -> Result<(), Box<dyn std::error::Error>> {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test_registry_persist");
 

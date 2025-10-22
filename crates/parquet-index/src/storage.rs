@@ -3,7 +3,7 @@
 /// This trait allows the indexing engine to work with any key-value store,
 /// not just RocksDB. Implementations can use RocksDB, LMDB, Sled, or even
 /// in-memory storage for testing.
-use anyhow::Result;
+use crate::StorageError;
 use parquet_index_schema::FileId;
 use std::path::{Path, PathBuf};
 
@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 /// Allows swapping RocksDB for other KV stores or in-memory storage for tests
 pub trait IndexStorage: Send + Sync {
     /// Get value for a key in a column family
-    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>>;
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError>;
 
     /// Put key-value in a column family
-    fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()>;
+    fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), StorageError>;
 
     /// Write a batch of operations atomically
-    fn write_batch(&self, batch: WriteBatch) -> Result<()>;
+    fn write_batch(&self, batch: WriteBatch) -> Result<(), StorageError>;
 
     /// Iterate with prefix (for range scans)
     fn prefix_iterator<'a>(
@@ -74,8 +74,8 @@ pub trait FileRegistry: Send + Sync {
     /// Register a new file and get a FileId
     ///
     /// If the file is already registered, returns the existing FileId.
-    fn register_file(&self, path: &Path) -> Result<FileId>;
+    fn register_file(&self, path: &Path) -> Result<FileId, StorageError>;
 
     /// Get the file path for a given FileId
-    fn get_file_path(&self, file_id: FileId) -> Result<PathBuf>;
+    fn get_file_path(&self, file_id: FileId) -> Result<PathBuf, StorageError>;
 }

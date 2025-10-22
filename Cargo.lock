@@ -4317,6 +4317,7 @@ dependencies = [
  "parquet-index-schema",
  "rocksdb",
  "tempfile",
+ "thiserror 1.0.69",
  "tracing",
 ]
 
