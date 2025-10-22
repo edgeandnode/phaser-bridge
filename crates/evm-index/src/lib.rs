@@ -5,7 +5,9 @@
 use arrow::array::{Array, AsArray};
 use arrow::datatypes::UInt64Type;
 use arrow::record_batch::RecordBatch;
-use parquet_index_schema::{IndexSpec, IndexableSchema, KeyExtractor};
+use parquet_index_schema::{
+    CompositeKeyExtractor, IndexSpec, IndexableSchema, KeyExtractor, ZeroCopyKeyExtractor,
+};
 use std::sync::Arc;
 
 /// Column indices in TransactionRecord
@@ -53,7 +55,7 @@ impl IndexableSchema for EvmTransactionIndexer {
 /// Returns direct reference to the 32-byte hash in the Arrow array
 struct TxHashExtractor;
 
-impl KeyExtractor for TxHashExtractor {
+impl ZeroCopyKeyExtractor for TxHashExtractor {
     fn extract_ref<'a>(&self, batch: &'a RecordBatch, row_idx: usize) -> Option<&'a [u8]> {
         // tx_hash is a Struct with a "bytes" field that contains FixedSizeBinary(32)
         let column = batch.column(columns::TX_HASH);
@@ -74,12 +76,24 @@ impl KeyExtractor for TxHashExtractor {
     }
 }
 
+impl KeyExtractor for TxHashExtractor {
+    fn extract_into(&self, batch: &RecordBatch, row_idx: usize, buf: &mut Vec<u8>) -> bool {
+        if let Some(key_ref) = self.extract_ref(batch, row_idx) {
+            buf.clear();
+            buf.extend_from_slice(key_ref);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Composite key extractor for from_address || block_num || tx_index
 ///
 /// Format: [20 bytes address][8 bytes block_num (big-endian)][4 bytes tx_index (big-endian)]
 struct FromAddressExtractor;
 
-impl KeyExtractor for FromAddressExtractor {
+impl CompositeKeyExtractor for FromAddressExtractor {
     fn extract_into(&self, batch: &RecordBatch, row_idx: usize, buf: &mut Vec<u8>) -> bool {
         // from is a Struct with a "bytes" field that contains FixedSizeBinary(20)
         let from_column = batch.column(columns::FROM);
@@ -115,13 +129,19 @@ impl KeyExtractor for FromAddressExtractor {
     }
 }
 
+impl KeyExtractor for FromAddressExtractor {
+    fn extract_into(&self, batch: &RecordBatch, row_idx: usize, buf: &mut Vec<u8>) -> bool {
+        <Self as CompositeKeyExtractor>::extract_into(self, batch, row_idx, buf)
+    }
+}
+
 /// Composite key extractor for to_address || block_num || tx_index
 ///
 /// Format: [20 bytes address][8 bytes block_num (big-endian)][4 bytes tx_index (big-endian)]
 /// Skips rows where to is None (contract creation)
 struct ToAddressExtractor;
 
-impl KeyExtractor for ToAddressExtractor {
+impl CompositeKeyExtractor for ToAddressExtractor {
     fn extract_into(&self, batch: &RecordBatch, row_idx: usize, buf: &mut Vec<u8>) -> bool {
         // to is an Option<Address20> - represented as a nullable struct with "bytes" field
         let to_column = batch.column(columns::TO);
@@ -161,6 +181,12 @@ impl KeyExtractor for ToAddressExtractor {
         buf.extend_from_slice(&tx_index.to_be_bytes()); // 4 bytes
 
         true
+    }
+}
+
+impl KeyExtractor for ToAddressExtractor {
+    fn extract_into(&self, batch: &RecordBatch, row_idx: usize, buf: &mut Vec<u8>) -> bool {
+        <Self as CompositeKeyExtractor>::extract_into(self, batch, row_idx, buf)
     }
 }
 
@@ -264,14 +290,18 @@ mod tests {
         let extractor = TxHashExtractor;
 
         // Extract from row 0
-        let key = extractor.extract_ref(&batch, 0).expect("Should extract key");
+        let key = extractor
+            .extract_ref(&batch, 0)
+            .expect("Should extract key");
 
         // Should be 32 bytes
         assert_eq!(key.len(), 32, "Hash should be 32 bytes");
         assert_eq!(key, &[1u8; 32]);
 
         // Test row 1
-        let key = extractor.extract_ref(&batch, 1).expect("Should extract key");
+        let key = extractor
+            .extract_ref(&batch, 1)
+            .expect("Should extract key");
         assert_eq!(key, &[2u8; 32]);
     }
 
@@ -283,7 +313,7 @@ mod tests {
 
         // Extract from row 0: address=[10u8;20], block_num=1000, tx_index=0
         assert!(
-            extractor.extract_into(&batch, 0, &mut buf),
+            KeyExtractor::extract_into(&extractor, &batch, 0, &mut buf),
             "Should extract key"
         );
 
@@ -312,8 +342,8 @@ mod tests {
         let mut buf2 = Vec::new();
 
         // Rows 0 and 1 have the same address and block_num but different tx_index
-        extractor.extract_into(&batch, 0, &mut buf1);
-        extractor.extract_into(&batch, 1, &mut buf2);
+        KeyExtractor::extract_into(&extractor, &batch, 0, &mut buf1);
+        KeyExtractor::extract_into(&extractor, &batch, 1, &mut buf2);
 
         // Keys should be different (because tx_index differs)
         assert_ne!(buf1, buf2, "Keys should differ when tx_index differs");
@@ -333,7 +363,7 @@ mod tests {
 
         // Extract from row 0: to=Some([100u8;20])
         assert!(
-            extractor.extract_into(&batch, 0, &mut buf),
+            KeyExtractor::extract_into(&extractor, &batch, 0, &mut buf),
             "Should extract key"
         );
 
@@ -359,7 +389,7 @@ mod tests {
         let mut buf = Vec::new();
 
         // Extract from row 1: to=None (contract creation)
-        let result = extractor.extract_into(&batch, 1, &mut buf);
+        let result = KeyExtractor::extract_into(&extractor, &batch, 1, &mut buf);
 
         // Should return false for contract creations
         assert!(!result, "Should skip contract creations");
@@ -378,7 +408,7 @@ mod tests {
         // Extract all keys
         for row in 0..batch.num_rows() {
             let mut buf = Vec::new();
-            if extractor.extract_into(&batch, row, &mut buf) {
+            if KeyExtractor::extract_into(&extractor, &batch, row, &mut buf) {
                 keys.push(buf);
             }
         }

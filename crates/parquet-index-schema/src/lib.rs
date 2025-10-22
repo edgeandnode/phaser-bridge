@@ -80,53 +80,59 @@ pub struct IndexSpec {
     pub column_index: usize,
 }
 
-/// Extracts index keys from a RecordBatch
+/// Extracts simple keys with zero-copy references into Arrow arrays
 ///
-/// The implementer uses typed-arrow views internally for zero-copy access.
-/// Returns references to avoid allocations - caller decides when to copy.
-pub trait KeyExtractor: Send + Sync {
+/// Use this for single-field keys (like tx_hash) where you can return a direct
+/// reference to the underlying Arrow array data with no allocation.
+pub trait ZeroCopyKeyExtractor: Send + Sync {
     /// Extract key reference from a specific row in a RecordBatch
     ///
     /// Returns None if this record shouldn't be indexed for this key
     /// (e.g., when an optional field is None).
     ///
-    /// For simple keys (like tx_hash), this returns a direct reference to the
-    /// underlying Arrow array data - zero allocation.
-    ///
-    /// For composite keys (like address || block_num), implementers should
-    /// override `extract_into()` instead.
+    /// The returned reference points directly into the Arrow array - zero allocation.
     fn extract_ref<'a>(
         &self,
         batch: &'a arrow::record_batch::RecordBatch,
         row_idx: usize,
-    ) -> Option<&'a [u8]> {
-        // Default: not implemented (for composite keys)
-        let _ = (batch, row_idx);
-        None
-    }
+    ) -> Option<&'a [u8]>;
+}
 
+/// Extracts composite keys by building them into a buffer
+///
+/// Use this for multi-field keys (like address || block_num || tx_index) that need
+/// to be constructed by concatenating multiple fields.
+pub trait CompositeKeyExtractor: Send + Sync {
     /// Extract composite key into a caller-provided buffer
     ///
-    /// This is for composite keys that need to be built (e.g., address || block_num).
     /// The buffer is reused across rows to minimize allocations.
+    /// Clear the buffer before building the key.
     ///
-    /// Returns true if a key was extracted, false if this row should be skipped.
-    ///
-    /// Default implementation uses `extract_ref()` for simple keys.
+    /// Returns true if a key was extracted, false if this row should be skipped
+    /// (e.g., when an optional field is None).
     fn extract_into(
         &self,
         batch: &arrow::record_batch::RecordBatch,
         row_idx: usize,
         buf: &mut Vec<u8>,
-    ) -> bool {
-        if let Some(key_ref) = self.extract_ref(batch, row_idx) {
-            buf.clear();
-            buf.extend_from_slice(key_ref);
-            true
-        } else {
-            false
-        }
-    }
+    ) -> bool;
+}
+
+/// Unified trait for key extraction used by IndexBuilder
+///
+/// All key extractors must provide this interface. Implement either
+/// ZeroCopyKeyExtractor or CompositeKeyExtractor, then manually implement
+/// this trait to bridge to the IndexBuilder.
+pub trait KeyExtractor: Send + Sync {
+    /// Extract key into a caller-provided buffer
+    ///
+    /// Returns true if a key was extracted, false if this row should be skipped.
+    fn extract_into(
+        &self,
+        batch: &arrow::record_batch::RecordBatch,
+        row_idx: usize,
+        buf: &mut Vec<u8>,
+    ) -> bool;
 }
 
 /// Extracts multiple keys from a single row
