@@ -16,6 +16,7 @@ use validators_evm::ValidationExecutor;
 use crate::blockdata_client::BlockDataClient;
 use crate::blockdata_converter::BlockDataConverter;
 use crate::client::ErigonClient;
+use crate::client_pool::{ClientPool, PoolConfig};
 use crate::converter::ErigonDataConverter;
 use crate::error::ErigonBridgeError;
 use crate::segment_worker::{split_into_segments, SegmentConfig, SegmentWorker};
@@ -28,7 +29,7 @@ use tonic::Status as TonicStatus;
 /// A stateless bridge that translates between Erigon gRPC and Arrow Flight
 pub struct ErigonFlightBridge {
     client: Arc<tokio::sync::Mutex<ErigonClient>>,
-    blockdata_client: Arc<tokio::sync::Mutex<BlockDataClient>>,
+    blockdata_pool: Arc<ClientPool>,
     trie_client: Option<Arc<tokio::sync::Mutex<TrieClient>>>,
     chain_id: u64,
     streaming_service: Arc<StreamingService>,
@@ -68,8 +69,21 @@ impl ErigonFlightBridge {
             }
         };
 
-        // Create BlockDataClient for historical queries
-        let blockdata_client = BlockDataClient::connect(endpoint.clone()).await?;
+        // Get the configured pool size from segment_config
+        let default_config = SegmentConfig::default();
+        let segment_cfg = segment_config.as_ref().unwrap_or(&default_config);
+
+        // Create connection pool for BlockDataClient
+        let pool_config = PoolConfig {
+            pool_size: segment_cfg.connection_pool_size,
+            ..Default::default()
+        };
+
+        info!(
+            "Creating BlockDataClient connection pool with {} connections",
+            pool_config.pool_size
+        );
+        let blockdata_pool = ClientPool::new(endpoint.clone(), pool_config).await?;
 
         // Build validator if config is provided
         let validator = validator_config.map(|config| {
@@ -93,7 +107,7 @@ impl ErigonFlightBridge {
 
         Ok(Self {
             client: Arc::new(tokio::sync::Mutex::new(client)),
-            blockdata_client: Arc::new(tokio::sync::Mutex::new(blockdata_client)),
+            blockdata_pool: Arc::new(blockdata_pool),
             trie_client,
             chain_id,
             streaming_service,
@@ -198,7 +212,7 @@ impl ErigonFlightBridge {
     ///
     /// Extracted as a separate function to avoid lifetime capture issues
     fn process_transactions_with_segments(
-        blockdata_client: BlockDataClient,
+        pool: Arc<ClientPool>,
         config: SegmentConfig,
         validator: Option<Arc<dyn ValidationExecutor>>,
         start: u64,
@@ -217,7 +231,7 @@ impl ErigonFlightBridge {
             .map(move |(seg_start, seg_end): (u64, u64)| {
                 // Derive worker_id from segment to make it unique across all requests
                 let worker_id = (seg_start / config.segment_size) as usize;
-                let client = blockdata_client.clone(); // Clone shares the underlying HTTP/2 connection
+                let pool = pool.clone();
                 let config = config.clone();
                 let validator = if should_validate {
                     validator.clone()
@@ -226,25 +240,93 @@ impl ErigonFlightBridge {
                 };
 
                 async move {
+                    // Get a client from the pool for this segment
+                    let client_handle = match pool.get().await {
+                        Ok(handle) => handle,
+                        Err(e) => {
+                            let err_msg = format!(
+                                "Failed to get client from pool for segment {}-{}: {}",
+                                seg_start, seg_end, e
+                            );
+                            error!("{}", err_msg);
+                            return futures::stream::once(async move {
+                                Err(arrow_flight::error::FlightError::ExternalError(Box::new(
+                                    std::io::Error::new(std::io::ErrorKind::Other, err_msg),
+                                )))
+                            })
+                            .boxed();
+                        }
+                    };
+
+                    let client: BlockDataClient = match client_handle.client().await {
+                        Ok(guard) => {
+                            if let Some(c) = guard.as_ref() {
+                                c.clone()
+                            } else {
+                                error!(
+                                    "Client from pool is None for segment {}-{}",
+                                    seg_start, seg_end
+                                );
+                                client_handle.mark_error();
+                                return futures::stream::once(async {
+                                    Err(arrow_flight::error::FlightError::ExternalError(Box::new(
+                                        std::io::Error::new(
+                                            std::io::ErrorKind::Other,
+                                            "Client is None",
+                                        ),
+                                    )))
+                                })
+                                .boxed();
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to access client for segment {}-{}: {}",
+                                seg_start, seg_end, e
+                            );
+                            client_handle.mark_error();
+                            return futures::stream::once(async move {
+                                Err(arrow_flight::error::FlightError::ExternalError(Box::new(
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("Failed to access client: {}", e),
+                                    ),
+                                )))
+                            })
+                            .boxed();
+                        }
+                    };
+
+                    info!(
+                        "Worker {} using connection {} from pool",
+                        worker_id,
+                        client_handle.index()
+                    );
+
                     let worker = SegmentWorker::new(
                         worker_id, seg_start, seg_end, client, config, validator,
                     );
 
                     // Convert the stream to handle FlightError
-                    worker.process().map(move |result| {
-                        result.map_err(|e| {
-                            error!(
-                                "Segment {}-{}: Processing failed: {}",
-                                seg_start, seg_end, e
-                            );
-                            arrow_flight::error::FlightError::ExternalError(Box::new(
-                                std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    format!("Segment {}-{} failed: {}", seg_start, seg_end, e),
-                                ),
-                            ))
+                    worker
+                        .process()
+                        .map(move |result| {
+                            result.map_err(|e| {
+                                error!(
+                                    "Segment {}-{}: Processing failed: {}",
+                                    seg_start, seg_end, e
+                                );
+                                // Mark connection unhealthy on errors
+                                client_handle.mark_error();
+                                arrow_flight::error::FlightError::ExternalError(Box::new(
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("Segment {}-{} failed: {}", seg_start, seg_end, e),
+                                    ),
+                                ))
+                            })
                         })
-                    })
+                        .boxed()
                 }
             })
             .buffered(max_concurrent)
@@ -255,7 +337,7 @@ impl ErigonFlightBridge {
     ///
     /// Extracted as a separate function to avoid lifetime capture issues
     fn process_logs_with_segments(
-        blockdata_client: BlockDataClient,
+        pool: Arc<ClientPool>,
         config: SegmentConfig,
         validator: Option<Arc<dyn ValidationExecutor>>,
         start: u64,
@@ -274,7 +356,7 @@ impl ErigonFlightBridge {
             .map(move |(seg_start, seg_end): (u64, u64)| {
                 // Derive worker_id from segment to make it unique across all requests
                 let worker_id = (seg_start / config.segment_size) as usize;
-                let client = blockdata_client.clone(); // Clone shares the underlying HTTP/2 connection
+                let pool = pool.clone();
                 let config = config.clone();
                 let validator = if should_validate {
                     validator.clone()
@@ -283,25 +365,93 @@ impl ErigonFlightBridge {
                 };
 
                 async move {
+                    // Get a client from the pool for this segment
+                    let client_handle = match pool.get().await {
+                        Ok(handle) => handle,
+                        Err(e) => {
+                            let err_msg = format!(
+                                "Failed to get client from pool for segment {}-{}: {}",
+                                seg_start, seg_end, e
+                            );
+                            error!("{}", err_msg);
+                            return futures::stream::once(async move {
+                                Err(arrow_flight::error::FlightError::ExternalError(Box::new(
+                                    std::io::Error::new(std::io::ErrorKind::Other, err_msg),
+                                )))
+                            })
+                            .boxed();
+                        }
+                    };
+
+                    let client: BlockDataClient = match client_handle.client().await {
+                        Ok(guard) => {
+                            if let Some(c) = guard.as_ref() {
+                                c.clone()
+                            } else {
+                                error!(
+                                    "Client from pool is None for segment {}-{}",
+                                    seg_start, seg_end
+                                );
+                                client_handle.mark_error();
+                                return futures::stream::once(async {
+                                    Err(arrow_flight::error::FlightError::ExternalError(Box::new(
+                                        std::io::Error::new(
+                                            std::io::ErrorKind::Other,
+                                            "Client is None",
+                                        ),
+                                    )))
+                                })
+                                .boxed();
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to access client for segment {}-{}: {}",
+                                seg_start, seg_end, e
+                            );
+                            client_handle.mark_error();
+                            return futures::stream::once(async move {
+                                Err(arrow_flight::error::FlightError::ExternalError(Box::new(
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("Failed to access client: {}", e),
+                                    ),
+                                )))
+                            })
+                            .boxed();
+                        }
+                    };
+
+                    info!(
+                        "Worker {} (logs) using connection {} from pool",
+                        worker_id,
+                        client_handle.index()
+                    );
+
                     let worker = SegmentWorker::new_for_logs(
                         worker_id, seg_start, seg_end, client, config, validator,
                     );
 
                     // Convert the stream to handle FlightError
-                    worker.process().map(move |result| {
-                        result.map_err(|e| {
-                            error!(
-                                "Segment {}-{}: Log processing failed: {}",
-                                seg_start, seg_end, e
-                            );
-                            arrow_flight::error::FlightError::ExternalError(Box::new(
-                                std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    format!("Segment {}-{} failed: {}", seg_start, seg_end, e),
-                                ),
-                            ))
+                    worker
+                        .process()
+                        .map(move |result| {
+                            result.map_err(|e| {
+                                error!(
+                                    "Segment {}-{}: Log processing failed: {}",
+                                    seg_start, seg_end, e
+                                );
+                                // Mark connection unhealthy on errors
+                                client_handle.mark_error();
+                                arrow_flight::error::FlightError::ExternalError(Box::new(
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        format!("Segment {}-{} failed: {}", seg_start, seg_end, e),
+                                    ),
+                                ))
+                            })
                         })
-                    })
+                        .boxed()
                 }
             })
             .buffered(max_concurrent)
@@ -333,9 +483,9 @@ impl ErigonFlightBridge {
 
         // Handle transactions and logs separately since they use segment workers
         if stream_type == StreamType::Transactions {
-            let client = self.blockdata_client.lock().await.clone();
+            let pool = self.blockdata_pool.clone();
             let stream = Self::process_transactions_with_segments(
-                client,
+                pool,
                 self.segment_config.clone(),
                 self.validator.clone(),
                 start,
@@ -346,9 +496,9 @@ impl ErigonFlightBridge {
         }
 
         if stream_type == StreamType::Logs {
-            let client = self.blockdata_client.lock().await.clone();
+            let pool = self.blockdata_pool.clone();
             let stream = Self::process_logs_with_segments(
-                client,
+                pool,
                 self.segment_config.clone(),
                 self.validator.clone(),
                 start,
@@ -358,14 +508,49 @@ impl ErigonFlightBridge {
             return Ok(Box::pin(stream));
         }
 
-        let blockdata_client = self.blockdata_client.clone();
+        let blockdata_pool = self.blockdata_pool.clone();
 
         let stream = async_stream::stream! {
             match stream_type {
                 StreamType::Blocks => {
-                    // Stream blocks using BlockDataClient
-                    let mut client_guard = blockdata_client.lock().await;
-                    let mut block_stream = match client_guard.stream_blocks(start, end, 100).await {
+                    // Get a client from the pool for block streaming
+                    let client_handle = match blockdata_pool.get().await {
+                        Ok(handle) => handle,
+                        Err(e) => {
+                            error!("Failed to get client from pool for blocks stream: {}", e);
+                            yield Err(arrow_flight::error::FlightError::ExternalError(
+                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Pool error: {}", e)))
+                            ));
+                            return;
+                        }
+                    };
+
+                    let mut client: BlockDataClient = match client_handle.client().await {
+                        Ok(guard) => {
+                            if let Some(c) = guard.as_ref() {
+                                c.clone()
+                            } else {
+                                error!("Client from pool is None for blocks stream");
+                                client_handle.mark_error();
+                                yield Err(arrow_flight::error::FlightError::ExternalError(
+                                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Client is None"))
+                                ));
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to access client for blocks stream: {}", e);
+                            client_handle.mark_error();
+                            yield Err(arrow_flight::error::FlightError::ExternalError(
+                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Client error: {}", e)))
+                            ));
+                            return;
+                        }
+                    };
+
+                    info!("Blocks stream using connection {} from pool", client_handle.index());
+
+                    let mut block_stream = match client.stream_blocks(start, end, 100).await {
                         Ok(s) => s,
                         Err(e) => {
                             error!("Failed to start block stream: {}", e);
@@ -375,7 +560,6 @@ impl ErigonFlightBridge {
                             return;
                         }
                     };
-                    drop(client_guard);
 
                     let mut batch_count = 0;
                     while let Some(batch_result) = block_stream.message().await.transpose() {

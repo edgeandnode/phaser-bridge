@@ -2,6 +2,7 @@ pub mod blockdata_client;
 pub mod blockdata_converter;
 pub mod bridge;
 pub mod client;
+pub mod client_pool;
 pub mod converter;
 pub mod error;
 pub mod generated;

@@ -37,6 +37,9 @@ pub enum ErigonBridgeError {
 
     #[error("Validation error: {0}")]
     ValidationError(String),
+
+    #[error("Connection failed: {0}")]
+    ConnectionFailed(String),
 }
 
 /// Implements conversion from our error to a gRPC Status for proper error reporting
@@ -59,6 +62,9 @@ impl From<ErigonBridgeError> for Status {
             ErigonBridgeError::InvalidData(msg) => Status::invalid_argument(msg),
             ErigonBridgeError::ConversionError(msg) => Status::internal(msg),
             ErigonBridgeError::ValidationError(msg) => Status::failed_precondition(msg),
+            ErigonBridgeError::ConnectionFailed(msg) => {
+                Status::unavailable(format!("Connection failed: {}", msg))
+            }
         }
     }
 }

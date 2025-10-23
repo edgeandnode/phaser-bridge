@@ -2,6 +2,7 @@ mod blockdata_client;
 mod blockdata_converter;
 mod bridge;
 mod client;
+mod client_pool;
 mod converter;
 mod error;
 mod generated;
@@ -62,6 +63,12 @@ struct Args {
     #[arg(long, env = "MAX_CONCURRENT_SEGMENTS")]
     max_concurrent_segments: Option<usize>,
 
+    /// Number of independent gRPC connections in the connection pool (default: 8)
+    /// Each connection has its own HTTP/2 session with independent flow control.
+    /// Increase this if you have many concurrent segments and see connection bottlenecks.
+    #[arg(long, env = "CONNECTION_POOL_SIZE", default_value_t = 8)]
+    connection_pool_size: usize,
+
     /// Validation batch size within a segment (default: 100 blocks)
     #[arg(long, env = "VALIDATION_BATCH_SIZE", default_value_t = 100)]
     validation_batch_size: usize,
@@ -115,6 +122,7 @@ async fn main() -> Result<()> {
         max_concurrent_segments: args
             .max_concurrent_segments
             .unwrap_or_else(|| (num_cpus::get() / 4).max(1)),
+        connection_pool_size: args.connection_pool_size,
         validation_batch_size: args.validation_batch_size,
     };
 
@@ -123,6 +131,10 @@ async fn main() -> Result<()> {
     info!(
         "  Max concurrent segments: {}",
         segment_config.max_concurrent_segments
+    );
+    info!(
+        "  Connection pool size: {} connections",
+        segment_config.connection_pool_size
     );
     info!(
         "  Validation batch size: {} blocks",
