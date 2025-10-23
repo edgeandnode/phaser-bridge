@@ -135,6 +135,17 @@ async fn main() -> Result<()> {
     let phaser = PhaserQuery::new(config.clone()).await?;
     info!("Initialized phaser-query with catalog");
 
+    // Create thread pool executor for I/O-bound work (parquet metadata scanning)
+    // This must live for the entire application lifetime
+    use core_executor::ThreadPoolExecutor;
+    use std::sync::{Arc as StdArc, Mutex};
+    let num_threads = num_cpus::get();
+    info!(
+        "DataScanner: Creating thread pool with {} threads for I/O-bound parquet scanning",
+        num_threads
+    );
+    let executor = StdArc::new(Mutex::new(ThreadPoolExecutor::new(num_threads)));
+
     // Create shared live streaming state
     let live_state = Arc::new(LiveStreamingState::new());
 
@@ -242,9 +253,10 @@ async fn main() -> Result<()> {
 
         let config_clone = config.clone();
         let live_state_clone = live_state.clone();
+        let executor_clone = executor.clone();
 
         let handle = tokio::spawn(async move {
-            if let Err(e) = start_sync_admin_server(config_clone, live_state_clone).await {
+            if let Err(e) = start_sync_admin_server(config_clone, live_state_clone, executor_clone).await {
                 error!("Sync admin server error: {}", e);
             }
         });
@@ -341,19 +353,9 @@ async fn start_rpc_server(
 async fn start_sync_admin_server(
     config: PhaserConfig,
     live_state: Arc<LiveStreamingState>,
+    executor: std::sync::Arc<std::sync::Mutex<core_executor::ThreadPoolExecutor>>,
 ) -> Result<()> {
-    use core_executor::ThreadPoolExecutor;
     use phaser_query::sync::SyncServer;
-    use std::sync::{Arc as StdArc, Mutex};
-
-    // Create thread pool executor for I/O-bound work (parquet metadata scanning)
-    // Regular pool is sufficient since we're I/O-bound, not CPU-bound
-    let num_threads = num_cpus::get();
-    info!(
-        "DataScanner: Creating thread pool with {} threads for I/O-bound parquet scanning",
-        num_threads
-    );
-    let executor = StdArc::new(Mutex::new(ThreadPoolExecutor::new(num_threads)));
 
     let server = SyncServer::new(Arc::new(config.clone()), live_state, executor);
     server.start(config.sync_admin_port).await?;

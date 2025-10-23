@@ -80,7 +80,7 @@ pub struct SyncWorker {
     progress_tracker: Option<ProgressTracker>,
     validation_stage: ValidationStage,
     segment_work: crate::sync::data_scanner::SegmentWork, // Pre-computed missing ranges
-    current_progress: Arc<RwLock<WorkerProgress>>, // Real-time progress state
+    current_progress: Arc<RwLock<WorkerProgress>>,        // Real-time progress state
 }
 
 impl SyncWorker {
@@ -376,16 +376,48 @@ impl SyncWorker {
         // Retry with resume logic
         const INITIAL_BACKOFF_SECS: u64 = 1;
         const MAX_BACKOFF_SECS: u64 = 60;
+        const MAX_RETRIES_WITHOUT_PROGRESS: u32 = 5;
         let mut retry_count = 0u32;
+        let mut retries_without_progress = 0u32;
         let mut resume_from = from_block;
+        let mut last_resume_from = resume_from;
 
         let (batches_processed, bytes_written) = loop {
-            match self.try_sync_blocks_stream(client, resume_from, to_block, &mut writer, from_block).await {
+            match self
+                .try_sync_blocks_stream(client, resume_from, to_block, &mut writer, from_block)
+                .await
+            {
                 Ok(result) => break result,
                 Err(e) if is_transient_error(&e) => {
                     // Get the last block we successfully wrote
-                    let last_written = writer.last_written_block().unwrap_or(resume_from - 1);
-                    resume_from = last_written + 1;
+                    let last_written = writer.last_written_block();
+
+                    let new_resume_from = if let Some(last) = last_written {
+                        // We wrote some data, resume from the next block
+                        last + 1
+                    } else {
+                        // No data written - this means the stream failed before sending any batches
+                        // Keep resume_from unchanged to retry the same range
+                        resume_from
+                    };
+
+                    // Detect if we're stuck in an infinite loop (no progress being made)
+                    if new_resume_from == last_resume_from {
+                        retries_without_progress += 1;
+                        if retries_without_progress >= MAX_RETRIES_WITHOUT_PROGRESS {
+                            return Err(anyhow::anyhow!(
+                                "Worker {} failed to make progress on blocks {}-{} after {} retries. \
+                                Last error: {}. This may indicate missing or corrupted data in the source.",
+                                self.worker_id, resume_from, to_block, MAX_RETRIES_WITHOUT_PROGRESS, e
+                            ));
+                        }
+                    } else {
+                        // Made progress, reset the no-progress counter
+                        retries_without_progress = 0;
+                    }
+
+                    last_resume_from = resume_from;
+                    resume_from = new_resume_from;
 
                     if resume_from > to_block {
                         // We actually completed, the error was after all data
@@ -397,12 +429,19 @@ impl SyncWorker {
                     }
 
                     retry_count += 1;
-                    let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
-                        .min(MAX_BACKOFF_SECS);
+                    let backoff_secs = (INITIAL_BACKOFF_SECS
+                        * 2u64.pow(retry_count.saturating_sub(1)))
+                    .min(MAX_BACKOFF_SECS);
+
+                    let progress_msg = if let Some(last) = last_written {
+                        format!("last written block: {}", last)
+                    } else {
+                        "no data received yet".to_string()
+                    };
 
                     warn!(
-                        "Worker {} blocks stream failed at block {} (attempt {}): {}. Resuming from block {} in {}s...",
-                        self.worker_id, last_written, retry_count, e, resume_from, backoff_secs
+                        "Worker {} blocks stream failed ({}) - attempt {}: {}. Resuming from block {} in {}s... (retries without progress: {})",
+                        self.worker_id, progress_msg, retry_count, e, resume_from, backoff_secs, retries_without_progress
                     );
 
                     tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
@@ -544,16 +583,55 @@ impl SyncWorker {
         // Retry with resume logic
         const INITIAL_BACKOFF_SECS: u64 = 1;
         const MAX_BACKOFF_SECS: u64 = 60;
+        const MAX_RETRIES_WITHOUT_PROGRESS: u32 = 5;
         let mut retry_count = 0u32;
+        let mut retries_without_progress = 0u32;
         let mut resume_from = from_block;
+        let mut last_resume_from = resume_from;
 
         let (batches_processed, bytes_written) = loop {
-            match self.try_sync_transactions_stream(client, resume_from, to_block, &mut writer, &mut proof_writer, from_block).await {
+            match self
+                .try_sync_transactions_stream(
+                    client,
+                    resume_from,
+                    to_block,
+                    &mut writer,
+                    &mut proof_writer,
+                    from_block,
+                )
+                .await
+            {
                 Ok(result) => break result,
                 Err(e) if is_transient_error(&e) => {
                     // Get the last block we successfully wrote
-                    let last_written = writer.last_written_block().unwrap_or(resume_from - 1);
-                    resume_from = last_written + 1;
+                    let last_written = writer.last_written_block();
+
+                    let new_resume_from = if let Some(last) = last_written {
+                        // We wrote some data, resume from the next block
+                        last + 1
+                    } else {
+                        // No data written - this means the stream failed before sending any batches
+                        // Keep resume_from unchanged to retry the same range
+                        resume_from
+                    };
+
+                    // Detect if we're stuck in an infinite loop (no progress being made)
+                    if new_resume_from == last_resume_from {
+                        retries_without_progress += 1;
+                        if retries_without_progress >= MAX_RETRIES_WITHOUT_PROGRESS {
+                            return Err(anyhow::anyhow!(
+                                "Worker {} failed to make progress on transactions {}-{} after {} retries. \
+                                Last error: {}. This may indicate missing or corrupted data in the source.",
+                                self.worker_id, resume_from, to_block, MAX_RETRIES_WITHOUT_PROGRESS, e
+                            ));
+                        }
+                    } else {
+                        // Made progress, reset the no-progress counter
+                        retries_without_progress = 0;
+                    }
+
+                    last_resume_from = resume_from;
+                    resume_from = new_resume_from;
 
                     if resume_from > to_block {
                         // We actually completed, the error was after all data
@@ -565,12 +643,19 @@ impl SyncWorker {
                     }
 
                     retry_count += 1;
-                    let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
-                        .min(MAX_BACKOFF_SECS);
+                    let backoff_secs = (INITIAL_BACKOFF_SECS
+                        * 2u64.pow(retry_count.saturating_sub(1)))
+                    .min(MAX_BACKOFF_SECS);
+
+                    let progress_msg = if let Some(last) = last_written {
+                        format!("last written block: {}", last)
+                    } else {
+                        "no data received yet".to_string()
+                    };
 
                     warn!(
-                        "Worker {} transactions stream failed at block {} (attempt {}): {}. Resuming from block {} in {}s...",
-                        self.worker_id, last_written, retry_count, e, resume_from, backoff_secs
+                        "Worker {} transactions stream failed ({}) - attempt {}: {}. Resuming from block {} in {}s... (retries without progress: {})",
+                        self.worker_id, progress_msg, retry_count, e, resume_from, backoff_secs, retries_without_progress
                     );
 
                     tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
@@ -770,16 +855,48 @@ impl SyncWorker {
         // Retry with resume logic
         const INITIAL_BACKOFF_SECS: u64 = 1;
         const MAX_BACKOFF_SECS: u64 = 60;
+        const MAX_RETRIES_WITHOUT_PROGRESS: u32 = 5;
         let mut retry_count = 0u32;
+        let mut retries_without_progress = 0u32;
         let mut resume_from = from_block;
+        let mut last_resume_from = resume_from;
 
         let (batches_processed, bytes_written) = loop {
-            match self.try_sync_logs_stream(client, resume_from, to_block, &mut writer, from_block).await {
+            match self
+                .try_sync_logs_stream(client, resume_from, to_block, &mut writer, from_block)
+                .await
+            {
                 Ok(result) => break result,
                 Err(e) if is_transient_error(&e) => {
                     // Get the last block we successfully wrote
-                    let last_written = writer.last_written_block().unwrap_or(resume_from - 1);
-                    resume_from = last_written + 1;
+                    let last_written = writer.last_written_block();
+
+                    let new_resume_from = if let Some(last) = last_written {
+                        // We wrote some data, resume from the next block
+                        last + 1
+                    } else {
+                        // No data written - this means the stream failed before sending any batches
+                        // Keep resume_from unchanged to retry the same range
+                        resume_from
+                    };
+
+                    // Detect if we're stuck in an infinite loop (no progress being made)
+                    if new_resume_from == last_resume_from {
+                        retries_without_progress += 1;
+                        if retries_without_progress >= MAX_RETRIES_WITHOUT_PROGRESS {
+                            return Err(anyhow::anyhow!(
+                                "Worker {} failed to make progress on logs {}-{} after {} retries. \
+                                Last error: {}. This may indicate missing or corrupted data in the source.",
+                                self.worker_id, resume_from, to_block, MAX_RETRIES_WITHOUT_PROGRESS, e
+                            ));
+                        }
+                    } else {
+                        // Made progress, reset the no-progress counter
+                        retries_without_progress = 0;
+                    }
+
+                    last_resume_from = resume_from;
+                    resume_from = new_resume_from;
 
                     if resume_from > to_block {
                         // We actually completed, the error was after all data
@@ -791,12 +908,19 @@ impl SyncWorker {
                     }
 
                     retry_count += 1;
-                    let backoff_secs = (INITIAL_BACKOFF_SECS * 2u64.pow(retry_count.saturating_sub(1)))
-                        .min(MAX_BACKOFF_SECS);
+                    let backoff_secs = (INITIAL_BACKOFF_SECS
+                        * 2u64.pow(retry_count.saturating_sub(1)))
+                    .min(MAX_BACKOFF_SECS);
+
+                    let progress_msg = if let Some(last) = last_written {
+                        format!("last written block: {}", last)
+                    } else {
+                        "no data received yet".to_string()
+                    };
 
                     warn!(
-                        "Worker {} logs stream failed at block {} (attempt {}): {}. Resuming from block {} in {}s...",
-                        self.worker_id, last_written, retry_count, e, resume_from, backoff_secs
+                        "Worker {} logs stream failed ({}) - attempt {}: {}. Resuming from block {} in {}s... (retries without progress: {})",
+                        self.worker_id, progress_msg, retry_count, e, resume_from, backoff_secs, retries_without_progress
                     );
 
                     tokio::time::sleep(Duration::from_secs(backoff_secs)).await;

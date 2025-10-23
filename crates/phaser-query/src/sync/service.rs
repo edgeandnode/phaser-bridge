@@ -28,11 +28,43 @@ fn gap_analysis_to_proto(analysis: &DataGapAnalysis, segment_size: u64) -> Proto
         .map(|work| {
             let from_block = work.segment_num * segment_size;
             let to_block = from_block + segment_size - 1;
+
+            // Convert BlockRange vectors to proto
+            let missing_blocks_ranges = work
+                .missing_blocks
+                .iter()
+                .map(|r| crate::proto::admin::BlockRange {
+                    start: r.start,
+                    end: r.end,
+                })
+                .collect();
+
+            let missing_transactions_ranges = work
+                .missing_transactions
+                .iter()
+                .map(|r| crate::proto::admin::BlockRange {
+                    start: r.start,
+                    end: r.end,
+                })
+                .collect();
+
+            let missing_logs_ranges = work
+                .missing_logs
+                .iter()
+                .map(|r| crate::proto::admin::BlockRange {
+                    start: r.start,
+                    end: r.end,
+                })
+                .collect();
+
             IncompleteSegment {
                 segment_num: work.segment_num,
                 from_block,
                 to_block,
                 missing_data_types: work.missing_types(),
+                missing_blocks_ranges,
+                missing_transactions_ranges,
+                missing_logs_ranges,
             }
         })
         .collect();

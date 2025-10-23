@@ -223,8 +223,7 @@ impl BlockDataConverter {
                     let sender_addr = tx.recover_sender().ok_or_else(|| {
                         ErigonBridgeError::InvalidData(format!(
                             "Failed to recover sender for block {} tx {} (signature invalid)",
-                            block.block_num,
-                            tx_data.tx_index
+                            block.block_num, tx_data.tx_index
                         ))
                     })?;
                     let mut bytes = [0u8; 20];

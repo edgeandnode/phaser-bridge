@@ -29,6 +29,9 @@ pub struct SegmentConfig {
     /// Maximum number of segments to process in parallel (default: num_cpus / 4)
     pub max_concurrent_segments: usize,
 
+    /// Number of independent gRPC connections in the pool (default: 8)
+    pub connection_pool_size: usize,
+
     /// Validation batch size within a segment (default: 100 blocks)
     /// How many blocks to collect before executing validations and converting to Arrow
     pub validation_batch_size: usize,
@@ -39,6 +42,7 @@ impl Default for SegmentConfig {
         Self {
             segment_size: 500_000,
             max_concurrent_segments: (num_cpus::get() / 4).max(1),
+            connection_pool_size: 8,
             validation_batch_size: 100,
         }
     }
@@ -139,6 +143,7 @@ impl SegmentWorker {
             let segment_id = self.segment_start / 500_000; // Calculate segment ID
             let total_blocks = self.segment_end - self.segment_start + 1;
             let phase_start = Instant::now();
+            let mut yielded_batches = 0u64;
 
             info!(
                 "Worker {} segment {} processing transactions for blocks {} to {} ({} blocks)",
@@ -163,9 +168,16 @@ impl SegmentWorker {
 
             // Fetch headers only for this chunk
             let headers = match Self::fetch_headers(current_block, chunk_end, &mut client).await {
-                Ok(h) => h,
+                Ok(h) => {
+                    if h.is_empty() {
+                        warn!("Worker {} segment {}: Received EMPTY header response for blocks {}-{}",
+                            worker_id, segment_id, current_block, chunk_end);
+                    }
+                    h
+                },
                 Err(e) => {
-                    // Clean up metrics before error return - only if this is an error path
+                    error!("Worker {} segment {}: Failed to fetch headers for blocks {}-{}: {}",
+                        worker_id, segment_id, current_block, chunk_end, e);
                     metrics::record_segment_complete("blocks", false);
                     yield Err(e);
                     return;
@@ -220,18 +232,32 @@ impl SegmentWorker {
             })?;
             let mut all_transactions = Vec::new();
 
+            let mut batch_count = 0u64;
             while let Some(batch_result) = tx_stream.message().await.transpose() {
-                let tx_batch = batch_result?;
-                debug!("Worker {} segment {}: Received {} transactions",
-                    worker_id, segment_id, tx_batch.transactions.len());
-                let tx_count = tx_batch.transactions.len() as u64;
-                all_transactions.extend(tx_batch.transactions);
-                metrics::TRANSACTIONS_PROCESSED
-                    .with_label_values(&[&worker_id.to_string(), &segment_id.to_string()])
-                    .inc_by(tx_count);
+                match batch_result {
+                    Ok(tx_batch) => {
+                        batch_count += 1;
+                        debug!("Worker {} segment {}: Received transaction batch {} with {} transactions",
+                            worker_id, segment_id, batch_count, tx_batch.transactions.len());
+                        let tx_count = tx_batch.transactions.len() as u64;
+                        all_transactions.extend(tx_batch.transactions);
+                        metrics::TRANSACTIONS_PROCESSED
+                            .with_label_values(&[&worker_id.to_string(), &segment_id.to_string()])
+                            .inc_by(tx_count);
+                    }
+                    Err(e) => {
+                        error!("Worker {} segment {}: Transaction stream error after {} batches: {}",
+                            worker_id, segment_id, batch_count, e);
+                        metrics::GRPC_STREAMS_ACTIVE.with_label_values(&["transactions"]).dec();
+                        yield Err(ErigonBridgeError::ErigonClient(e));
+                        return;
+                    }
+                }
             }
 
             // Stream completed successfully
+            info!("Worker {} segment {}: Transaction stream completed for blocks {}-{}, received {} batches with {} total transactions",
+                worker_id, segment_id, start_block, end_block, batch_count, all_transactions.len());
             metrics::GRPC_STREAMS_ACTIVE.with_label_values(&["transactions"]).dec();
 
             // Peekable iterator to pull transactions for each block
@@ -302,6 +328,7 @@ impl SegmentWorker {
             };
 
             // Yield this batch immediately - no buffering!
+            yielded_batches += 1;
             yield Ok(arrow_batch);
             }
 
@@ -311,18 +338,30 @@ impl SegmentWorker {
 
         // Record successful completion
         let duration = phase_start.elapsed().as_secs_f64();
+
+        // Detect empty streams
+        if yielded_batches == 0 {
+            error!(
+                "Worker {} segment {}: EMPTY STREAM - Processed {} blocks but yielded ZERO RecordBatches!",
+                worker_id,
+                segment_id,
+                total_blocks
+            );
+        } else {
+            info!(
+                "Worker {} segment {}: Completed transaction processing in {:.2}s, yielded {} RecordBatches",
+                worker_id,
+                segment_id,
+                duration,
+                yielded_batches
+            );
+        }
+
         metrics::SEGMENT_DURATION
             .with_label_values(&["transactions"])
             .observe(duration);
         metrics::set_worker_stage(worker_id, segment_id, metrics::WorkerStage::Idle);
         metrics::record_segment_complete("transactions", true);
-
-        info!(
-            "Worker {} segment {}: Completed transaction processing in {:.2}s",
-            worker_id,
-            segment_id,
-            duration
-        );
         }
     }
 
@@ -333,11 +372,14 @@ impl SegmentWorker {
         use futures::stream::StreamExt;
 
         async_stream::stream! {
+        let total_blocks = self.segment_end - self.segment_start + 1;
+        let mut yielded_batches = 0u64;
+
         info!(
             "Segment worker processing logs for blocks {} to {} ({} blocks)",
             self.segment_start,
             self.segment_end,
-            self.segment_end - self.segment_start + 1
+            total_blocks
         );
 
         // Clone the client at the start (shares underlying HTTP/2 connection)
@@ -351,8 +393,16 @@ impl SegmentWorker {
             let chunk_end = (current_block + self.config.validation_batch_size as u64 - 1).min(self.segment_end);
 
             let chunk_headers = match Self::fetch_headers(current_block, chunk_end, &mut client).await {
-                Ok(h) => h,
+                Ok(h) => {
+                    if h.is_empty() {
+                        warn!("Process logs: Received EMPTY header response for blocks {}-{}",
+                            current_block, chunk_end);
+                    }
+                    h
+                },
                 Err(e) => {
+                    error!("Process logs: Failed to fetch headers for blocks {}-{}: {}",
+                        current_block, chunk_end, e);
                     yield Err(e);
                     return;
                 }
@@ -427,6 +477,7 @@ impl SegmentWorker {
 
                 // Yield each batch immediately
                 for batch in batches {
+                    yielded_batches += 1;
                     yield Ok(batch);
                 }
             }
@@ -435,11 +486,22 @@ impl SegmentWorker {
             current_block = chunk_end + 1;
         }
 
-        info!(
-            "Segment {}-{}: Completed log processing",
-            self.segment_start,
-            self.segment_end
-        );
+        // Detect empty streams
+        if yielded_batches == 0 {
+            error!(
+                "Segment {}-{}: EMPTY STREAM - Processed {} blocks but yielded ZERO RecordBatches!",
+                self.segment_start,
+                self.segment_end,
+                total_blocks
+            );
+        } else {
+            info!(
+                "Segment {}-{}: Completed log processing, yielded {} RecordBatches",
+                self.segment_start,
+                self.segment_end,
+                yielded_batches
+            );
+        }
         }
     }
 
@@ -449,30 +511,70 @@ impl SegmentWorker {
         segment_end: u64,
         client: &mut BlockDataClient,
     ) -> Result<HashMap<u64, (Header, i64)>, ErigonBridgeError> {
-        let mut block_stream = client.stream_blocks(segment_start, segment_end, 100).await?;
+        let mut block_stream = client
+            .stream_blocks(segment_start, segment_end, 100)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Blocks {}-{}: Failed to create header stream: {}",
+                    segment_start, segment_end, e
+                );
+                e
+            })?;
         let mut headers = HashMap::new();
-        let mut batch_count = 0;
+        let mut batch_count = 0u64;
 
         while let Some(batch_result) = block_stream.message().await.transpose() {
-            let block_batch = batch_result?;
-            batch_count += 1;
+            match batch_result {
+                Ok(block_batch) => {
+                    batch_count += 1;
 
-            debug!(
-                "Segment {}-{}: Received header batch {} with {} blocks",
-                segment_start, segment_end, batch_count, block_batch.blocks.len()
-            );
+                    debug!(
+                        "Blocks {}-{}: Received header batch {} with {} blocks",
+                        segment_start,
+                        segment_end,
+                        batch_count,
+                        block_batch.blocks.len()
+                    );
 
-            for block in block_batch.blocks {
-                match Header::decode(&mut block.rlp_header.as_slice()) {
-                    Ok(header) => {
-                        let timestamp = header.timestamp as i64;
-                        headers.insert(block.block_number, (header, timestamp));
-                    }
-                    Err(e) => {
-                        warn!("Failed to decode header for block {}: {}", block.block_number, e);
+                    for block in block_batch.blocks {
+                        match Header::decode(&mut block.rlp_header.as_slice()) {
+                            Ok(header) => {
+                                let timestamp = header.timestamp as i64;
+                                headers.insert(block.block_number, (header, timestamp));
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to decode header for block {}: {}",
+                                    block.block_number, e
+                                );
+                            }
+                        }
                     }
                 }
+                Err(e) => {
+                    error!(
+                        "Blocks {}-{}: Header stream error after {} batches: {}",
+                        segment_start, segment_end, batch_count, e
+                    );
+                    return Err(ErigonBridgeError::ErigonClient(e));
+                }
             }
+        }
+
+        if headers.is_empty() {
+            warn!(
+                "Blocks {}-{}: Header stream completed with ZERO headers after {} batches",
+                segment_start, segment_end, batch_count
+            );
+        } else {
+            debug!(
+                "Blocks {}-{}: Header stream completed, fetched {} headers from {} batches",
+                segment_start,
+                segment_end,
+                headers.len(),
+                batch_count
+            );
         }
 
         Ok(headers)
@@ -546,13 +648,50 @@ impl SegmentWorker {
         block_num: u64,
         client: &mut BlockDataClient,
     ) -> Result<Vec<crate::proto::custom::ReceiptData>, ErigonBridgeError> {
-        let mut receipt_stream = client.execute_blocks(block_num, block_num, 100).await?;
+        let mut receipt_stream = client
+            .execute_blocks(block_num, block_num, 100)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Block {}: Failed to create receipt stream: {}",
+                    block_num, e
+                );
+                e
+            })?;
         let mut receipts = Vec::new();
+        let mut batch_count = 0u64;
 
         while let Some(batch_result) = receipt_stream.message().await.transpose() {
-            let receipt_batch = batch_result?;
-            debug!("Block {}: Received {} receipts", block_num, receipt_batch.receipts.len());
-            receipts.extend(receipt_batch.receipts);
+            match batch_result {
+                Ok(receipt_batch) => {
+                    batch_count += 1;
+                    debug!(
+                        "Block {}: Received receipt batch {} with {} receipts",
+                        block_num,
+                        batch_count,
+                        receipt_batch.receipts.len()
+                    );
+                    receipts.extend(receipt_batch.receipts);
+                }
+                Err(e) => {
+                    error!(
+                        "Block {}: Receipt stream error after {} batches: {}",
+                        block_num, batch_count, e
+                    );
+                    return Err(ErigonBridgeError::ErigonClient(e));
+                }
+            }
+        }
+
+        if receipts.is_empty() {
+            debug!("Block {}: Receipt stream completed with ZERO receipts (may be valid for empty block)", block_num);
+        } else {
+            debug!(
+                "Block {}: Receipt stream completed, total {} receipts from {} batches",
+                block_num,
+                receipts.len(),
+                batch_count
+            );
         }
 
         Ok(receipts)

@@ -1,0 +1,38 @@
+[package]
+name = "parquet-index"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+parquet-index-schema = { workspace = true }
+typed-arrow = { workspace = true }
+arrow = { workspace = true }
+parquet = { workspace = true, features = ["async"] }
+fusio = { workspace = true }
+fusio-parquet = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+hex = "0.4"
+tracing-subscriber = { workspace = true }
+evm-common = { workspace = true }
+parquet-index-rocksdb = { path = "../parquet-index-rocksdb" }
+evm-index = { path = "../evm-index" }
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "indexing"
+harness = false
+
+[[bench]]
+name = "lookups"
+harness = false
+
+[[bench]]
+name = "parquet_ops"
+harness = false

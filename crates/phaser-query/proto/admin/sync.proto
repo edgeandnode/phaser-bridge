@@ -74,6 +74,14 @@ message GapAnalysis {
   repeated IncompleteSegment incomplete_details = 7;
 }
 
+message BlockRange {
+  // Start block (inclusive)
+  uint64 start = 1;
+
+  // End block (inclusive)
+  uint64 end = 2;
+}
+
 message IncompleteSegment {
   // Segment number
   uint64 segment_num = 1;
@@ -84,6 +92,11 @@ message IncompleteSegment {
 
   // Missing data types (e.g., "blocks", "txs", "logs")
   repeated string missing_data_types = 4;
+
+  // Detailed missing ranges for each data type
+  repeated BlockRange missing_blocks_ranges = 5;
+  repeated BlockRange missing_transactions_ranges = 6;
+  repeated BlockRange missing_logs_ranges = 7;
 }
 
 message SyncStatusRequest {

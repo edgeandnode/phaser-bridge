@@ -53,6 +53,15 @@ pub struct GapAnalysis {
     #[prost(message, repeated, tag = "7")]
     pub incomplete_details: ::prost::alloc::vec::Vec<IncompleteSegment>,
 }
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct BlockRange {
+    /// Start block (inclusive)
+    #[prost(uint64, tag = "1")]
+    pub start: u64,
+    /// End block (inclusive)
+    #[prost(uint64, tag = "2")]
+    pub end: u64,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct IncompleteSegment {
     /// Segment number
@@ -66,6 +75,13 @@ pub struct IncompleteSegment {
     /// Missing data types (e.g., "blocks", "txs", "logs")
     #[prost(string, repeated, tag = "4")]
     pub missing_data_types: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Detailed missing ranges for each data type
+    #[prost(message, repeated, tag = "5")]
+    pub missing_blocks_ranges: ::prost::alloc::vec::Vec<BlockRange>,
+    #[prost(message, repeated, tag = "6")]
+    pub missing_transactions_ranges: ::prost::alloc::vec::Vec<BlockRange>,
+    #[prost(message, repeated, tag = "7")]
+    pub missing_logs_ranges: ::prost::alloc::vec::Vec<BlockRange>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SyncStatusRequest {
