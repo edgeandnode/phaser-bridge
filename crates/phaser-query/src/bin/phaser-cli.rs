@@ -822,12 +822,43 @@ async fn main() -> Result<()> {
                     println!("\n  Incomplete segments:");
                     for detail in &gap.incomplete_details {
                         println!(
-                            "    Segment {} (blocks {}-{}): missing {}",
-                            detail.segment_num,
-                            detail.from_block,
-                            detail.to_block,
-                            detail.missing_data_types.join(", ")
+                            "    Segment {} (blocks {}-{}):",
+                            detail.segment_num, detail.from_block, detail.to_block
                         );
+
+                        // Show detailed ranges for each data type
+                        if !detail.missing_blocks_ranges.is_empty() {
+                            println!("      - blocks:");
+                            for range in &detail.missing_blocks_ranges {
+                                let count = range.end - range.start + 1;
+                                println!(
+                                    "        {}-{} ({} blocks)",
+                                    range.start, range.end, count
+                                );
+                            }
+                        }
+
+                        if !detail.missing_transactions_ranges.is_empty() {
+                            println!("      - transactions:");
+                            for range in &detail.missing_transactions_ranges {
+                                let count = range.end - range.start + 1;
+                                println!(
+                                    "        {}-{} ({} blocks)",
+                                    range.start, range.end, count
+                                );
+                            }
+                        }
+
+                        if !detail.missing_logs_ranges.is_empty() {
+                            println!("      - logs:");
+                            for range in &detail.missing_logs_ranges {
+                                let count = range.end - range.start + 1;
+                                println!(
+                                    "        {}-{} ({} blocks)",
+                                    range.start, range.end, count
+                                );
+                            }
+                        }
                     }
                 }
 
