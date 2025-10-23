@@ -5,7 +5,7 @@ use parquet::file::statistics::Statistics;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tracing::{debug, info, warn};
 
 /// Represents a block range that has been synced
@@ -158,11 +158,25 @@ impl DataCatalog {
 pub struct DataScanner {
     data_dir: PathBuf,
     executor: Arc<Mutex<ThreadPoolExecutor>>,
+    /// In-memory cache of the catalog. None means not yet built.
+    /// TODO: Replace with proper abstracted catalog storage (e.g., RocksDB-backed)
+    catalog_cache: Arc<RwLock<Option<DataCatalog>>>,
 }
 
 impl DataScanner {
     pub fn new(data_dir: PathBuf, executor: Arc<Mutex<ThreadPoolExecutor>>) -> Self {
-        Self { data_dir, executor }
+        Self {
+            data_dir,
+            executor,
+            catalog_cache: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Invalidate the cached catalog, forcing a rebuild on next access
+    pub fn invalidate_cache(&self) {
+        let mut cache = self.catalog_cache.write().unwrap();
+        *cache = None;
+        info!("Catalog cache invalidated");
     }
 
     /// Scans parquet files to find existing block ranges
@@ -491,7 +505,33 @@ impl DataScanner {
 
     /// Build in-memory catalog of all existing data files with parallel processing
     /// Uses core-executor to read parquet metadata from multiple files concurrently
+    /// This method checks the cache first and only rebuilds if cache is empty
     async fn build_catalog(&self) -> Result<DataCatalog> {
+        // Check cache first (read lock)
+        {
+            let cache = self.catalog_cache.read().unwrap();
+            if let Some(catalog) = cache.as_ref() {
+                debug!("Using cached catalog");
+                return Ok(catalog.clone());
+            }
+        }
+
+        // Cache miss - build catalog (requires write lock)
+        info!("Cache miss - building catalog from filesystem");
+        let catalog = self.build_catalog_uncached().await?;
+
+        // Store in cache
+        {
+            let mut cache = self.catalog_cache.write().unwrap();
+            *cache = Some(catalog.clone());
+        }
+
+        Ok(catalog)
+    }
+
+    /// Build catalog without using cache - always scans filesystem
+    /// Uses core-executor to read parquet metadata from multiple files concurrently
+    async fn build_catalog_uncached(&self) -> Result<DataCatalog> {
         let mut catalog = DataCatalog::new();
 
         if !self.data_dir.exists() {
