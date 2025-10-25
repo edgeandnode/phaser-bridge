@@ -1,6 +1,9 @@
 use arrow::datatypes::Schema;
 use arrow_array::RecordBatch;
-use arrow_flight::{decode::FlightRecordBatchStream, FlightClient, FlightInfo};
+use arrow_flight::{
+    decode::FlightRecordBatchStream, flight_service_client::FlightServiceClient, FlightClient,
+    FlightInfo,
+};
 use futures::stream::StreamExt;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
@@ -76,7 +79,19 @@ impl FlightBridgeClient {
             Channel::from_shared(uri)?.connect().await?
         };
 
-        let client = FlightClient::new(channel);
+        // Configure message size limits (128MB global max for large batches)
+        // This allows the client to receive large messages from the bridge
+        const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
+
+        // Client accepts compression if server sends it
+        // Compression is controlled by the bridge's --compression flag
+        let flight_service_client = FlightServiceClient::new(channel)
+            .max_decoding_message_size(MAX_MESSAGE_SIZE)
+            .max_encoding_message_size(MAX_MESSAGE_SIZE)
+            .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+            .accept_compressed(tonic::codec::CompressionEncoding::Zstd);
+
+        let client = FlightClient::new_from_inner(flight_service_client);
 
         Ok(Self { client, info: None })
     }
