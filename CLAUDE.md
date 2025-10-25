@@ -41,15 +41,17 @@ cargo check --all-targets
 ## Git Commit Guidelines
 
 ### Commit Messages
-- **NEVER** include Claude attribution or "Generated with Claude Code" footer in commit messages
 - Write clear, concise commit messages that explain the "why" not just the "what"
 - Use conventional commit format when appropriate
-- Due to GPG signing requirements, provide the full git command for the user to execute themselves
+- Due to GPG signing requirements, provide commit scripts for the user to execute themselves
 
 ### Atomic Commits
+**IMPORTANT**: Each commit should contain ONE logical change. Multiple related files can be in one commit if they're part of the same logical change.
+
 When there are multiple unrelated changes in the working directory:
 - Analyze the git diff and identify logical groupings
-- Create a shell script (e.g., `commit-changes.sh`) with separate commits for each logical change
+- Create a shell script named `commit-changes.sh` (gitignored) with separate commits for each logical change
+- Each commit in the script should be atomic (one logical change)
 - Common groupings:
   - Feature additions (separate commit per feature)
   - Bug fixes (separate commit per fix)
@@ -57,6 +59,15 @@ When there are multiple unrelated changes in the working directory:
   - Code formatting (cargo fmt)
   - Documentation updates
 - Always make formatting commits last to keep the history clean
+
+### Commit Script Format
+When creating commit scripts:
+- Make the script executable: `chmod +x commit-changes.sh`
+- Include `set -e` at the top to fail on errors
+- Add echo statements to announce what's being committed
+- Show how to review and push at the end
+- **NEVER** include Claude attribution, Co-Authored-By, or "Generated with Claude Code"
+- Keep commit messages clean and professional
 
 ## Architecture Notes
 
