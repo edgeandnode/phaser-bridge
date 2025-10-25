@@ -16,7 +16,7 @@ use arrow_array::RecordBatch;
 use futures::stream::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tracing::{debug, error, info, warn};
 use validators_evm::ValidationExecutor;
 
@@ -136,8 +136,6 @@ impl SegmentWorker {
     fn process_transactions(
         self,
     ) -> impl futures::Stream<Item = Result<RecordBatch, ErigonBridgeError>> + Send {
-        use futures::stream::StreamExt;
-
         async_stream::stream! {
             let worker_id = self.worker_id;
             let segment_id = self.segment_start / 500_000; // Calculate segment ID
@@ -369,8 +367,6 @@ impl SegmentWorker {
     fn process_logs(
         self,
     ) -> impl futures::Stream<Item = Result<RecordBatch, ErigonBridgeError>> + Send {
-        use futures::stream::StreamExt;
-
         async_stream::stream! {
         let total_blocks = self.segment_end - self.segment_start + 1;
         let mut yielded_batches = 0u64;
@@ -708,7 +704,7 @@ impl SegmentWorker {
                         let block_num = receipt.block_number;
                         receipts_by_block
                             .entry(block_num)
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push(receipt);
                         total_receipts += 1;
                     }
@@ -770,8 +766,6 @@ impl SegmentWorker {
         validator: &Arc<dyn ValidationExecutor>,
         blocks: &[(u64, Vec<crate::proto::custom::ReceiptData>, Header)],
     ) -> Result<(), ErigonBridgeError> {
-        use futures::stream::{self, StreamExt};
-
         let num_cores = num_cpus::get();
 
         debug!(

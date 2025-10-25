@@ -782,12 +782,12 @@ impl SyncWorker {
             if let Some(ref mut proof_w) = proof_writer {
                 if let Ok(proof_batch) = self.generate_proofs_for_batch(&batch) {
                     proof_w.write_batch(proof_batch).await.map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to write proof batch. Write error: {:?}. Error chain: {}",
-                        e,
-                        e.to_string()
-                    )
-                })?;
+                        anyhow::anyhow!(
+                            "Failed to write proof batch. Write error: {:?}. Error chain: {}",
+                            e,
+                            e.to_string()
+                        )
+                    })?;
                 } else {
                     warn!(
                         "Worker {} failed to generate proofs for batch",

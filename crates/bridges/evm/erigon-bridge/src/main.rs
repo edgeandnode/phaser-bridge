@@ -218,7 +218,10 @@ async fn main() -> Result<()> {
             info!("Compression disabled for Arrow Flight streams");
         }
         other => {
-            error!("Invalid compression option '{}', valid options: none, gzip, zstd", other);
+            error!(
+                "Invalid compression option '{}', valid options: none, gzip, zstd",
+                other
+            );
             return Err(anyhow::anyhow!("Invalid compression option: {}", other));
         }
     }

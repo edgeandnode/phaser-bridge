@@ -251,7 +251,7 @@ impl ErigonFlightBridge {
                             error!("{}", err_msg);
                             return futures::stream::once(async move {
                                 Err(arrow_flight::error::FlightError::ExternalError(Box::new(
-                                    std::io::Error::new(std::io::ErrorKind::Other, err_msg),
+                                    std::io::Error::other(err_msg),
                                 )))
                             })
                             .boxed();
@@ -270,8 +270,7 @@ impl ErigonFlightBridge {
                                 client_handle.mark_error();
                                 return futures::stream::once(async {
                                     Err(arrow_flight::error::FlightError::ExternalError(Box::new(
-                                        std::io::Error::new(
-                                            std::io::ErrorKind::Other,
+                                        std::io::Error::other(
                                             "Client is None",
                                         ),
                                     )))
@@ -287,8 +286,7 @@ impl ErigonFlightBridge {
                             client_handle.mark_error();
                             return futures::stream::once(async move {
                                 Err(arrow_flight::error::FlightError::ExternalError(Box::new(
-                                    std::io::Error::new(
-                                        std::io::ErrorKind::Other,
+                                    std::io::Error::other(
                                         format!("Failed to access client: {}", e),
                                     ),
                                 )))
@@ -319,8 +317,7 @@ impl ErigonFlightBridge {
                                 // Mark connection unhealthy on errors
                                 client_handle.mark_error();
                                 arrow_flight::error::FlightError::ExternalError(Box::new(
-                                    std::io::Error::new(
-                                        std::io::ErrorKind::Other,
+                                    std::io::Error::other(
                                         format!("Segment {}-{} failed: {}", seg_start, seg_end, e),
                                     ),
                                 ))
@@ -376,7 +373,7 @@ impl ErigonFlightBridge {
                             error!("{}", err_msg);
                             return futures::stream::once(async move {
                                 Err(arrow_flight::error::FlightError::ExternalError(Box::new(
-                                    std::io::Error::new(std::io::ErrorKind::Other, err_msg),
+                                    std::io::Error::other(err_msg),
                                 )))
                             })
                             .boxed();
@@ -395,8 +392,7 @@ impl ErigonFlightBridge {
                                 client_handle.mark_error();
                                 return futures::stream::once(async {
                                     Err(arrow_flight::error::FlightError::ExternalError(Box::new(
-                                        std::io::Error::new(
-                                            std::io::ErrorKind::Other,
+                                        std::io::Error::other(
                                             "Client is None",
                                         ),
                                     )))
@@ -412,8 +408,7 @@ impl ErigonFlightBridge {
                             client_handle.mark_error();
                             return futures::stream::once(async move {
                                 Err(arrow_flight::error::FlightError::ExternalError(Box::new(
-                                    std::io::Error::new(
-                                        std::io::ErrorKind::Other,
+                                    std::io::Error::other(
                                         format!("Failed to access client: {}", e),
                                     ),
                                 )))
@@ -444,8 +439,7 @@ impl ErigonFlightBridge {
                                 // Mark connection unhealthy on errors
                                 client_handle.mark_error();
                                 arrow_flight::error::FlightError::ExternalError(Box::new(
-                                    std::io::Error::new(
-                                        std::io::ErrorKind::Other,
+                                    std::io::Error::other(
                                         format!("Segment {}-{} failed: {}", seg_start, seg_end, e),
                                     ),
                                 ))
@@ -484,9 +478,10 @@ impl ErigonFlightBridge {
         // Validate that the requested range exists by checking chain head
         let chain_head = {
             let mut client = self.client.lock().await;
-            client.get_latest_block().await.map_err(|e| {
-                Status::internal(format!("Failed to query chain head: {}", e))
-            })?
+            client
+                .get_latest_block()
+                .await
+                .map_err(|e| Status::internal(format!("Failed to query chain head: {}", e)))?
         };
 
         if end > chain_head {
@@ -539,7 +534,7 @@ impl ErigonFlightBridge {
                         Err(e) => {
                             error!("Failed to get client from pool for blocks stream: {}", e);
                             yield Err(arrow_flight::error::FlightError::ExternalError(
-                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Pool error: {}", e)))
+                                Box::new(std::io::Error::other(format!("Pool error: {}", e)))
                             ));
                             return;
                         }
@@ -553,7 +548,7 @@ impl ErigonFlightBridge {
                                 error!("Client from pool is None for blocks stream");
                                 client_handle.mark_error();
                                 yield Err(arrow_flight::error::FlightError::ExternalError(
-                                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Client is None"))
+                                    Box::new(std::io::Error::other("Client is None"))
                                 ));
                                 return;
                             }
@@ -562,7 +557,7 @@ impl ErigonFlightBridge {
                             error!("Failed to access client for blocks stream: {}", e);
                             client_handle.mark_error();
                             yield Err(arrow_flight::error::FlightError::ExternalError(
-                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Client error: {}", e)))
+                                Box::new(std::io::Error::other(format!("Client error: {}", e)))
                             ));
                             return;
                         }
@@ -575,7 +570,7 @@ impl ErigonFlightBridge {
                         Err(e) => {
                             error!("Failed to start block stream: {}", e);
                             yield Err(arrow_flight::error::FlightError::ExternalError(
-                                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                Box::new(std::io::Error::other(e.to_string()))
                             ));
                             return;
                         }
@@ -595,7 +590,7 @@ impl ErigonFlightBridge {
                                     Err(e) => {
                                         error!("Failed to convert block batch: {}", e);
                                         yield Err(arrow_flight::error::FlightError::ExternalError(
-                                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                            Box::new(std::io::Error::other(e.to_string()))
                                         ));
                                         break;
                                     }
@@ -604,7 +599,7 @@ impl ErigonFlightBridge {
                             Err(e) => {
                                 error!("Failed to receive block batch: {}", e);
                                 yield Err(arrow_flight::error::FlightError::ExternalError(
-                                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                    Box::new(std::io::Error::other(e.to_string()))
                                 ));
                                 break;
                             }
