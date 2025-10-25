@@ -481,6 +481,26 @@ impl ErigonFlightBridge {
             stream_type, start, end
         );
 
+        // Validate that the requested range exists by checking chain head
+        let chain_head = {
+            let mut client = self.client.lock().await;
+            client.get_latest_block().await.map_err(|e| {
+                Status::internal(format!("Failed to query chain head: {}", e))
+            })?
+        };
+
+        if end > chain_head {
+            return Err(Status::invalid_argument(format!(
+                "Requested end block {} exceeds current chain head {}",
+                end, chain_head
+            )));
+        }
+
+        info!(
+            "Validated block range {}-{} against chain head {}",
+            start, end, chain_head
+        );
+
         // Handle transactions and logs separately since they use segment workers
         if stream_type == StreamType::Transactions {
             let pool = self.blockdata_pool.clone();
@@ -762,10 +782,11 @@ impl FlightBridge for ErigonFlightBridge {
             })?;
         let stream_type = blockchain_desc.stream_type;
         let query_mode = blockchain_desc.query_mode.clone();
+        let preferences = blockchain_desc.get_preferences();
 
         info!(
-            "Processing do_get for {:?} with mode {:?}",
-            stream_type, query_mode
+            "Processing do_get for {:?} with mode {:?}, preferences: max_msg={} bytes, compression={:?}, batch_hint={}",
+            stream_type, query_mode, preferences.max_message_bytes, preferences.compression, preferences.batch_size_hint
         );
 
         // Handle trie streaming separately
@@ -837,8 +858,17 @@ impl FlightBridge for ErigonFlightBridge {
         };
 
         let schema = Self::get_schema_for_type(stream_type);
+
+        // Compression is handled at the gRPC transport level via tonic
+        // (configured in main.rs with accept_compressed/send_compressed)
+
+        // TODO: Examine bridge<->erigon interface for message size limits and batching strategy
+        // The bridge currently streams from erigon without considering message size limits.
+        // If erigon sends very large batches, we may need to implement chunking before sending to client.
+
         let encoder = FlightDataEncoderBuilder::new()
             .with_schema(schema)
+            .with_max_flight_data_size(preferences.max_message_bytes)
             .build(batch_stream);
 
         let flight_stream = encoder.map(|result| {

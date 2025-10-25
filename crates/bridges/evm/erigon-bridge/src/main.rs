@@ -76,6 +76,10 @@ struct Args {
     /// Prometheus metrics port (default: 9091)
     #[arg(long, env = "METRICS_PORT", default_value_t = 9091)]
     metrics_port: u16,
+
+    /// gRPC compression for Arrow Flight streams (none, gzip, zstd)
+    #[arg(long, env = "COMPRESSION", default_value = "none")]
+    compression: String,
 }
 
 #[tokio::main]
@@ -186,7 +190,38 @@ async fn main() -> Result<()> {
 
     // Create the Flight server
     let flight_server = FlightBridgeServer::new(bridge);
-    let flight_service = flight_server.into_service();
+
+    // Configure global maximum message size (128MB)
+    // Per-stream limits are negotiated via StreamPreferences
+    const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
+
+    // Configure compression based on CLI flag
+    let mut flight_service = flight_server
+        .into_service()
+        .max_decoding_message_size(MAX_MESSAGE_SIZE)
+        .max_encoding_message_size(MAX_MESSAGE_SIZE);
+
+    match args.compression.to_lowercase().as_str() {
+        "gzip" => {
+            info!("Enabling Gzip compression for Arrow Flight streams");
+            flight_service = flight_service
+                .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+                .send_compressed(tonic::codec::CompressionEncoding::Gzip);
+        }
+        "zstd" => {
+            info!("Enabling Zstd compression for Arrow Flight streams");
+            flight_service = flight_service
+                .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
+                .send_compressed(tonic::codec::CompressionEncoding::Zstd);
+        }
+        "none" => {
+            info!("Compression disabled for Arrow Flight streams");
+        }
+        other => {
+            error!("Invalid compression option '{}', valid options: none, gzip, zstd", other);
+            return Err(anyhow::anyhow!("Invalid compression option: {}", other));
+        }
+    }
 
     // Start server based on transport mode
     if transport_mode == "IPC" {
