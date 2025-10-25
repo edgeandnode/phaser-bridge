@@ -165,7 +165,7 @@ impl SegmentWorker {
             let chunk_end = (current_block + self.config.validation_batch_size as u64 - 1).min(self.segment_end);
 
             // Fetch headers only for this chunk
-            let headers = match Self::fetch_headers(current_block, chunk_end, &mut client).await {
+            let headers = match Self::fetch_headers(current_block, chunk_end, &mut client, self.config.validation_batch_size as u32).await {
                 Ok(h) => {
                     if h.is_empty() {
                         warn!("Worker {} segment {}: Received EMPTY header response for blocks {}-{}",
@@ -224,7 +224,7 @@ impl SegmentWorker {
                 worker_id, segment_id, start_block, end_block
             );
 
-            let mut tx_stream = client.stream_transactions(start_block, end_block, 100).await.map_err(|e| {
+            let mut tx_stream = client.stream_transactions(start_block, end_block, self.config.validation_batch_size as u32).await.map_err(|e| {
                 error!("Worker {} segment {}: Failed to create transaction stream: {}", worker_id, segment_id, e);
                 e
             })?;
@@ -388,7 +388,7 @@ impl SegmentWorker {
             // Fetch a chunk of headers (batch_size blocks at a time)
             let chunk_end = (current_block + self.config.validation_batch_size as u64 - 1).min(self.segment_end);
 
-            let chunk_headers = match Self::fetch_headers(current_block, chunk_end, &mut client).await {
+            let chunk_headers = match Self::fetch_headers(current_block, chunk_end, &mut client, self.config.validation_batch_size as u32).await {
                 Ok(h) => {
                     if h.is_empty() {
                         warn!("Process logs: Received EMPTY header response for blocks {}-{}",
@@ -521,9 +521,10 @@ impl SegmentWorker {
         segment_start: u64,
         segment_end: u64,
         client: &mut BlockDataClient,
+        batch_size: u32,
     ) -> Result<HashMap<u64, (Header, i64)>, ErigonBridgeError> {
         let mut block_stream = client
-            .stream_blocks(segment_start, segment_end, 100)
+            .stream_blocks(segment_start, segment_end, batch_size)
             .await
             .map_err(|e| {
                 error!(

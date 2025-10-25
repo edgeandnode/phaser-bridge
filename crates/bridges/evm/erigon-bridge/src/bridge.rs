@@ -524,6 +524,7 @@ impl ErigonFlightBridge {
         }
 
         let blockdata_pool = self.blockdata_pool.clone();
+        let batch_size = self.segment_config.validation_batch_size;
 
         let stream = async_stream::stream! {
             match stream_type {
@@ -565,7 +566,7 @@ impl ErigonFlightBridge {
 
                     debug!("Blocks stream using connection {} from pool", client_handle.index());
 
-                    let mut block_stream = match client.stream_blocks(start, end, 100).await {
+                    let mut block_stream = match client.stream_blocks(start, end, batch_size as u32).await {
                         Ok(s) => s,
                         Err(e) => {
                             error!("Failed to start block stream: {}", e);
