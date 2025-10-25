@@ -24,6 +24,10 @@ pub struct SegmentWork {
     pub missing_blocks: Vec<BlockRange>,
     pub missing_transactions: Vec<BlockRange>,
     pub missing_logs: Vec<BlockRange>,
+
+    // Retry tracking
+    pub retry_count: Option<u32>,
+    pub last_attempt: std::time::Instant,
 }
 
 impl SegmentWork {
@@ -843,6 +847,8 @@ impl DataScanner {
                         start: segment_from,
                         end: segment_to,
                     }],
+                    retry_count: None,
+                    last_attempt: std::time::Instant::now(),
                 });
             }
             return Ok(GapAnalysis {
@@ -914,6 +920,8 @@ impl DataScanner {
                     missing_blocks,
                     missing_transactions,
                     missing_logs,
+                    retry_count: None,
+                    last_attempt: std::time::Instant::now(),
                 });
             }
         }

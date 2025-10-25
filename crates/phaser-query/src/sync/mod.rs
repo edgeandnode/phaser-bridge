@@ -1,4 +1,5 @@
 mod data_scanner;
+mod metrics;
 mod service;
 mod worker;
 
