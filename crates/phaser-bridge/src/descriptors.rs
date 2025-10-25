@@ -12,6 +12,59 @@ pub enum StreamType {
     Trie, // Raw trie nodes for state reconstruction
 }
 
+/// Compression options for data transfer (maps to gRPC compression)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Compression {
+    /// No compression
+    None,
+    /// Gzip compression (fast, good compression ratio)
+    Gzip,
+    /// ZSTD compression (better compression ratio, slightly slower)
+    Zstd,
+}
+
+impl Default for Compression {
+    fn default() -> Self {
+        Compression::None
+    }
+}
+
+/// Stream preferences for negotiating transfer settings
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamPreferences {
+    /// Maximum message size in bytes (default: 4MB)
+    #[serde(default = "default_max_message_bytes")]
+    pub max_message_bytes: usize,
+
+    /// Compression method (default: None)
+    #[serde(default)]
+    pub compression: Compression,
+
+    /// Hint for batch size in blocks (default: 100)
+    /// Bridge may adjust based on max_message_bytes
+    #[serde(default = "default_batch_size_hint")]
+    pub batch_size_hint: u32,
+}
+
+fn default_max_message_bytes() -> usize {
+    32 * 1024 * 1024 // 32MB - handles large transaction batches
+}
+
+fn default_batch_size_hint() -> u32 {
+    100
+}
+
+impl Default for StreamPreferences {
+    fn default() -> Self {
+        Self {
+            max_message_bytes: default_max_message_bytes(),
+            compression: Compression::None,
+            batch_size_hint: default_batch_size_hint(),
+        }
+    }
+}
+
 /// Validation stages for blockchain data
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -53,6 +106,9 @@ pub struct BlockchainDescriptor {
     pub include_reorgs: bool,
     #[serde(default)]
     pub validation: ValidationStage,
+    /// Stream preferences for transfer settings
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferences: Option<StreamPreferences>,
 }
 
 impl BlockchainDescriptor {
@@ -65,6 +121,7 @@ impl BlockchainDescriptor {
             subscription_options: None,
             include_reorgs: false,
             validation: ValidationStage::None,
+            preferences: None,
         }
     }
 
@@ -77,6 +134,7 @@ impl BlockchainDescriptor {
             subscription_options: None,
             include_reorgs: false,
             validation: ValidationStage::None,
+            preferences: None,
         }
     }
 
@@ -102,6 +160,17 @@ impl BlockchainDescriptor {
     pub fn with_full_validation(mut self) -> Self {
         self.validation = ValidationStage::Both;
         self
+    }
+
+    /// Set stream preferences for this descriptor
+    pub fn with_preferences(mut self, preferences: StreamPreferences) -> Self {
+        self.preferences = Some(preferences);
+        self
+    }
+
+    /// Get stream preferences or return default
+    pub fn get_preferences(&self) -> StreamPreferences {
+        self.preferences.clone().unwrap_or_default()
     }
 }
 
