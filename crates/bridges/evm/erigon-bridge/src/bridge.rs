@@ -270,9 +270,7 @@ impl ErigonFlightBridge {
                                 client_handle.mark_error();
                                 return futures::stream::once(async {
                                     Err(arrow_flight::error::FlightError::ExternalError(Box::new(
-                                        std::io::Error::other(
-                                            "Client is None",
-                                        ),
+                                        std::io::Error::other("Client is None"),
                                     )))
                                 })
                                 .boxed();
@@ -286,16 +284,17 @@ impl ErigonFlightBridge {
                             client_handle.mark_error();
                             return futures::stream::once(async move {
                                 Err(arrow_flight::error::FlightError::ExternalError(Box::new(
-                                    std::io::Error::other(
-                                        format!("Failed to access client: {}", e),
-                                    ),
+                                    std::io::Error::other(format!(
+                                        "Failed to access client: {}",
+                                        e
+                                    )),
                                 )))
                             })
                             .boxed();
                         }
                     };
 
-                    info!(
+                    debug!(
                         "Worker {} using connection {} from pool",
                         worker_id,
                         client_handle.index()
@@ -317,9 +316,10 @@ impl ErigonFlightBridge {
                                 // Mark connection unhealthy on errors
                                 client_handle.mark_error();
                                 arrow_flight::error::FlightError::ExternalError(Box::new(
-                                    std::io::Error::other(
-                                        format!("Segment {}-{} failed: {}", seg_start, seg_end, e),
-                                    ),
+                                    std::io::Error::other(format!(
+                                        "Segment {}-{} failed: {}",
+                                        seg_start, seg_end, e
+                                    )),
                                 ))
                             })
                         })
@@ -392,9 +392,7 @@ impl ErigonFlightBridge {
                                 client_handle.mark_error();
                                 return futures::stream::once(async {
                                     Err(arrow_flight::error::FlightError::ExternalError(Box::new(
-                                        std::io::Error::other(
-                                            "Client is None",
-                                        ),
+                                        std::io::Error::other("Client is None"),
                                     )))
                                 })
                                 .boxed();
@@ -408,16 +406,17 @@ impl ErigonFlightBridge {
                             client_handle.mark_error();
                             return futures::stream::once(async move {
                                 Err(arrow_flight::error::FlightError::ExternalError(Box::new(
-                                    std::io::Error::other(
-                                        format!("Failed to access client: {}", e),
-                                    ),
+                                    std::io::Error::other(format!(
+                                        "Failed to access client: {}",
+                                        e
+                                    )),
                                 )))
                             })
                             .boxed();
                         }
                     };
 
-                    info!(
+                    debug!(
                         "Worker {} (logs) using connection {} from pool",
                         worker_id,
                         client_handle.index()
@@ -439,9 +438,10 @@ impl ErigonFlightBridge {
                                 // Mark connection unhealthy on errors
                                 client_handle.mark_error();
                                 arrow_flight::error::FlightError::ExternalError(Box::new(
-                                    std::io::Error::other(
-                                        format!("Segment {}-{} failed: {}", seg_start, seg_end, e),
-                                    ),
+                                    std::io::Error::other(format!(
+                                        "Segment {}-{} failed: {}",
+                                        seg_start, seg_end, e
+                                    )),
                                 ))
                             })
                         })
@@ -563,7 +563,7 @@ impl ErigonFlightBridge {
                         }
                     };
 
-                    info!("Blocks stream using connection {} from pool", client_handle.index());
+                    debug!("Blocks stream using connection {} from pool", client_handle.index());
 
                     let mut block_stream = match client.stream_blocks(start, end, 100).await {
                         Ok(s) => s,
@@ -581,10 +581,10 @@ impl ErigonFlightBridge {
                         match batch_result {
                             Ok(block_batch) => {
                                 batch_count += 1;
-                                info!("Received batch {} from BlockDataBackend with {} blocks", batch_count, block_batch.blocks.len());
+                                debug!("Received batch {} from BlockDataBackend with {} blocks", batch_count, block_batch.blocks.len());
                                 match BlockDataConverter::blocks_to_arrow(block_batch) {
                                     Ok(record_batch) => {
-                                        info!("Converted block batch {} with {} rows", batch_count, record_batch.num_rows());
+                                        debug!("Converted block batch {} with {} rows", batch_count, record_batch.num_rows());
                                         yield Ok(record_batch);
                                     }
                                     Err(e) => {
