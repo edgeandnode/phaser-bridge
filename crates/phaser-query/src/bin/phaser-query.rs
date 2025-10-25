@@ -256,7 +256,9 @@ async fn main() -> Result<()> {
         let executor_clone = executor.clone();
 
         let handle = tokio::spawn(async move {
-            if let Err(e) = start_sync_admin_server(config_clone, live_state_clone, executor_clone).await {
+            if let Err(e) =
+                start_sync_admin_server(config_clone, live_state_clone, executor_clone).await
+            {
                 error!("Sync admin server error: {}", e);
             }
         });
