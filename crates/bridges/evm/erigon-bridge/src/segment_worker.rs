@@ -665,20 +665,18 @@ impl SegmentWorker {
         block_headers: Vec<(u64, (Header, i64))>,
         client: &mut BlockDataClient,
     ) -> Result<Vec<(u64, Vec<crate::proto::custom::ReceiptData>, Header)>, ErigonBridgeError> {
-        debug!(
-            "Starting receipt stream for blocks {}-{} ({} blocks)",
-            from_block,
-            to_block,
-            block_headers.len()
-        );
+        let call_start = std::time::Instant::now();
 
         let mut receipt_stream = client
             .execute_blocks(from_block, to_block, 100)
             .await
             .map_err(|e| {
                 error!(
-                    "Blocks {}-{}: Failed to create receipt stream: {}",
-                    from_block, to_block, e
+                    "Blocks {}-{}: ExecuteBlocks failed after {:?}: {}",
+                    from_block,
+                    to_block,
+                    call_start.elapsed(),
+                    e
                 );
                 e
             })?;
@@ -693,14 +691,6 @@ impl SegmentWorker {
             match batch_result {
                 Ok(receipt_batch) => {
                     batch_count += 1;
-                    debug!(
-                        "Blocks {}-{}: Received receipt batch {} with {} receipts",
-                        from_block,
-                        to_block,
-                        batch_count,
-                        receipt_batch.receipts.len()
-                    );
-
                     for receipt in receipt_batch.receipts {
                         let block_num = receipt.block_number;
                         receipts_by_block
@@ -720,10 +710,13 @@ impl SegmentWorker {
             }
         }
 
-        debug!(
-            "Blocks {}-{}: Receipt stream completed, received {} total receipts from {} batches",
-            from_block, to_block, total_receipts, batch_count
-        );
+        let elapsed = call_start.elapsed();
+        if elapsed > std::time::Duration::from_secs(3) {
+            warn!(
+                "SLOW ExecuteBlocks for blocks {}-{} took {:?} ({} receipts from {} batches)",
+                from_block, to_block, elapsed, total_receipts, batch_count
+            );
+        }
 
         // Build result vec matching block order
         let mut results = Vec::new();
