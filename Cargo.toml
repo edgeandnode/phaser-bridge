@@ -72,6 +72,6 @@ fusio-parquet = "0.4"
 futures = "0.3"
 
 # gRPC dependencies
-tonic = "0.13"
+tonic = { version = "0.13", features = ["gzip", "zstd"] }
 prost = "0.13"
 prost-types = "0.13"

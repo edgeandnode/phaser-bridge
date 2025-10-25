@@ -56,6 +56,9 @@ alloy-rlp.workspace = true
 chrono = "0.4.42"
 ratatui = "0.29.0"
 crossterm = "0.29.0"
+prometheus = "0.13"
+lazy_static = "1.5"
+scopeguard = "1.2"
 
 [build-dependencies]
 tonic-build = "0.13"
