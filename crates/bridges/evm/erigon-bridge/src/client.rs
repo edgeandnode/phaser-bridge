@@ -1,5 +1,4 @@
 use crate::error::ErigonBridgeError;
-use futures::StreamExt;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
 
@@ -27,7 +26,7 @@ impl ErigonClient {
             );
 
             // For Unix domain sockets, we need a dummy URI
-            let uri = format!("http://[::]:50051");
+            let uri = "http://[::]:50051".to_string();
 
             #[cfg(unix)]
             {

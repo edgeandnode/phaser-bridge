@@ -3,8 +3,7 @@
 /// This module handles the RLP bytes → alloy types conversion,
 /// then uses the From impls in evm-common to convert to typed-arrow records
 use crate::error::ErigonBridgeError;
-use crate::proto::custom::{BlockBatch, ReceiptBatch, ReceiptData, TransactionBatch};
-use alloy_consensus::transaction::SignerRecoverable;
+use crate::proto::custom::{BlockBatch, ReceiptData, TransactionBatch};
 use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_rlp::Decodable;
 use arrow::datatypes::Schema;
@@ -183,7 +182,7 @@ impl BlockDataConverter {
             let timestamp = block.header.timestamp as i64 * 1_000_000_000;
 
             // Process all transactions in this block (moving, not cloning)
-            for (tx_index_in_block, tx_data) in block.transactions.into_iter().enumerate() {
+            for tx_data in block.transactions.into_iter() {
                 // Use block_hash from TransactionData (already provided by Erigon)
                 let block_hash_bytes: [u8; 32] =
                     tx_data.block_hash.as_slice().try_into().map_err(|_| {

@@ -16,7 +16,7 @@ use arrow_array::RecordBatch;
 use futures::stream::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tracing::{debug, error, info, warn};
 use validators_evm::ValidationExecutor;
 
@@ -136,8 +136,6 @@ impl SegmentWorker {
     fn process_transactions(
         self,
     ) -> impl futures::Stream<Item = Result<RecordBatch, ErigonBridgeError>> + Send {
-        use futures::stream::StreamExt;
-
         async_stream::stream! {
             let worker_id = self.worker_id;
             let segment_id = self.segment_start / 500_000; // Calculate segment ID
@@ -167,7 +165,7 @@ impl SegmentWorker {
             let chunk_end = (current_block + self.config.validation_batch_size as u64 - 1).min(self.segment_end);
 
             // Fetch headers only for this chunk
-            let headers = match Self::fetch_headers(current_block, chunk_end, &mut client).await {
+            let headers = match Self::fetch_headers(current_block, chunk_end, &mut client, self.config.validation_batch_size as u32).await {
                 Ok(h) => {
                     if h.is_empty() {
                         warn!("Worker {} segment {}: Received EMPTY header response for blocks {}-{}",
@@ -226,7 +224,7 @@ impl SegmentWorker {
                 worker_id, segment_id, start_block, end_block
             );
 
-            let mut tx_stream = client.stream_transactions(start_block, end_block, 100).await.map_err(|e| {
+            let mut tx_stream = client.stream_transactions(start_block, end_block, self.config.validation_batch_size as u32).await.map_err(|e| {
                 error!("Worker {} segment {}: Failed to create transaction stream: {}", worker_id, segment_id, e);
                 e
             })?;
@@ -369,8 +367,6 @@ impl SegmentWorker {
     fn process_logs(
         self,
     ) -> impl futures::Stream<Item = Result<RecordBatch, ErigonBridgeError>> + Send {
-        use futures::stream::StreamExt;
-
         async_stream::stream! {
         let total_blocks = self.segment_end - self.segment_start + 1;
         let mut yielded_batches = 0u64;
@@ -392,7 +388,7 @@ impl SegmentWorker {
             // Fetch a chunk of headers (batch_size blocks at a time)
             let chunk_end = (current_block + self.config.validation_batch_size as u64 - 1).min(self.segment_end);
 
-            let chunk_headers = match Self::fetch_headers(current_block, chunk_end, &mut client).await {
+            let chunk_headers = match Self::fetch_headers(current_block, chunk_end, &mut client, self.config.validation_batch_size as u32).await {
                 Ok(h) => {
                     if h.is_empty() {
                         warn!("Process logs: Received EMPTY header response for blocks {}-{}",
@@ -422,28 +418,43 @@ impl SegmentWorker {
             let mut sorted_chunk: Vec<_> = chunk_headers.into_iter().collect();
             sorted_chunk.sort_by_key(|(block_num, _)| *block_num);
 
-            // Fire all ExecuteBlocks calls concurrently for this chunk
+            // Batch blocks into sub-ranges for receipt fetching
+            // Instead of 1 request per block, do 1 request per 10-20 blocks
+            // This reduces gRPC overhead while maintaining good parallelism
+            const RECEIPT_BATCH_SIZE: usize = 10;
+
             let receipt_futures: Vec<_> = sorted_chunk
-                .iter()
-                .map(|(block_num, (header, _timestamp))| {
+                .chunks(RECEIPT_BATCH_SIZE)
+                .map(|block_chunk| {
                     let mut client_clone = client.clone();
-                    let block_num = *block_num;
-                    let header = header.clone();
+                    let block_chunk: Vec<_> = block_chunk.to_vec();
                     async move {
-                        let receipts = Self::collect_receipts_for_block(block_num, &mut client_clone).await?;
-                        Ok::<_, ErigonBridgeError>((block_num, receipts, header))
+                        let first_block = block_chunk[0].0;
+                        let last_block = block_chunk[block_chunk.len() - 1].0;
+
+                        debug!(
+                            "Fetching receipts for {} blocks (range {}-{})",
+                            block_chunk.len(),
+                            first_block,
+                            last_block
+                        );
+
+                        Self::collect_receipts_for_range(first_block, last_block, block_chunk, &mut client_clone).await
                     }
                 })
                 .collect();
 
-            // Await all ExecuteBlocks calls together
+            // Await all batched ExecuteBlocks calls together
             let results = futures::future::join_all(receipt_futures).await;
 
-            // Collect successful results
+            // Collect successful results and flatten batched results
             let mut current_batch = Vec::new();
             for result in results {
                 match result {
-                    Ok(data) => current_batch.push(data),
+                    Ok(batch_data) => {
+                        // Each result is a Vec of (block_num, receipts, header)
+                        current_batch.extend(batch_data);
+                    }
                     Err(e) => {
                         yield Err(e);
                         return;
@@ -510,9 +521,10 @@ impl SegmentWorker {
         segment_start: u64,
         segment_end: u64,
         client: &mut BlockDataClient,
+        batch_size: u32,
     ) -> Result<HashMap<u64, (Header, i64)>, ErigonBridgeError> {
         let mut block_stream = client
-            .stream_blocks(segment_start, segment_end, 100)
+            .stream_blocks(segment_start, segment_end, batch_size)
             .await
             .map_err(|e| {
                 error!(
@@ -592,7 +604,7 @@ impl SegmentWorker {
     ) -> Result<RecordBatch, ErigonBridgeError> {
         // Await validation results if any exist
         if !validation_futures.is_empty() {
-            info!(
+            debug!(
                 "Segment {}-{}: Collecting {} validation results",
                 segment_start,
                 segment_end,
@@ -619,7 +631,7 @@ impl SegmentWorker {
                 }
             }
 
-            info!(
+            debug!(
                 "Segment {}-{}: Validated {} blocks successfully",
                 segment_start,
                 segment_end,
@@ -643,58 +655,77 @@ impl SegmentWorker {
         BlockDataConverter::block_transactions_to_arrow(blocks).await
     }
 
-    /// Collect receipts for a single block
-    async fn collect_receipts_for_block(
-        block_num: u64,
+    /// Collect receipts for a range of blocks
+    ///
+    /// Requests receipts for multiple blocks in a single gRPC stream to reduce overhead.
+    /// Returns results for each block with its header.
+    async fn collect_receipts_for_range(
+        from_block: u64,
+        to_block: u64,
+        block_headers: Vec<(u64, (Header, i64))>,
         client: &mut BlockDataClient,
-    ) -> Result<Vec<crate::proto::custom::ReceiptData>, ErigonBridgeError> {
+    ) -> Result<Vec<(u64, Vec<crate::proto::custom::ReceiptData>, Header)>, ErigonBridgeError> {
+        let call_start = std::time::Instant::now();
+
         let mut receipt_stream = client
-            .execute_blocks(block_num, block_num, 100)
+            .execute_blocks(from_block, to_block, 100)
             .await
             .map_err(|e| {
                 error!(
-                    "Block {}: Failed to create receipt stream: {}",
-                    block_num, e
+                    "Blocks {}-{}: ExecuteBlocks failed after {:?}: {}",
+                    from_block,
+                    to_block,
+                    call_start.elapsed(),
+                    e
                 );
                 e
             })?;
-        let mut receipts = Vec::new();
+
+        // Collect all receipts by block number
+        let mut receipts_by_block: HashMap<u64, Vec<crate::proto::custom::ReceiptData>> =
+            HashMap::new();
         let mut batch_count = 0u64;
+        let mut total_receipts = 0u64;
 
         while let Some(batch_result) = receipt_stream.message().await.transpose() {
             match batch_result {
                 Ok(receipt_batch) => {
                     batch_count += 1;
-                    debug!(
-                        "Block {}: Received receipt batch {} with {} receipts",
-                        block_num,
-                        batch_count,
-                        receipt_batch.receipts.len()
-                    );
-                    receipts.extend(receipt_batch.receipts);
+                    for receipt in receipt_batch.receipts {
+                        let block_num = receipt.block_number;
+                        receipts_by_block
+                            .entry(block_num)
+                            .or_default()
+                            .push(receipt);
+                        total_receipts += 1;
+                    }
                 }
                 Err(e) => {
                     error!(
-                        "Block {}: Receipt stream error after {} batches: {}",
-                        block_num, batch_count, e
+                        "Blocks {}-{}: Receipt stream error after {} batches: {}",
+                        from_block, to_block, batch_count, e
                     );
                     return Err(ErigonBridgeError::ErigonClient(e));
                 }
             }
         }
 
-        if receipts.is_empty() {
-            debug!("Block {}: Receipt stream completed with ZERO receipts (may be valid for empty block)", block_num);
-        } else {
-            debug!(
-                "Block {}: Receipt stream completed, total {} receipts from {} batches",
-                block_num,
-                receipts.len(),
-                batch_count
+        let elapsed = call_start.elapsed();
+        if elapsed > std::time::Duration::from_secs(3) {
+            warn!(
+                "SLOW ExecuteBlocks for blocks {}-{} took {:?} ({} receipts from {} batches)",
+                from_block, to_block, elapsed, total_receipts, batch_count
             );
         }
 
-        Ok(receipts)
+        // Build result vec matching block order
+        let mut results = Vec::new();
+        for (block_num, (header, _timestamp)) in block_headers {
+            let receipts = receipts_by_block.remove(&block_num).unwrap_or_default();
+            results.push((block_num, receipts, header));
+        }
+
+        Ok(results)
     }
 
     /// Validate receipts in batches and convert to Arrow logs
@@ -729,11 +760,9 @@ impl SegmentWorker {
         validator: &Arc<dyn ValidationExecutor>,
         blocks: &[(u64, Vec<crate::proto::custom::ReceiptData>, Header)],
     ) -> Result<(), ErigonBridgeError> {
-        use futures::stream::{self, StreamExt};
-
         let num_cores = num_cpus::get();
 
-        info!(
+        debug!(
             "Segment {}-{}: Validating {} blocks' receipts with up to {} concurrent tasks",
             segment_start,
             segment_end,
@@ -787,7 +816,7 @@ impl SegmentWorker {
             }
         }
 
-        info!(
+        debug!(
             "Segment {}-{}: Validated {} blocks' receipts successfully",
             segment_start,
             segment_end,

@@ -5,9 +5,8 @@
 use lazy_static::lazy_static;
 use prometheus::{
     register_gauge_vec, register_histogram_vec, register_int_counter_vec, register_int_gauge_vec,
-    Encoder, GaugeVec, HistogramVec, IntCounterVec, IntGaugeVec, Registry, TextEncoder,
+    Encoder, GaugeVec, HistogramVec, IntCounterVec, IntGaugeVec, TextEncoder,
 };
-use std::sync::Arc;
 
 lazy_static! {
     /// Worker stage tracking - shows which stage each worker is currently in

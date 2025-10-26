@@ -7,7 +7,7 @@ use crate::proto::custom::{
 use std::time::Duration;
 use tonic::transport::Channel;
 use tonic::Streaming;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 pub struct BlockDataClient {
     client: BlockDataBackendClient<Channel>,
@@ -63,7 +63,12 @@ impl BlockDataClient {
                 .await?
         };
 
-        let client = BlockDataBackendClient::new(channel);
+        // Configure message size limits (128MB to handle large transaction batches)
+        const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
+
+        let client = BlockDataBackendClient::new(channel)
+            .max_decoding_message_size(MAX_MESSAGE_SIZE)
+            .max_encoding_message_size(MAX_MESSAGE_SIZE);
 
         Ok(Self {
             client,
@@ -84,7 +89,7 @@ impl BlockDataClient {
             batch_size: if batch_size > 0 { batch_size } else { 1000 },
         };
 
-        info!(
+        debug!(
             "Starting block header stream (blocks {}-{}, batch_size: {})",
             from_block, to_block, batch_size
         );
@@ -106,7 +111,7 @@ impl BlockDataClient {
             batch_size: if batch_size > 0 { batch_size } else { 1000 },
         };
 
-        info!(
+        debug!(
             "Starting transaction stream (blocks {}-{}, batch_size: {})",
             from_block, to_block, batch_size
         );
@@ -129,7 +134,7 @@ impl BlockDataClient {
             batch_size: if batch_size > 0 { batch_size } else { 1000 },
         };
 
-        info!(
+        debug!(
             "Starting receipt stream via block execution (blocks {}-{}, batch_size: {})",
             from_block, to_block, batch_size
         );

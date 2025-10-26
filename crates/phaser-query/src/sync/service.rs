@@ -1,15 +1,18 @@
 use crate::proto::admin::sync_service_server::{SyncService, SyncServiceServer};
 use crate::proto::admin::*;
 use crate::sync::data_scanner::DataScanner;
+use crate::sync::metrics;
 use crate::sync::worker::{ProgressTracker, SyncWorker};
 use crate::PhaserConfig;
 use anyhow::Result;
 use core_executor::ThreadPoolExecutor;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::proto::admin::{
@@ -268,7 +271,10 @@ impl SyncServer {
 
         // Use the segments_needing_work from analysis
         let total_segments = analysis.missing_count() as u64;
-        let segment_queue = Arc::new(tokio::sync::Mutex::new(analysis.segments_needing_work));
+        let segment_queue = Arc::new(tokio::sync::Mutex::new(VecDeque::from(
+            analysis.segments_needing_work,
+        )));
+        let job_complete = Arc::new(AtomicBool::new(false));
 
         info!(
             "Found {} segments to sync ({} blocks per segment)",
@@ -280,8 +286,10 @@ impl SyncServer {
         let num_workers = std::cmp::min(config.sync_parallelism as u64, total_segments) as u32;
         let max_file_size_mb = config.max_file_size_mb;
 
-        // Track failed segments for potential retry
-        let failed_segments = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        // Constants for retry logic
+        const MAX_RETRIES_WITHOUT_PROGRESS: u32 = 5;
+        const MIN_BACKOFF_SECS: u64 = 1;
+        const MAX_BACKOFF_SECS: u64 = 10;
 
         for worker_id in 0..num_workers {
             let bridge_endpoint = bridge_endpoint.clone();
@@ -289,37 +297,54 @@ impl SyncServer {
             let segment_queue = segment_queue.clone();
             let progress_tracker = progress_tracker.clone();
             let parquet_config = config.parquet.clone();
-            let failed_segments = failed_segments.clone();
             let validation_stage = config.validation_stage;
+            let job_complete = job_complete.clone();
 
-            let handle = tokio::spawn(async move {
-                let mut worker_errors = 0u32;
-
+            let handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
                 loop {
+                    // Check if job is complete
+                    if job_complete.load(Ordering::Relaxed) {
+                        info!(worker_id = worker_id, "Worker exiting - job complete");
+                        break;
+                    }
+
                     // Get next segment work item
                     let work = {
                         let mut queue = segment_queue.lock().await;
-                        if queue.is_empty() {
-                            info!(
-                                "Worker {} completed all assigned segments (errors: {})",
-                                worker_id, worker_errors
-                            );
-                            break;
+
+                        // Update queue depth metric
+                        metrics::SYNC_QUEUE_DEPTH
+                            .with_label_values(&["pending"])
+                            .set(queue.len() as i64);
+
+                        queue.pop_front()
+                    };
+
+                    let work = match work {
+                        Some(w) => w,
+                        None => {
+                            // No work available - wait before checking again
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
                         }
-                        queue.remove(0)
                     };
 
                     let segment_num = work.segment_num;
                     let segment_from = work.segment_from;
                     let segment_to = work.segment_to;
+                    let retry_count = work.retry_count.unwrap_or(0);
+                    let segment_start = std::time::Instant::now();
 
                     info!(
-                        "Worker {} processing segment {} (blocks {}-{}) - syncing: {:?}",
-                        worker_id,
-                        segment_num,
-                        segment_from,
-                        segment_to,
-                        work.missing_types()
+                        worker_id = worker_id,
+                        segment_num = segment_num,
+                        from_block = segment_from,
+                        to_block = segment_to,
+                        retry_count = retry_count,
+                        missing_blocks = work.missing_blocks.len(),
+                        missing_txs = work.missing_transactions.len(),
+                        missing_logs = work.missing_logs.len(),
+                        "Starting segment processing"
                     );
 
                     // Create and run worker for this segment
@@ -334,98 +359,144 @@ impl SyncServer {
                         1000, // batch_size
                         parquet_config.clone(),
                         validation_stage,
-                        work,
+                        work.clone(),
                     )
                     .with_progress_tracker(progress_tracker.clone());
 
                     match worker.run().await {
                         Ok(()) => {
-                            info!("Worker {} completed segment {}", worker_id, segment_num);
+                            let duration = segment_start.elapsed();
+
+                            // Metrics
+                            metrics::SEGMENT_ATTEMPTS
+                                .with_label_values(&["success"])
+                                .inc();
+
+                            metrics::SEGMENT_DURATION
+                                .with_label_values(&["all"])
+                                .observe(duration.as_secs_f64());
+
+                            // Clear retry count metric for this segment
+                            metrics::SEGMENT_RETRY_COUNT
+                                .remove_label_values(&[&segment_num.to_string()])
+                                .ok();
+
+                            info!(
+                                worker_id = worker_id,
+                                segment_num = segment_num,
+                                duration_secs = duration.as_secs(),
+                                retry_count = retry_count,
+                                "Segment completed successfully"
+                            );
                         }
                         Err(e) => {
-                            error!(
-                                "Worker {} failed on segment {}: {}",
-                                worker_id, segment_num, e
-                            );
-                            worker_errors += 1;
-                            failed_segments.lock().await.push(segment_num);
+                            let error_category = metrics::categorize_error(&e);
 
-                            // Continue to next segment instead of stopping worker
+                            // Detect which data type failed from error message
+                            let data_type = if e.to_string().contains("blocks") {
+                                "blocks"
+                            } else if e.to_string().contains("transactions") {
+                                "transactions"
+                            } else if e.to_string().contains("logs") {
+                                "logs"
+                            } else {
+                                "unknown"
+                            };
+
+                            // Metrics
+                            metrics::SYNC_ERRORS
+                                .with_label_values(&[error_category, data_type])
+                                .inc();
+
+                            metrics::SEGMENT_ATTEMPTS
+                                .with_label_values(&["retry"])
+                                .inc();
+
+                            // Update retry count metric
+                            metrics::SEGMENT_RETRY_COUNT
+                                .with_label_values(&[&segment_num.to_string()])
+                                .set((retry_count + 1) as i64);
+
+                            // Calculate backoff: exponential up to 5 retries, then cap at 10s
+                            let backoff_secs = if retry_count < MAX_RETRIES_WITHOUT_PROGRESS {
+                                (MIN_BACKOFF_SECS * 2u64.pow(retry_count)).min(MAX_BACKOFF_SECS)
+                            } else {
+                                MAX_BACKOFF_SECS
+                            };
+
+                            // Log level escalates after detection threshold
+                            if retry_count < MAX_RETRIES_WITHOUT_PROGRESS {
+                                warn!(
+                                    worker_id = worker_id,
+                                    segment_num = segment_num,
+                                    retry_count = retry_count,
+                                    backoff_secs = backoff_secs,
+                                    error_type = error_category,
+                                    data_type = data_type,
+                                    error = %e,
+                                    "Segment failed, will retry"
+                                );
+                            } else {
+                                error!(
+                                    worker_id = worker_id,
+                                    segment_num = segment_num,
+                                    retry_count = retry_count,
+                                    backoff_secs = backoff_secs,
+                                    error_type = error_category,
+                                    data_type = data_type,
+                                    error = %e,
+                                    "Segment persistently failing - continuing to retry with {}s backoff",
+                                    MAX_BACKOFF_SECS
+                                );
+                            }
+
+                            // Sleep for backoff period BEFORE re-queuing
+                            tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+
+                            // Always re-queue (never abandon)
+                            let mut work_with_retry = work.clone();
+                            work_with_retry.retry_count = Some(retry_count + 1);
+                            work_with_retry.last_attempt = std::time::Instant::now();
+
+                            // Put back at END of queue so other segments get processed first
+                            segment_queue.lock().await.push_back(work_with_retry);
                         }
                     }
                 }
 
-                if worker_errors > 0 {
-                    Err(anyhow::anyhow!(
-                        "Worker {} had {} errors",
-                        worker_id,
-                        worker_errors
-                    ))
-                } else {
-                    Ok(())
-                }
+                Ok(())
             });
 
             worker_handles.push(handle);
         }
 
         // Wait for all workers to complete
-        let mut has_error = false;
-        let mut error_msg = String::new();
-
         for (idx, handle) in worker_handles.into_iter().enumerate() {
             match handle.await {
                 Ok(Ok(())) => {
-                    info!("Worker {} finished all segments", idx);
+                    info!("Worker {} finished", idx);
                 }
                 Ok(Err(e)) => {
                     error!("Worker {} failed: {}", idx, e);
-                    has_error = true;
-                    if error_msg.is_empty() {
-                        error_msg = format!("Worker {} failed: {}", idx, e);
-                    }
                 }
                 Err(e) => {
                     error!("Worker {} panicked: {}", idx, e);
-                    has_error = true;
-                    if error_msg.is_empty() {
-                        error_msg = format!("Worker {} panicked: {}", idx, e);
-                    }
                 }
             }
         }
 
-        // Check for failed segments
-        let failed = failed_segments.lock().await;
-        if !failed.is_empty() {
-            error!(
-                "Sync job {} had {} failed segments: {:?}",
-                job_id,
-                failed.len(),
-                failed
-            );
-            has_error = true;
-            error_msg = format!("{} segments failed: {:?}", failed.len(), failed);
-        }
+        // Mark job as complete
+        job_complete.store(true, Ordering::Relaxed);
 
         // Update final status
         {
             let mut jobs_lock = jobs.write().await;
             if let Some(job) = jobs_lock.get_mut(&job_id) {
-                if has_error {
-                    job.status = SyncStatus::Failed as i32;
-                    job.error = Some(error_msg);
-                } else {
-                    job.status = SyncStatus::Completed as i32;
-                    job.blocks_synced = to_block - from_block + 1;
-                    job.current_block = to_block;
-                }
+                job.status = SyncStatus::Completed as i32;
+                job.blocks_synced = to_block - from_block + 1;
+                job.current_block = to_block;
                 job.active_workers = 0;
             }
-        }
-
-        if has_error {
-            return Err(anyhow::anyhow!("Sync job failed"));
         }
 
         info!("Sync job {} completed successfully", job_id);

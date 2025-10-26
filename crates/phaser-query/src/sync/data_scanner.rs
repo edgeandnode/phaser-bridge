@@ -24,6 +24,10 @@ pub struct SegmentWork {
     pub missing_blocks: Vec<BlockRange>,
     pub missing_transactions: Vec<BlockRange>,
     pub missing_logs: Vec<BlockRange>,
+
+    // Retry tracking
+    pub retry_count: Option<u32>,
+    pub last_attempt: std::time::Instant,
 }
 
 impl SegmentWork {
@@ -231,13 +235,51 @@ impl DataScanner {
         let parquet_metadata = builder.metadata();
         let arrow_schema = builder.schema();
 
-        // Check if file has any rows - empty files should not be treated as valid data
+        // Check for custom metadata indicating the requested block range
+        // This is the authoritative range even if some blocks have no data
+        let metadata_range = parquet_metadata
+            .file_metadata()
+            .key_value_metadata()
+            .and_then(|kv_vec| {
+                let mut start: Option<u64> = None;
+                let mut end: Option<u64> = None;
+
+                for kv in kv_vec {
+                    if kv.key == "phaser.block_range_start" {
+                        if let Some(ref value) = kv.value {
+                            start = value.parse::<u64>().ok();
+                        }
+                    } else if kv.key == "phaser.block_range_end" {
+                        if let Some(ref value) = kv.value {
+                            end = value.parse::<u64>().ok();
+                        }
+                    }
+                }
+
+                if let (Some(s), Some(e)) = (start, end) {
+                    debug!(
+                        "Found phaser metadata in {:?}: block range {}-{}",
+                        path, s, e
+                    );
+                    Some(BlockRange { start: s, end: e })
+                } else {
+                    None
+                }
+            });
+
+        // If metadata specifies the range, use it (even if file has 0 rows)
+        // This handles ranges where all blocks have no data (e.g., all blocks have 0 transactions)
+        if let Some(range) = metadata_range {
+            return Ok(Some(range));
+        }
+
+        // Fallback: check if file has any rows - empty files without metadata are ignored
         let total_rows: i64 = (0..parquet_metadata.num_row_groups())
             .map(|i| parquet_metadata.row_group(i).num_rows())
             .sum();
 
         if total_rows == 0 {
-            debug!("Parquet file {:?} is empty (0 rows), ignoring", path);
+            debug!("Parquet file {:?} is empty (0 rows) and has no metadata, ignoring", path);
             return Ok(None);
         }
 
@@ -843,6 +885,8 @@ impl DataScanner {
                         start: segment_from,
                         end: segment_to,
                     }],
+                    retry_count: None,
+                    last_attempt: std::time::Instant::now(),
                 });
             }
             return Ok(GapAnalysis {
@@ -914,6 +958,8 @@ impl DataScanner {
                     missing_blocks,
                     missing_transactions,
                     missing_logs,
+                    retry_count: None,
+                    last_attempt: std::time::Instant::now(),
                 });
             }
         }

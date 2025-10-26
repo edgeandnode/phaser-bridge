@@ -6,7 +6,7 @@ use crate::proto::custom::{
 };
 use tonic::transport::Channel;
 use tonic::Streaming;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 pub struct TrieClient {
     client: TrieBackendClient<Channel>,
