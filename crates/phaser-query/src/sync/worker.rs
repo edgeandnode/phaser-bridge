@@ -27,26 +27,6 @@ fn is_transient_error(err: &anyhow::Error) -> bool {
         || err_str.contains("stream")
 }
 
-/// Write a 0-byte .empty file to mark a range as checked but containing no data
-fn write_empty_marker(
-    data_dir: &PathBuf,
-    data_type: &str,
-    from_block: u64,
-    to_block: u64,
-) -> Result<()> {
-    let filename = format!("{}_from_{}_to_{}.empty", data_type, from_block, to_block);
-    let path = data_dir.join(filename);
-    std::fs::File::create(&path)?;
-    info!(
-        "Created empty marker file for {} blocks {}-{}: {}",
-        data_type,
-        from_block,
-        to_block,
-        path.display()
-    );
-    Ok(())
-}
-
 /// Worker progress tracking
 #[derive(Debug, Clone)]
 pub struct WorkerProgress {
@@ -382,6 +362,7 @@ impl SyncWorker {
             "blocks".to_string(),
             self.parquet_config.clone(),
         )?;
+        writer.set_block_range(from_block, to_block);
 
         // Retry with resume logic
         const INITIAL_BACKOFF_SECS: u64 = 1;
@@ -565,10 +546,16 @@ impl SyncWorker {
                     );
                 }
             }
-            writer.finalize_current_file()?;
-        } else if from_block == original_from {
-            // No data received for original request - write empty marker
-            write_empty_marker(&self.data_dir, "blocks", original_from, to_block)?;
+            // Finalize with the requested end block to ensure proper filename
+            writer.finalize_with_requested_range(Some(to_block))?;
+        } else {
+            // No batches received - this should never happen with the updated Erigon backend
+            // which always sends at least one batch (even if empty) for the requested range
+            anyhow::bail!(
+                "Bridge returned zero batches for blocks {}-{}. This indicates a protocol error.",
+                from_block,
+                to_block
+            );
         }
 
         Ok((batches_processed, bytes_written))
@@ -597,6 +584,7 @@ impl SyncWorker {
             "transactions".to_string(),
             self.parquet_config.clone(),
         )?;
+        writer.set_block_range(from_block, to_block);
 
         // Check if proof generation is enabled
         let generate_proofs = self
@@ -610,13 +598,15 @@ impl SyncWorker {
                 "Worker {} will generate merkle proofs for transactions",
                 self.worker_id
             );
-            Some(ParquetWriter::with_config(
+            let mut pw = ParquetWriter::with_config(
                 self.data_dir.clone(),
                 self.max_file_size_mb,
                 self.segment_size,
                 "proofs".to_string(),
                 self.parquet_config.clone(),
-            )?)
+            )?;
+            pw.set_block_range(from_block, to_block);
+            Some(pw)
         } else {
             None
         };
@@ -834,13 +824,19 @@ impl SyncWorker {
                     );
                 }
             }
-            writer.finalize_current_file()?;
+            // Finalize with the requested end block to ensure proper filename
+            writer.finalize_with_requested_range(Some(to_block))?;
             if let Some(ref mut proof_w) = proof_writer {
-                proof_w.finalize_current_file()?;
+                proof_w.finalize_with_requested_range(Some(to_block))?;
             }
-        } else if from_block == original_from {
-            // No data received for original request - write empty marker
-            write_empty_marker(&self.data_dir, "transactions", original_from, to_block)?;
+        } else {
+            // No batches received - this should never happen with the updated Erigon backend
+            // which always sends at least one batch (even if empty) for the requested range
+            anyhow::bail!(
+                "Bridge returned zero batches for transactions {}-{}. This indicates a protocol error.",
+                from_block,
+                to_block
+            );
         }
 
         Ok((batches_processed, bytes_written))
@@ -926,6 +922,7 @@ impl SyncWorker {
             "logs".to_string(),
             self.parquet_config.clone(),
         )?;
+        writer.set_block_range(from_block, to_block);
 
         // Retry with resume logic
         const INITIAL_BACKOFF_SECS: u64 = 1;
@@ -1113,10 +1110,16 @@ impl SyncWorker {
                     );
                 }
             }
-            writer.finalize_current_file()?;
-        } else if from_block == original_from {
-            // No data received for original request - write empty marker
-            write_empty_marker(&self.data_dir, "logs", original_from, to_block)?;
+            // Finalize with the requested end block to ensure proper filename
+            writer.finalize_with_requested_range(Some(to_block))?;
+        } else {
+            // No batches received - this should never happen with the updated Erigon backend
+            // which always sends at least one batch (even if empty) for the requested range
+            anyhow::bail!(
+                "Bridge returned zero batches for logs {}-{}. This indicates a protocol error.",
+                from_block,
+                to_block
+            );
         }
 
         Ok((batches_processed, bytes_written))
