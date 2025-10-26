@@ -235,8 +235,7 @@ impl DataScanner {
         let parquet_metadata = builder.metadata();
         let arrow_schema = builder.schema();
 
-        // Check for custom metadata indicating the requested block range
-        // This is the authoritative range even if some blocks have no data
+        // Check for custom metadata indicating the file's block range responsibility
         let metadata_range = parquet_metadata
             .file_metadata()
             .key_value_metadata()
@@ -245,11 +244,11 @@ impl DataScanner {
                 let mut end: Option<u64> = None;
 
                 for kv in kv_vec {
-                    if kv.key == "phaser.block_range_start" {
+                    if kv.key == "phaser.file_start" {
                         if let Some(ref value) = kv.value {
                             start = value.parse::<u64>().ok();
                         }
-                    } else if kv.key == "phaser.block_range_end" {
+                    } else if kv.key == "phaser.file_end" {
                         if let Some(ref value) = kv.value {
                             end = value.parse::<u64>().ok();
                         }
@@ -258,7 +257,7 @@ impl DataScanner {
 
                 if let (Some(s), Some(e)) = (start, end) {
                     debug!(
-                        "Found phaser metadata in {:?}: block range {}-{}",
+                        "Found phaser metadata in {:?}: file block range {}-{}",
                         path, s, e
                     );
                     Some(BlockRange { start: s, end: e })

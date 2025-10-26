@@ -547,7 +547,7 @@ impl SyncWorker {
                 }
             }
             // Finalize with the requested end block to ensure proper filename
-            writer.finalize_with_requested_range(Some(to_block))?;
+            writer.finalize_current_file()?;
         } else {
             // No batches received - this should never happen with the updated Erigon backend
             // which always sends at least one batch (even if empty) for the requested range
@@ -825,9 +825,9 @@ impl SyncWorker {
                 }
             }
             // Finalize with the requested end block to ensure proper filename
-            writer.finalize_with_requested_range(Some(to_block))?;
+            writer.finalize_current_file()?;
             if let Some(ref mut proof_w) = proof_writer {
-                proof_w.finalize_with_requested_range(Some(to_block))?;
+                proof_w.finalize_current_file()?;
             }
         } else {
             // No batches received - this should never happen with the updated Erigon backend
@@ -1111,7 +1111,7 @@ impl SyncWorker {
                 }
             }
             // Finalize with the requested end block to ensure proper filename
-            writer.finalize_with_requested_range(Some(to_block))?;
+            writer.finalize_current_file()?;
         } else {
             // No batches received - this should never happen with the updated Erigon backend
             // which always sends at least one batch (even if empty) for the requested range

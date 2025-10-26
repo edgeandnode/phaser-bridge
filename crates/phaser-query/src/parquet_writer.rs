@@ -24,17 +24,17 @@ pub struct ParquetWriter {
     data_type: String, // "blocks", "transactions", or "logs"
     parquet_config: Option<ParquetConfig>,
     is_live: bool, // true for live streaming, false for historical sync
-    requested_range: Option<(u64, u64)>, // (start, end) blocks for this sync session
+    requested_range: Option<(u64, u64)>, // (start, end) blocks for this sync session (segment range)
+    sequence_number: u32, // Incremented on each file rotation within the same segment
 }
 
 struct CurrentFile {
     writer: ArrowWriter<File>,
     temp_path: PathBuf,
     row_count: usize,
-    start_block: u64,
-    end_block: u64,
+    start_block: u64, // Actual first block with data
+    end_block: u64,   // Actual last block with data
     bytes_written: u64, // Track actual bytes written to disk
-    requested_end: Option<u64>, // Requested end block for the segment
 }
 
 impl ParquetWriter {
@@ -84,6 +84,7 @@ impl ParquetWriter {
             parquet_config,
             is_live,
             requested_range: None,
+            sequence_number: 0,
         })
     }
 
@@ -204,7 +205,6 @@ impl ParquetWriter {
             start_block: block_num,
             end_block: block_num,
             bytes_written: 0,
-            requested_end: None,
         });
 
         Ok(())
@@ -243,22 +243,38 @@ impl ParquetWriter {
         builder =
             builder.set_column_statistics_enabled("_block_num".into(), EnabledStatistics::Page);
 
-        // Add block range metadata if available
-        // This allows scanners to determine which blocks have no data
-        if let Some((range_start, range_end)) = self.requested_range {
+        // Add segment range metadata if available
+        // This stores the full segment range this file belongs to, plus the contiguous
+        // block range this specific file is responsible for
+        if let Some((segment_start, segment_end)) = self.requested_range {
             let mut metadata = Vec::new();
             metadata.push(KeyValue::new(
-                "phaser.block_range_start".to_string(),
-                range_start.to_string(),
+                "phaser.segment_start".to_string(),
+                segment_start.to_string(),
             ));
             metadata.push(KeyValue::new(
-                "phaser.block_range_end".to_string(),
-                range_end.to_string(),
+                "phaser.segment_end".to_string(),
+                segment_end.to_string(),
             ));
             metadata.push(KeyValue::new(
                 "phaser.data_type".to_string(),
                 self.data_type.clone(),
             ));
+
+            // Add the contiguous block range this file covers (file responsibility range)
+            // This is the first and last block this file is responsible for, regardless of
+            // whether those blocks have data (they may be empty)
+            if let Some(ref current) = self.current_file {
+                metadata.push(KeyValue::new(
+                    "phaser.file_start".to_string(),
+                    current.start_block.to_string(),
+                ));
+                metadata.push(KeyValue::new(
+                    "phaser.file_end".to_string(),
+                    current.end_block.to_string(),
+                ));
+            }
+
             builder = builder.set_key_value_metadata(Some(metadata));
         }
 
@@ -308,63 +324,52 @@ impl ParquetWriter {
     }
 
     pub fn finalize_current_file(&mut self) -> Result<()> {
-        self.finalize_with_requested_range(None)
-    }
-
-    /// Finalize the current file with optional requested end block
-    /// If requested_end is provided and different from actual end_block,
-    /// metadata will indicate which blocks have no data
-    pub fn finalize_with_requested_range(&mut self, requested_end: Option<u64>) -> Result<()> {
-        if let Some(mut current) = self.current_file.take() {
-            // Update requested_end if provided
-            if let Some(req_end) = requested_end {
-                current.requested_end = Some(req_end);
-            }
-
-            // Determine the final end block (use requested if available, otherwise actual)
-            let final_end_block = current.requested_end.unwrap_or(current.end_block);
-
-            // Add metadata about empty block ranges if requested_end differs from actual
-            if let Some(req_end) = current.requested_end {
-                if req_end > current.end_block {
-                    // There are blocks with no data at the end of the range
-                    let empty_start = current.end_block + 1;
-                    let empty_end = req_end;
-                    let metadata = format!("{}-{}", empty_start, empty_end);
-
-                    // Add custom metadata to parquet file
-                    // Note: ArrowWriter doesn't expose add_metadata before closing,
-                    // so we'll document this in the filename comment for now.
-                    // TODO: Use direct parquet writer to add custom metadata
-                    debug!(
-                        "File {} has empty blocks {}-{} (no {} data)",
-                        self.data_type, empty_start, empty_end, self.data_type
-                    );
-                }
-            }
-
+        if let Some(current) = self.current_file.take() {
             current.writer.close()?;
 
-            // Build final filename using the full requested range
-            // Format: {data_type}_from_{start}_to_{end}.parquet
-            let final_filename = format!(
-                "{}_from_{}_to_{}.parquet",
-                self.data_type, current.start_block, final_end_block
-            );
+            // Build final filename using segment range + sequence number
+            // Format: {data_type}_from_{segment_start}_to_{segment_end}_{sequence}.parquet
+            let final_filename = if let Some((segment_start, segment_end)) = self.requested_range {
+                format!(
+                    "{}_from_{}_to_{}_{}.parquet",
+                    self.data_type, segment_start, segment_end, self.sequence_number
+                )
+            } else {
+                // Fallback for files without segment range (shouldn't happen in practice)
+                format!(
+                    "{}_from_{}_to_{}.parquet",
+                    self.data_type, current.start_block, current.end_block
+                )
+            };
             let final_path = self.data_dir.join(final_filename);
 
             // Rename from .tmp to final name
             fs::rename(&current.temp_path, &final_path)?;
 
-            info!(
-                "Finalized parquet file: {} with {} rows, blocks {} to {} (actual data: {}-{})",
-                final_path.display(),
-                current.row_count,
-                current.start_block,
-                final_end_block,
-                current.start_block,
-                current.end_block
-            );
+            // Log the finalization with both segment range and actual data range
+            if let Some((segment_start, segment_end)) = self.requested_range {
+                info!(
+                    "Finalized parquet file: {} with {} rows, segment {}-{} seq={} (actual data: {}-{})",
+                    final_path.display(),
+                    current.row_count,
+                    segment_start,
+                    segment_end,
+                    self.sequence_number,
+                    current.start_block,
+                    current.end_block
+                );
+            } else {
+                info!(
+                    "Finalized parquet file: {} with {} rows (actual data: {}-{})",
+                    final_path.display(),
+                    current.row_count,
+                    current.start_block,
+                    current.end_block
+                );
+            }
+
+            // Increment sequence number for next file in this segment
+            self.sequence_number += 1;
         }
         Ok(())
     }
