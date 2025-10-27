@@ -11,9 +11,10 @@ use parquet::{
         properties::{EnabledStatistics, WriterProperties, WriterPropertiesBuilder},
     },
 };
+use phaser_parquet_metadata::PhaserMetadata;
 use std::fs::{self, File};
 use std::path::PathBuf;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Service for writing RecordBatches to Parquet files
 pub struct ParquetWriter {
@@ -32,9 +33,10 @@ struct CurrentFile {
     writer: ArrowWriter<File>,
     temp_path: PathBuf,
     row_count: usize,
-    start_block: u64, // Actual first block with data
-    end_block: u64,   // Actual last block with data
-    bytes_written: u64, // Track actual bytes written to disk
+    start_block: u64,          // Actual first block with data
+    end_block: u64,            // Actual last block with data
+    bytes_written: u64,        // Track actual bytes written to disk
+    responsibility_start: u64, // First block this file is responsible for (may not have data)
 }
 
 impl ParquetWriter {
@@ -198,6 +200,17 @@ impl ParquetWriter {
 
         let writer = ArrowWriter::try_new(file, schema, Some(props))?;
 
+        // Determine responsibility_start based on whether this is the first file in the segment
+        let responsibility_start = if self.sequence_number == 0 {
+            // First file in segment - responsible from segment start
+            self.requested_range
+                .map(|(start, _)| start)
+                .unwrap_or(block_num)
+        } else {
+            // Subsequent file - responsible from where data starts
+            block_num
+        };
+
         self.current_file = Some(CurrentFile {
             writer,
             temp_path,
@@ -205,6 +218,7 @@ impl ParquetWriter {
             start_block: block_num,
             end_block: block_num,
             bytes_written: 0,
+            responsibility_start,
         });
 
         Ok(())
@@ -345,6 +359,35 @@ impl ParquetWriter {
 
             // Rename from .tmp to final name
             fs::rename(&current.temp_path, &final_path)?;
+
+            // Update Phaser metadata in the file footer
+            if let Some((segment_start, segment_end)) = self.requested_range {
+                // For responsibility_end: use segment_end if we're at the end of the segment
+                // Check if current.end_block is at or beyond segment_end-1 (within last block of segment)
+                let responsibility_end = if current.end_block >= segment_end || current.end_block == segment_end - 1 {
+                    segment_end
+                } else {
+                    current.end_block
+                };
+
+                let phaser_meta = PhaserMetadata::new(
+                    segment_start,
+                    segment_end,
+                    current.responsibility_start, // responsibility_start (first block this file is responsible for)
+                    responsibility_end, // responsibility_end (last block this file is responsible for)
+                    current.start_block, // data_start (actual first block with data)
+                    current.end_block,  // data_end (actual last block with data)
+                    self.data_type.clone(),
+                );
+
+                if let Err(e) = PhaserMetadata::update_file_metadata(&final_path, &phaser_meta) {
+                    warn!(
+                        "Failed to update metadata on {}: {}. File is still valid but metadata may be incomplete.",
+                        final_path.display(),
+                        e
+                    );
+                }
+            }
 
             // Log the finalization with both segment range and actual data range
             if let Some((segment_start, segment_end)) = self.requested_range {
