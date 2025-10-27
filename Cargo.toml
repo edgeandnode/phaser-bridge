@@ -12,6 +12,8 @@ members = [
     "crates/parquet-index",
     "crates/evm-index",
     "crates/parquet-index-rocksdb",
+    "crates/parquet-meta",
+    "crates/phaser-parquet-metadata",
 ]
 
 [workspace.dependencies]
@@ -26,6 +28,7 @@ parquet-index-schema = { path = "crates/parquet-index-schema" }
 parquet-index = { path = "crates/parquet-index" }
 evm-index = { path = "crates/evm-index" }
 parquet-index-rocksdb = { path = "crates/parquet-index-rocksdb" }
+phaser-parquet-metadata = { path = "crates/phaser-parquet-metadata" }
 
 # External dependencies
 tokio = { version = "1.41", features = ["full"] }
