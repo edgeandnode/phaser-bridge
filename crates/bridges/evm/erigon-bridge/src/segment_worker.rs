@@ -667,10 +667,29 @@ impl SegmentWorker {
     ) -> Result<Vec<(u64, Vec<crate::proto::custom::ReceiptData>, Header)>, ErigonBridgeError> {
         let call_start = std::time::Instant::now();
 
+        // Spawn a monitoring task that warns if the call takes too long
+        const SLOW_CALL_WARNING_THRESHOLD_SECS: u64 = 300; // 5 minutes
+        let monitor_handle = {
+            let from = from_block;
+            let to = to_block;
+            tokio::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_secs(
+                    SLOW_CALL_WARNING_THRESHOLD_SECS,
+                ))
+                .await;
+                warn!(
+                    "ExecuteBlocks for blocks {}-{} has been running for >{} seconds and is still in progress",
+                    from, to, SLOW_CALL_WARNING_THRESHOLD_SECS
+                );
+            })
+        };
+
         let mut receipt_stream = client
             .execute_blocks(from_block, to_block, 100)
             .await
             .map_err(|e| {
+                // Cancel the monitor task since the call failed
+                monitor_handle.abort();
                 error!(
                     "Blocks {}-{}: ExecuteBlocks failed after {:?}: {}",
                     from_block,
@@ -680,6 +699,9 @@ impl SegmentWorker {
                 );
                 e
             })?;
+
+        // Cancel the monitor task since the call succeeded
+        monitor_handle.abort();
 
         // Collect all receipts by block number
         let mut receipts_by_block: HashMap<u64, Vec<crate::proto::custom::ReceiptData>> =

@@ -17,6 +17,7 @@ phaser-bridge = { workspace = true }
 erigon-bridge = { workspace = true }
 evm-common = { workspace = true }
 core-executor = { workspace = true }
+phaser-parquet-metadata = { workspace = true }
 
 # Typed Arrow support
 typed-arrow = { workspace = true }

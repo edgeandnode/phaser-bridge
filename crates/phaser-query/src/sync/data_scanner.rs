@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use core_executor::ThreadPoolExecutor;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::statistics::Statistics;
-use std::collections::HashMap;
+use phaser_parquet_metadata::PhaserMetadata;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -235,37 +235,60 @@ impl DataScanner {
         let parquet_metadata = builder.metadata();
         let arrow_schema = builder.schema();
 
-        // Check for custom metadata indicating the requested block range
-        // This is the authoritative range even if some blocks have no data
-        let metadata_range = parquet_metadata
-            .file_metadata()
-            .key_value_metadata()
-            .and_then(|kv_vec| {
-                let mut start: Option<u64> = None;
-                let mut end: Option<u64> = None;
+        // Try to read new PhaserMetadata format first
+        let metadata_range =
+            if let Some(kv_metadata) = parquet_metadata.file_metadata().key_value_metadata() {
+                match PhaserMetadata::from_key_value_metadata(kv_metadata) {
+                    Ok(Some(phaser_meta)) => {
+                        debug!(
+                            "Found phaser metadata in {:?}: responsibility {}-{}, data {}-{}",
+                            path,
+                            phaser_meta.responsibility_start,
+                            phaser_meta.responsibility_end,
+                            phaser_meta.data_start,
+                            phaser_meta.data_end
+                        );
+                        // Use responsibility range (the range this file is responsible for covering)
+                        Some(BlockRange {
+                            start: phaser_meta.responsibility_start,
+                            end: phaser_meta.responsibility_end,
+                        })
+                    }
+                    Ok(None) => {
+                        // Fall back to legacy text-based metadata
+                        let mut start: Option<u64> = None;
+                        let mut end: Option<u64> = None;
 
-                for kv in kv_vec {
-                    if kv.key == "phaser.block_range_start" {
-                        if let Some(ref value) = kv.value {
-                            start = value.parse::<u64>().ok();
+                        for kv in kv_metadata {
+                            if kv.key == "phaser.file_start" {
+                                if let Some(ref value) = kv.value {
+                                    start = value.parse::<u64>().ok();
+                                }
+                            } else if kv.key == "phaser.file_end" {
+                                if let Some(ref value) = kv.value {
+                                    end = value.parse::<u64>().ok();
+                                }
+                            }
                         }
-                    } else if kv.key == "phaser.block_range_end" {
-                        if let Some(ref value) = kv.value {
-                            end = value.parse::<u64>().ok();
+
+                        if let (Some(s), Some(e)) = (start, end) {
+                            debug!(
+                                "Found legacy phaser metadata in {:?}: file block range {}-{}",
+                                path, s, e
+                            );
+                            Some(BlockRange { start: s, end: e })
+                        } else {
+                            None
                         }
                     }
+                    Err(e) => {
+                        warn!("Failed to parse phaser metadata from {:?}: {}", path, e);
+                        None
+                    }
                 }
-
-                if let (Some(s), Some(e)) = (start, end) {
-                    debug!(
-                        "Found phaser metadata in {:?}: block range {}-{}",
-                        path, s, e
-                    );
-                    Some(BlockRange { start: s, end: e })
-                } else {
-                    None
-                }
-            });
+            } else {
+                None
+            };
 
         // If metadata specifies the range, use it (even if file has 0 rows)
         // This handles ranges where all blocks have no data (e.g., all blocks have 0 transactions)
@@ -279,7 +302,10 @@ impl DataScanner {
             .sum();
 
         if total_rows == 0 {
-            debug!("Parquet file {:?} is empty (0 rows) and has no metadata, ignoring", path);
+            debug!(
+                "Parquet file {:?} is empty (0 rows) and has no metadata, ignoring",
+                path
+            );
             return Ok(None);
         }
 

@@ -143,7 +143,10 @@ async fn main() -> Result<()> {
                 println!("  {}", resp.message);
             }
         }
-        Commands::Status { job_id, status: status_filter } => {
+        Commands::Status {
+            job_id,
+            status: status_filter,
+        } => {
             if let Some(job_id) = job_id {
                 // Show single job with detailed view
                 let request = tonic::Request::new(SyncStatusRequest {
@@ -210,9 +213,23 @@ async fn main() -> Result<()> {
                                 "  Blocks:        {}/{} segments - {} files, {}{}",
                                 blocks_complete,
                                 total_segments,
-                                progress.file_stats.as_ref().map(|s| s.blocks_files).unwrap_or(0),
-                                format_size(progress.file_stats.as_ref().map(|s| s.blocks_disk_bytes).unwrap_or(0)),
-                                if blocks.gap_count > 0 { format!(" ({} gaps)", blocks.gap_count) } else { String::new() }
+                                progress
+                                    .file_stats
+                                    .as_ref()
+                                    .map(|s| s.blocks_files)
+                                    .unwrap_or(0),
+                                format_size(
+                                    progress
+                                        .file_stats
+                                        .as_ref()
+                                        .map(|s| s.blocks_disk_bytes)
+                                        .unwrap_or(0)
+                                ),
+                                if blocks.gap_count > 0 {
+                                    format!(" ({} gaps)", blocks.gap_count)
+                                } else {
+                                    String::new()
+                                }
                             );
                         }
 
@@ -222,9 +239,23 @@ async fn main() -> Result<()> {
                                 "  Transactions:  {}/{} segments - {} files, {}{}",
                                 txs_complete,
                                 total_segments,
-                                progress.file_stats.as_ref().map(|s| s.transactions_files).unwrap_or(0),
-                                format_size(progress.file_stats.as_ref().map(|s| s.transactions_disk_bytes).unwrap_or(0)),
-                                if txs.gap_count > 0 { format!(" ({} gaps)", txs.gap_count) } else { String::new() }
+                                progress
+                                    .file_stats
+                                    .as_ref()
+                                    .map(|s| s.transactions_files)
+                                    .unwrap_or(0),
+                                format_size(
+                                    progress
+                                        .file_stats
+                                        .as_ref()
+                                        .map(|s| s.transactions_disk_bytes)
+                                        .unwrap_or(0)
+                                ),
+                                if txs.gap_count > 0 {
+                                    format!(" ({} gaps)", txs.gap_count)
+                                } else {
+                                    String::new()
+                                }
                             );
                         }
 
@@ -234,9 +265,23 @@ async fn main() -> Result<()> {
                                 "  Logs:          {}/{} segments - {} files, {}{}",
                                 logs_complete,
                                 total_segments,
-                                progress.file_stats.as_ref().map(|s| s.logs_files).unwrap_or(0),
-                                format_size(progress.file_stats.as_ref().map(|s| s.logs_disk_bytes).unwrap_or(0)),
-                                if logs.gap_count > 0 { format!(" ({} gaps)", logs.gap_count) } else { String::new() }
+                                progress
+                                    .file_stats
+                                    .as_ref()
+                                    .map(|s| s.logs_files)
+                                    .unwrap_or(0),
+                                format_size(
+                                    progress
+                                        .file_stats
+                                        .as_ref()
+                                        .map(|s| s.logs_disk_bytes)
+                                        .unwrap_or(0)
+                                ),
+                                if logs.gap_count > 0 {
+                                    format!(" ({} gaps)", logs.gap_count)
+                                } else {
+                                    String::new()
+                                }
                             );
                         }
 
@@ -255,9 +300,7 @@ async fn main() -> Result<()> {
                 if let Some(ref gap) = job.gap_analysis {
                     println!(
                         "Complete Segments: {}/{} ({:.1}% of segments)",
-                        gap.complete_segments,
-                        gap.total_segments,
-                        gap.completion_percentage
+                        gap.complete_segments, gap.total_segments, gap.completion_percentage
                     );
 
                     if gap.missing_segments > 0 {
@@ -307,7 +350,10 @@ async fn main() -> Result<()> {
 
                 if job.download_rate_bytes_per_sec > 0.0 {
                     let rate = if job.download_rate_bytes_per_sec >= 1_000_000_000.0 {
-                        format!("{:.2} GB/s", job.download_rate_bytes_per_sec / 1_000_000_000.0)
+                        format!(
+                            "{:.2} GB/s",
+                            job.download_rate_bytes_per_sec / 1_000_000_000.0
+                        )
                     } else if job.download_rate_bytes_per_sec >= 1_000_000.0 {
                         format!("{:.1} MB/s", job.download_rate_bytes_per_sec / 1_000_000.0)
                     } else if job.download_rate_bytes_per_sec >= 1_000.0 {
@@ -333,7 +379,9 @@ async fn main() -> Result<()> {
                         "CANCELLED" => SyncStatus::Cancelled,
                         _ => {
                             println!("Invalid status filter: {}", status_str);
-                            println!("Valid values: PENDING, RUNNING, COMPLETED, FAILED, CANCELLED");
+                            println!(
+                                "Valid values: PENDING, RUNNING, COMPLETED, FAILED, CANCELLED"
+                            );
                             return Ok(());
                         }
                     };
@@ -412,9 +460,23 @@ async fn main() -> Result<()> {
                                         "  Blocks:        {}/{} segments - {} files, {}{}",
                                         blocks_complete,
                                         total_segments,
-                                        progress.file_stats.as_ref().map(|s| s.blocks_files).unwrap_or(0),
-                                        format_size(progress.file_stats.as_ref().map(|s| s.blocks_disk_bytes).unwrap_or(0)),
-                                        if blocks.gap_count > 0 { format!(" ({} gaps)", blocks.gap_count) } else { String::new() }
+                                        progress
+                                            .file_stats
+                                            .as_ref()
+                                            .map(|s| s.blocks_files)
+                                            .unwrap_or(0),
+                                        format_size(
+                                            progress
+                                                .file_stats
+                                                .as_ref()
+                                                .map(|s| s.blocks_disk_bytes)
+                                                .unwrap_or(0)
+                                        ),
+                                        if blocks.gap_count > 0 {
+                                            format!(" ({} gaps)", blocks.gap_count)
+                                        } else {
+                                            String::new()
+                                        }
                                     );
                                 }
 
@@ -425,9 +487,23 @@ async fn main() -> Result<()> {
                                         "  Transactions:  {}/{} segments - {} files, {}{}",
                                         txs_complete,
                                         total_segments,
-                                        progress.file_stats.as_ref().map(|s| s.transactions_files).unwrap_or(0),
-                                        format_size(progress.file_stats.as_ref().map(|s| s.transactions_disk_bytes).unwrap_or(0)),
-                                        if txs.gap_count > 0 { format!(" ({} gaps)", txs.gap_count) } else { String::new() }
+                                        progress
+                                            .file_stats
+                                            .as_ref()
+                                            .map(|s| s.transactions_files)
+                                            .unwrap_or(0),
+                                        format_size(
+                                            progress
+                                                .file_stats
+                                                .as_ref()
+                                                .map(|s| s.transactions_disk_bytes)
+                                                .unwrap_or(0)
+                                        ),
+                                        if txs.gap_count > 0 {
+                                            format!(" ({} gaps)", txs.gap_count)
+                                        } else {
+                                            String::new()
+                                        }
                                     );
                                 }
 
@@ -438,9 +514,23 @@ async fn main() -> Result<()> {
                                         "  Logs:          {}/{} segments - {} files, {}{}",
                                         logs_complete,
                                         total_segments,
-                                        progress.file_stats.as_ref().map(|s| s.logs_files).unwrap_or(0),
-                                        format_size(progress.file_stats.as_ref().map(|s| s.logs_disk_bytes).unwrap_or(0)),
-                                        if logs.gap_count > 0 { format!(" ({} gaps)", logs.gap_count) } else { String::new() }
+                                        progress
+                                            .file_stats
+                                            .as_ref()
+                                            .map(|s| s.logs_files)
+                                            .unwrap_or(0),
+                                        format_size(
+                                            progress
+                                                .file_stats
+                                                .as_ref()
+                                                .map(|s| s.logs_disk_bytes)
+                                                .unwrap_or(0)
+                                        ),
+                                        if logs.gap_count > 0 {
+                                            format!(" ({} gaps)", logs.gap_count)
+                                        } else {
+                                            String::new()
+                                        }
                                     );
                                 }
 
@@ -485,10 +575,16 @@ async fn main() -> Result<()> {
 
                                 println!("Incomplete Segments: {}", gap.missing_segments);
                                 if missing_blocks_count > 0 {
-                                    println!("  - {} segments missing blocks", missing_blocks_count);
+                                    println!(
+                                        "  - {} segments missing blocks",
+                                        missing_blocks_count
+                                    );
                                 }
                                 if missing_txs_count > 0 {
-                                    println!("  - {} segments missing transactions", missing_txs_count);
+                                    println!(
+                                        "  - {} segments missing transactions",
+                                        missing_txs_count
+                                    );
                                 }
                                 if missing_logs_count > 0 {
                                     println!("  - {} segments missing logs", missing_logs_count);

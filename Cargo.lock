@@ -4164,6 +4164,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "parquet-meta"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "clap",
+ "parquet",
+ "phaser-parquet-metadata",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4256,6 +4267,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "phaser-parquet-metadata"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "base64",
+ "bincode",
+ "parquet",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "phaser-query"
 version = "0.1.0"
 dependencies = [
@@ -4280,6 +4304,7 @@ dependencies = [
  "num_cpus",
  "parquet",
  "phaser-bridge",
+ "phaser-parquet-metadata",
  "prometheus",
  "prost",
  "prost-types",

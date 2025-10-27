@@ -1,5 +1,4 @@
 use crate::parquet_writer::ParquetWriter;
-use crate::sync::data_scanner::DataScanner;
 use crate::ParquetConfig;
 use anyhow::{Context, Result};
 use arrow::array as arrow_array;
@@ -362,7 +361,8 @@ impl SyncWorker {
             "blocks".to_string(),
             self.parquet_config.clone(),
         )?;
-        writer.set_block_range(from_block, to_block);
+        // Use segment boundaries for metadata, not gap boundaries
+        writer.set_block_range(self.from_block, self.to_block);
 
         // Retry with resume logic
         const INITIAL_BACKOFF_SECS: u64 = 1;
@@ -547,7 +547,7 @@ impl SyncWorker {
                 }
             }
             // Finalize with the requested end block to ensure proper filename
-            writer.finalize_with_requested_range(Some(to_block))?;
+            writer.finalize_current_file()?;
         } else {
             // No batches received - this should never happen with the updated Erigon backend
             // which always sends at least one batch (even if empty) for the requested range
@@ -584,7 +584,8 @@ impl SyncWorker {
             "transactions".to_string(),
             self.parquet_config.clone(),
         )?;
-        writer.set_block_range(from_block, to_block);
+        // Use segment boundaries for metadata, not gap boundaries
+        writer.set_block_range(self.from_block, self.to_block);
 
         // Check if proof generation is enabled
         let generate_proofs = self
@@ -605,7 +606,8 @@ impl SyncWorker {
                 "proofs".to_string(),
                 self.parquet_config.clone(),
             )?;
-            pw.set_block_range(from_block, to_block);
+            // Use segment boundaries for metadata, not gap boundaries
+            pw.set_block_range(self.from_block, self.to_block);
             Some(pw)
         } else {
             None
@@ -825,9 +827,9 @@ impl SyncWorker {
                 }
             }
             // Finalize with the requested end block to ensure proper filename
-            writer.finalize_with_requested_range(Some(to_block))?;
+            writer.finalize_current_file()?;
             if let Some(ref mut proof_w) = proof_writer {
-                proof_w.finalize_with_requested_range(Some(to_block))?;
+                proof_w.finalize_current_file()?;
             }
         } else {
             // No batches received - this should never happen with the updated Erigon backend
@@ -922,7 +924,8 @@ impl SyncWorker {
             "logs".to_string(),
             self.parquet_config.clone(),
         )?;
-        writer.set_block_range(from_block, to_block);
+        // Use segment boundaries for metadata, not gap boundaries
+        writer.set_block_range(self.from_block, self.to_block);
 
         // Retry with resume logic
         const INITIAL_BACKOFF_SECS: u64 = 1;
@@ -1111,7 +1114,7 @@ impl SyncWorker {
                 }
             }
             // Finalize with the requested end block to ensure proper filename
-            writer.finalize_with_requested_range(Some(to_block))?;
+            writer.finalize_current_file()?;
         } else {
             // No batches received - this should never happen with the updated Erigon backend
             // which always sends at least one batch (even if empty) for the requested range
