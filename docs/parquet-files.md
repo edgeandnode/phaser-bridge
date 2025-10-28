@@ -7,15 +7,22 @@ Phaser uses Parquet files to store blockchain data (blocks, transactions, logs).
 ## Filename Convention
 
 ### Final Files
+
+**Historical sync files:**
 ```
 {data_type}_from_{segment_start}_to_{segment_end}_{sequence}.parquet
 ```
 
+**Live streaming files:**
+```
+live_{data_type}_from_{segment_start}_to_{segment_end}_{sequence}.parquet
+```
+
 Examples:
-- `blocks_from_0_to_499999_0.parquet`
-- `transactions_from_500000_to_999999_0.parquet`
-- `transactions_from_500000_to_999999_1.parquet`
-- `logs_from_1000000_to_1499999_0.parquet`
+- `blocks_from_0_to_499999_0.parquet` - Written by historical sync worker
+- `transactions_from_500000_to_999999_0.parquet` - Written by historical sync worker
+- `live_transactions_from_23500000_to_23999999_0.parquet` - Written by live streaming worker
+- `logs_from_1000000_to_1499999_0.parquet` - Written by historical sync worker
 
 **Key points:**
 - `data_type`: One of `blocks`, `transactions`, or `logs`
@@ -24,6 +31,7 @@ Examples:
 - Range is **inclusive** on both ends
 - Files are named by segment boundaries, not actual data ranges
 - Multiple files can exist for the same segment (indicated by sequence number)
+- `live_` prefix indicates file was written by the **live streaming worker**, not the historical sync worker
 
 ### Temporary Files During Writing
 ```
@@ -48,16 +56,22 @@ Phaser stores two types of metadata in Parquet files:
 
 ### Phaser Metadata Format
 
-Each file contains metadata with three range types:
+Each file contains metadata with three range types plus a worker type flag:
 
 - **Segment range**: The full 500K block segment this file belongs to
 - **Responsibility range**: The block range this file is responsible for covering
 - **Data range**: The actual blocks that have data (may skip empty blocks)
+- **is_live flag**: True if written by live streaming worker, false if written by historical sync worker
 
 Metadata storage:
 - Encoded with bincode, base64-encoded
 - Stored in `phaser.meta` key-value metadata
 - Can be updated in-place without rewriting file data
+- Current version: 2 (version 1 didn't have is_live flag)
+
+The `is_live` flag distinguishes between files written by:
+- **Historical sync workers**: Fetch specific block ranges via Historical mode (`is_live = false`)
+- **Live streaming workers**: Subscribe to current head via Live mode (`is_live = true`)
 
 See [`../crates/phaser-parquet-metadata/src/lib.rs`](../crates/phaser-parquet-metadata/src/lib.rs) for `PhaserMetadata` struct definition and read/write methods.
 
