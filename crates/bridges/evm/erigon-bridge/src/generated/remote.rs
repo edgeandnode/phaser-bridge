@@ -55,10 +55,10 @@ pub mod bridge_backend_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     #[derive(Debug, Clone)]
     pub struct BridgeBackendClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -102,8 +102,9 @@ pub mod bridge_backend_client {
                     <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             BridgeBackendClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -142,13 +143,22 @@ pub mod bridge_backend_client {
         pub async fn version(
             &mut self,
             request: impl tonic::IntoRequest<()>,
-        ) -> std::result::Result<tonic::Response<super::super::types::VersionReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::super::types::VersionReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.BridgeBackend/Version");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.BridgeBackend/Version",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.BridgeBackend", "Version"));
@@ -157,12 +167,22 @@ pub mod bridge_backend_client {
         pub async fn bor_txn_lookup(
             &mut self,
             request: impl tonic::IntoRequest<super::BorTxnLookupRequest>,
-        ) -> std::result::Result<tonic::Response<super::BorTxnLookupReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::BorTxnLookupReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.BridgeBackend/BorTxnLookup");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.BridgeBackend/BorTxnLookup",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.BridgeBackend", "BorTxnLookup"));
@@ -172,11 +192,18 @@ pub mod bridge_backend_client {
             &mut self,
             request: impl tonic::IntoRequest<super::BorEventsRequest>,
         ) -> std::result::Result<tonic::Response<super::BorEventsReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.BridgeBackend/BorEvents");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.BridgeBackend/BorEvents",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.BridgeBackend", "BorEvents"));
@@ -191,10 +218,10 @@ pub mod heimdall_backend_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     #[derive(Debug, Clone)]
     pub struct HeimdallBackendClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -238,8 +265,9 @@ pub mod heimdall_backend_client {
                     <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             HeimdallBackendClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -278,13 +306,22 @@ pub mod heimdall_backend_client {
         pub async fn version(
             &mut self,
             request: impl tonic::IntoRequest<()>,
-        ) -> std::result::Result<tonic::Response<super::super::types::VersionReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::super::types::VersionReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.HeimdallBackend/Version");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.HeimdallBackend/Version",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.HeimdallBackend", "Version"));
@@ -293,13 +330,22 @@ pub mod heimdall_backend_client {
         pub async fn producers(
             &mut self,
             request: impl tonic::IntoRequest<super::BorProducersRequest>,
-        ) -> std::result::Result<tonic::Response<super::BorProducersResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::BorProducersResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.HeimdallBackend/Producers");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.HeimdallBackend/Producers",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.HeimdallBackend", "Producers"));
@@ -587,10 +633,10 @@ pub mod ethbackend_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     #[derive(Debug, Clone)]
     pub struct EthbackendClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -634,8 +680,9 @@ pub mod ethbackend_client {
                     <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             EthbackendClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -674,11 +721,18 @@ pub mod ethbackend_client {
             &mut self,
             request: impl tonic::IntoRequest<super::EtherbaseRequest>,
         ) -> std::result::Result<tonic::Response<super::EtherbaseReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/Etherbase");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/Etherbase",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "Etherbase"));
@@ -687,12 +741,22 @@ pub mod ethbackend_client {
         pub async fn net_version(
             &mut self,
             request: impl tonic::IntoRequest<super::NetVersionRequest>,
-        ) -> std::result::Result<tonic::Response<super::NetVersionReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::NetVersionReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/NetVersion");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/NetVersion",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "NetVersion"));
@@ -701,12 +765,22 @@ pub mod ethbackend_client {
         pub async fn net_peer_count(
             &mut self,
             request: impl tonic::IntoRequest<super::NetPeerCountRequest>,
-        ) -> std::result::Result<tonic::Response<super::NetPeerCountReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::NetPeerCountReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/NetPeerCount");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/NetPeerCount",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "NetPeerCount"));
@@ -716,16 +790,24 @@ pub mod ethbackend_client {
         pub async fn version(
             &mut self,
             request: impl tonic::IntoRequest<()>,
-        ) -> std::result::Result<tonic::Response<super::super::types::VersionReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::super::types::VersionReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/Version");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/Version",
+            );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.ETHBACKEND", "Version"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.ETHBACKEND", "Version"));
             self.inner.unary(req, path, codec).await
         }
         /// Syncing returns a data object detailing the status of the sync process
@@ -733,27 +815,42 @@ pub mod ethbackend_client {
             &mut self,
             request: impl tonic::IntoRequest<()>,
         ) -> std::result::Result<tonic::Response<super::SyncingReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/Syncing");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/Syncing",
+            );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.ETHBACKEND", "Syncing"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.ETHBACKEND", "Syncing"));
             self.inner.unary(req, path, codec).await
         }
         /// ProtocolVersion returns the Ethereum protocol version number (e.g. 66 for ETH66).
         pub async fn protocol_version(
             &mut self,
             request: impl tonic::IntoRequest<super::ProtocolVersionRequest>,
-        ) -> std::result::Result<tonic::Response<super::ProtocolVersionReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::ProtocolVersionReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/ProtocolVersion");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/ProtocolVersion",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "ProtocolVersion"));
@@ -763,13 +860,22 @@ pub mod ethbackend_client {
         pub async fn client_version(
             &mut self,
             request: impl tonic::IntoRequest<super::ClientVersionRequest>,
-        ) -> std::result::Result<tonic::Response<super::ClientVersionReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::ClientVersionReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/ClientVersion");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/ClientVersion",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "ClientVersion"));
@@ -782,11 +888,18 @@ pub mod ethbackend_client {
             tonic::Response<tonic::codec::Streaming<super::SubscribeReply>>,
             tonic::Status,
         > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/Subscribe");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/Subscribe",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "Subscribe"));
@@ -800,11 +913,18 @@ pub mod ethbackend_client {
             tonic::Response<tonic::codec::Streaming<super::SubscribeLogsReply>>,
             tonic::Status,
         > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/SubscribeLogs");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/SubscribeLogs",
+            );
             let mut req = request.into_streaming_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "SubscribeLogs"));
@@ -817,46 +937,65 @@ pub mod ethbackend_client {
             &mut self,
             request: impl tonic::IntoRequest<super::BlockRequest>,
         ) -> std::result::Result<tonic::Response<super::BlockReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/Block");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.ETHBACKEND", "Block"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.ETHBACKEND", "Block"));
             self.inner.unary(req, path, codec).await
         }
         /// High-level method - can read block body (only storage metadata) from db, snapshots or apply any other logic
         pub async fn canonical_body_for_storage(
             &mut self,
             request: impl tonic::IntoRequest<super::CanonicalBodyForStorageRequest>,
-        ) -> std::result::Result<tonic::Response<super::CanonicalBodyForStorageReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::CanonicalBodyForStorageReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/CanonicalBodyForStorage");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/CanonicalBodyForStorage",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "remote.ETHBACKEND",
-                "CanonicalBodyForStorage",
-            ));
+            req.extensions_mut()
+                .insert(GrpcMethod::new("remote.ETHBACKEND", "CanonicalBodyForStorage"));
             self.inner.unary(req, path, codec).await
         }
         /// High-level method - can find block hash by block number
         pub async fn canonical_hash(
             &mut self,
             request: impl tonic::IntoRequest<super::CanonicalHashRequest>,
-        ) -> std::result::Result<tonic::Response<super::CanonicalHashReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::CanonicalHashReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/CanonicalHash");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/CanonicalHash",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "CanonicalHash"));
@@ -866,12 +1005,22 @@ pub mod ethbackend_client {
         pub async fn header_number(
             &mut self,
             request: impl tonic::IntoRequest<super::HeaderNumberRequest>,
-        ) -> std::result::Result<tonic::Response<super::HeaderNumberReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::HeaderNumberReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/HeaderNumber");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/HeaderNumber",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "HeaderNumber"));
@@ -883,11 +1032,18 @@ pub mod ethbackend_client {
             &mut self,
             request: impl tonic::IntoRequest<super::TxnLookupRequest>,
         ) -> std::result::Result<tonic::Response<super::TxnLookupReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/TxnLookup");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/TxnLookup",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "TxnLookup"));
@@ -898,11 +1054,18 @@ pub mod ethbackend_client {
             &mut self,
             request: impl tonic::IntoRequest<super::NodesInfoRequest>,
         ) -> std::result::Result<tonic::Response<super::NodesInfoReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/NodeInfo");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/NodeInfo",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "NodeInfo"));
@@ -913,39 +1076,59 @@ pub mod ethbackend_client {
             &mut self,
             request: impl tonic::IntoRequest<()>,
         ) -> std::result::Result<tonic::Response<super::PeersReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/Peers");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.ETHBACKEND", "Peers"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.ETHBACKEND", "Peers"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn add_peer(
             &mut self,
             request: impl tonic::IntoRequest<super::AddPeerRequest>,
         ) -> std::result::Result<tonic::Response<super::AddPeerReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/AddPeer");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/AddPeer",
+            );
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.ETHBACKEND", "AddPeer"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.ETHBACKEND", "AddPeer"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn remove_peer(
             &mut self,
             request: impl tonic::IntoRequest<super::RemovePeerRequest>,
-        ) -> std::result::Result<tonic::Response<super::RemovePeerReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::RemovePeerReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/RemovePeer");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/RemovePeer",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "RemovePeer"));
@@ -955,12 +1138,22 @@ pub mod ethbackend_client {
         pub async fn pending_block(
             &mut self,
             request: impl tonic::IntoRequest<()>,
-        ) -> std::result::Result<tonic::Response<super::PendingBlockReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::PendingBlockReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/PendingBlock");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/PendingBlock",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "PendingBlock"));
@@ -969,12 +1162,22 @@ pub mod ethbackend_client {
         pub async fn bor_txn_lookup(
             &mut self,
             request: impl tonic::IntoRequest<super::BorTxnLookupRequest>,
-        ) -> std::result::Result<tonic::Response<super::BorTxnLookupReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::BorTxnLookupReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/BorTxnLookup");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/BorTxnLookup",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "BorTxnLookup"));
@@ -984,11 +1187,18 @@ pub mod ethbackend_client {
             &mut self,
             request: impl tonic::IntoRequest<super::BorEventsRequest>,
         ) -> std::result::Result<tonic::Response<super::BorEventsReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/BorEvents");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/BorEvents",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "BorEvents"));
@@ -997,12 +1207,22 @@ pub mod ethbackend_client {
         pub async fn aa_validation(
             &mut self,
             request: impl tonic::IntoRequest<super::AaValidationRequest>,
-        ) -> std::result::Result<tonic::Response<super::AaValidationReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::AaValidationReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/AAValidation");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/AAValidation",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "AAValidation"));
@@ -1011,13 +1231,22 @@ pub mod ethbackend_client {
         pub async fn block_for_tx_num(
             &mut self,
             request: impl tonic::IntoRequest<super::BlockForTxNumRequest>,
-        ) -> std::result::Result<tonic::Response<super::BlockForTxNumResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::BlockForTxNumResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/BlockForTxNum");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/BlockForTxNum",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.ETHBACKEND", "BlockForTxNum"));
@@ -1026,19 +1255,25 @@ pub mod ethbackend_client {
         pub async fn minimum_block_available(
             &mut self,
             request: impl tonic::IntoRequest<()>,
-        ) -> std::result::Result<tonic::Response<super::MinimumBlockAvailableReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::MinimumBlockAvailableReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/remote.ETHBACKEND/MinimumBlockAvailable");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.ETHBACKEND/MinimumBlockAvailable",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "remote.ETHBACKEND",
-                "MinimumBlockAvailable",
-            ));
+            req.extensions_mut()
+                .insert(GrpcMethod::new("remote.ETHBACKEND", "MinimumBlockAvailable"));
             self.inner.unary(req, path, codec).await
         }
     }
@@ -1557,10 +1792,10 @@ pub mod kv_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value
+        clippy::let_unit_value,
     )]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     /// Provides methods to access key-value data
     #[derive(Debug, Clone)]
     pub struct KvClient<T> {
@@ -1592,7 +1827,10 @@ pub mod kv_client {
             let inner = tonic::client::Grpc::with_origin(inner, origin);
             Self { inner }
         }
-        pub fn with_interceptor<F>(inner: T, interceptor: F) -> KvClient<InterceptedService<T, F>>
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> KvClient<InterceptedService<T, F>>
         where
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
@@ -1602,8 +1840,9 @@ pub mod kv_client {
                     <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
-                Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             KvClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -1642,16 +1881,22 @@ pub mod kv_client {
         pub async fn version(
             &mut self,
             request: impl tonic::IntoRequest<()>,
-        ) -> std::result::Result<tonic::Response<super::super::types::VersionReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::super::types::VersionReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/Version");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "Version"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "Version"));
             self.inner.unary(req, path, codec).await
         }
         /// Tx exposes read-only transactions for the key-value store
@@ -1662,16 +1907,22 @@ pub mod kv_client {
         pub async fn tx(
             &mut self,
             request: impl tonic::IntoStreamingRequest<Message = super::Cursor>,
-        ) -> std::result::Result<tonic::Response<tonic::codec::Streaming<super::Pair>>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::Pair>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/Tx");
             let mut req = request.into_streaming_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "Tx"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "Tx"));
             self.inner.streaming(req, path, codec).await
         }
         pub async fn state_changes(
@@ -1681,14 +1932,18 @@ pub mod kv_client {
             tonic::Response<tonic::codec::Streaming<super::StateChangeBatch>>,
             tonic::Status,
         > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/StateChanges");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "StateChanges"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "StateChanges"));
             self.inner.server_streaming(req, path, codec).await
         }
         /// Snapshots returns list of current snapshot files. Then client can just open all of them.
@@ -1696,14 +1951,18 @@ pub mod kv_client {
             &mut self,
             request: impl tonic::IntoRequest<super::SnapshotsRequest>,
         ) -> std::result::Result<tonic::Response<super::SnapshotsReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/Snapshots");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "Snapshots"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "Snapshots"));
             self.inner.unary(req, path, codec).await
         }
         /// Range [from, to)
@@ -1714,28 +1973,36 @@ pub mod kv_client {
             &mut self,
             request: impl tonic::IntoRequest<super::RangeReq>,
         ) -> std::result::Result<tonic::Response<super::Pairs>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/Range");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "Range"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "Range"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn sequence(
             &mut self,
             request: impl tonic::IntoRequest<super::SequenceReq>,
         ) -> std::result::Result<tonic::Response<super::SequenceReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/Sequence");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "Sequence"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "Sequence"));
             self.inner.unary(req, path, codec).await
         }
         /// Temporal methods
@@ -1743,96 +2010,135 @@ pub mod kv_client {
             &mut self,
             request: impl tonic::IntoRequest<super::GetLatestReq>,
         ) -> std::result::Result<tonic::Response<super::GetLatestReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/GetLatest");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "GetLatest"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "GetLatest"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn history_seek(
             &mut self,
             request: impl tonic::IntoRequest<super::HistorySeekReq>,
-        ) -> std::result::Result<tonic::Response<super::HistorySeekReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::HistorySeekReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/HistorySeek");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "HistorySeek"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "HistorySeek"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn index_range(
             &mut self,
             request: impl tonic::IntoRequest<super::IndexRangeReq>,
-        ) -> std::result::Result<tonic::Response<super::IndexRangeReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::IndexRangeReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/IndexRange");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "IndexRange"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "IndexRange"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn history_range(
             &mut self,
             request: impl tonic::IntoRequest<super::HistoryRangeReq>,
         ) -> std::result::Result<tonic::Response<super::Pairs>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/HistoryRange");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "HistoryRange"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "HistoryRange"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn range_as_of(
             &mut self,
             request: impl tonic::IntoRequest<super::RangeAsOfReq>,
         ) -> std::result::Result<tonic::Response<super::Pairs>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/RangeAsOf");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "RangeAsOf"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "RangeAsOf"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn has_prefix(
             &mut self,
             request: impl tonic::IntoRequest<super::HasPrefixReq>,
         ) -> std::result::Result<tonic::Response<super::HasPrefixReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/HasPrefix");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "HasPrefix"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "HasPrefix"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn history_start_from(
             &mut self,
             request: impl tonic::IntoRequest<super::HistoryStartFromReq>,
-        ) -> std::result::Result<tonic::Response<super::HistoryStartFromReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::HistoryStartFromReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.KV/HistoryStartFrom");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.KV/HistoryStartFrom",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.KV", "HistoryStartFrom"));
@@ -1841,13 +2147,22 @@ pub mod kv_client {
         pub async fn current_domain_version(
             &mut self,
             request: impl tonic::IntoRequest<super::CurrentDomainVersionReq>,
-        ) -> std::result::Result<tonic::Response<super::CurrentDomainVersionReply>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::CurrentDomainVersionReply>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/remote.KV/CurrentDomainVersion");
+            let path = http::uri::PathAndQuery::from_static(
+                "/remote.KV/CurrentDomainVersion",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("remote.KV", "CurrentDomainVersion"));
@@ -1857,14 +2172,18 @@ pub mod kv_client {
             &mut self,
             request: impl tonic::IntoRequest<super::StepSizeReq>,
         ) -> std::result::Result<tonic::Response<super::StepSizeReply>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static("/remote.KV/StepSize");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("remote.KV", "StepSize"));
+            req.extensions_mut().insert(GrpcMethod::new("remote.KV", "StepSize"));
             self.inner.unary(req, path, codec).await
         }
     }
