@@ -9,3 +9,4 @@ commit-changes.sh
 *config.yaml
 cargo-build.log
 heaptrack.*.zst
+context-snapshot.yaml
