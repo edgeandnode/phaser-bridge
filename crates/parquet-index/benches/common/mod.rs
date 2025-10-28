@@ -31,7 +31,7 @@ impl TestTransaction {
         let from = make_address(address_byte);
 
         // 20% contract creations (to=None)
-        let to = if i % 5 == 0 {
+        let to = if i.is_multiple_of(5) {
             None
         } else {
             Some(make_address(address_byte + 100))
