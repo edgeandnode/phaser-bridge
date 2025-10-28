@@ -360,6 +360,7 @@ impl SyncServer {
                         parquet_config.clone(),
                         validation_stage,
                         work.clone(),
+                        historical_boundary,
                     )
                     .with_progress_tracker(progress_tracker.clone());
 
