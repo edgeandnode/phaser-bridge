@@ -1939,6 +1939,7 @@ dependencies = [
 [[package]]
 name = "core-executor"
 version = "0.1.0"
+source = "git+https://github.com/dwerner/core-executor?rev=376f2c62abbaceafef639fa24ab82199a0ce8cfe#376f2c62abbaceafef639fa24ab82199a0ce8cfe"
 dependencies = [
  "async-channel 1.9.0",
  "async-executor",
@@ -1948,7 +1949,7 @@ dependencies = [
  "futures-util",
  "hwlocality",
  "thiserror 1.0.69",
- "wat-cpu 0.1.0",
+ "wat-cpu 0.1.0 (git+https://github.com/dwerner/core-executor?rev=376f2c62abbaceafef639fa24ab82199a0ce8cfe)",
 ]
 
 [[package]]
@@ -4295,7 +4296,7 @@ dependencies = [
  "bincode",
  "chrono",
  "clap",
- "core-executor 0.1.0",
+ "core-executor 0.1.0 (git+https://github.com/dwerner/core-executor?rev=376f2c62abbaceafef639fa24ab82199a0ce8cfe)",
  "erigon-bridge",
  "evm-common",
  "futures",
@@ -6357,6 +6358,7 @@ dependencies = [
 [[package]]
 name = "wat-cpu"
 version = "0.1.0"
+source = "git+https://github.com/dwerner/core-executor?rev=376f2c62abbaceafef639fa24ab82199a0ce8cfe#376f2c62abbaceafef639fa24ab82199a0ce8cfe"
 dependencies = [
  "libc",
  "winapi",
