@@ -114,22 +114,11 @@ pub fn set_worker_stage(worker_id: usize, segment_id: u64, stage: WorkerStage) {
         WorkerStage::Idle => ("idle", 0),
         WorkerStage::Blocks => ("blocks", 1),
         WorkerStage::Transactions => ("transactions", 2),
-        WorkerStage::Logs => ("logs", 3),
     };
 
     WORKER_STAGE
         .with_label_values(&[&worker_label, &segment_label, stage_name])
         .set(stage_value);
-}
-
-/// Helper to increment workers active count
-pub fn inc_workers_active(phase: &str) {
-    WORKERS_ACTIVE.with_label_values(&[phase]).inc();
-}
-
-/// Helper to decrement workers active count
-pub fn dec_workers_active(phase: &str) {
-    WORKERS_ACTIVE.with_label_values(&[phase]).dec();
 }
 
 /// Helper to set worker progress
@@ -151,7 +140,6 @@ pub enum WorkerStage {
     Idle,
     Blocks,
     Transactions,
-    Logs,
 }
 
 /// Get metrics in Prometheus text format

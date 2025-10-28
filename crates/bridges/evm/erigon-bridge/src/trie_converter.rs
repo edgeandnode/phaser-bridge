@@ -1,6 +1,6 @@
 /// Converter for trie data from protobuf to Arrow format
 use crate::error::ErigonBridgeError;
-use crate::proto::custom::{CommitmentNode, CommitmentNodeBatch};
+use crate::proto::custom::CommitmentNodeBatch;
 use arrow_array::RecordBatch;
 use evm_common::trie::TrieNodeRecord;
 use evm_common::types::Hash32;
@@ -52,27 +52,10 @@ pub fn convert_trie_batch(batch: CommitmentNodeBatch) -> Result<RecordBatch, Eri
     Ok(arrays.into_record_batch())
 }
 
-/// Convert a single commitment node (for testing/debugging)
-pub fn convert_single_node(node: CommitmentNode) -> Result<TrieNodeRecord, ErigonBridgeError> {
-    if node.hash.len() != 32 {
-        return Err(ErigonBridgeError::InvalidData(format!(
-            "Invalid hash length: expected 32, got {}",
-            node.hash.len()
-        )));
-    }
-
-    let hash = Hash32 {
-        bytes: node.hash.as_slice().try_into().map_err(|_| {
-            ErigonBridgeError::InvalidData("Failed to convert hash to [u8; 32]".into())
-        })?,
-    };
-
-    Ok(TrieNodeRecord::new(hash, node.raw_value, node.step))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::custom::CommitmentNode;
 
     #[test]
     fn test_convert_empty_batch() {

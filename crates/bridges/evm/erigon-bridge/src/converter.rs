@@ -234,15 +234,6 @@ impl ErigonDataConverter {
         Ok(arrays.into_record_batch())
     }
 
-    /// Convert transactions from a block to RecordBatch using typed-arrow
-    fn convert_transactions_to_batch(
-        block: &EthBlock,
-        senders_bytes: &[u8],
-    ) -> Result<RecordBatch> {
-        let block_hash = block.header.hash_slow();
-        Self::convert_transactions_to_batch_with_hash(block, senders_bytes, block_hash)
-    }
-
     /// Convert transactions from a block to RecordBatch with pre-computed hash
     fn convert_transactions_to_batch_with_hash(
         block: &EthBlock,
