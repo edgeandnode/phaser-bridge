@@ -24,7 +24,6 @@ pub struct JsonRpcFlightBridge {
     client: Arc<JsonRpcClient>,
     chain_id: u64,
     streaming_service: Arc<StreamingService>,
-    node_url: String,
     max_batch_size: usize,
     validator: Option<Arc<dyn ValidationExecutor>>,
 }
@@ -74,7 +73,6 @@ impl JsonRpcFlightBridge {
             client,
             chain_id,
             streaming_service,
-            node_url,
             max_batch_size: 1000, // Default batch size, matches BridgeCapabilities
             validator,
         })
@@ -109,26 +107,26 @@ impl JsonRpcFlightBridge {
     /// Parse a FlightDescriptor to extract the BlockchainDescriptor
     fn parse_descriptor(
         descriptor: &FlightDescriptor,
-    ) -> std::result::Result<phaser_bridge::descriptors::BlockchainDescriptor, Status> {
+    ) -> std::result::Result<phaser_bridge::descriptors::BlockchainDescriptor, Box<Status>> {
         if let Some(first) = descriptor.path.first() {
             serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first)
-                .map_err(|e| Status::invalid_argument(format!("Invalid descriptor: {}", e)))
+                .map_err(|e| Box::new(Status::invalid_argument(format!("Invalid descriptor: {}", e))))
         } else {
-            Err(Status::invalid_argument("Empty descriptor path"))
+            Err(Box::new(Status::invalid_argument("Empty descriptor path")))
         }
     }
 
     /// Get the Arrow schema for a given stream type
     fn get_schema_for_type(
         stream_type: StreamType,
-    ) -> Result<Arc<arrow::datatypes::Schema>, Status> {
+    ) -> Result<Arc<arrow::datatypes::Schema>, Box<Status>> {
         match stream_type {
             StreamType::Blocks => Ok(JsonRpcConverter::block_schema()),
             StreamType::Transactions => Ok(JsonRpcConverter::transaction_schema()),
             StreamType::Logs => Ok(JsonRpcConverter::log_schema()),
-            StreamType::Trie => Err(Status::unimplemented(
+            StreamType::Trie => Err(Box::new(Status::unimplemented(
                 "Trie streaming not supported via JSON-RPC",
-            )),
+            ))),
         }
     }
 
@@ -365,9 +363,9 @@ impl FlightBridge for JsonRpcFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<FlightInfo>, Status> {
         let descriptor = request.into_inner();
-        let blockchain_desc = Self::parse_descriptor(&descriptor)?;
+        let blockchain_desc = Self::parse_descriptor(&descriptor).map_err(|e| *e)?;
 
-        let info = create_flight_info(blockchain_desc.stream_type)?;
+        let info = create_flight_info(blockchain_desc.stream_type).map_err(|e| *e)?;
 
         Ok(Response::new(info))
     }
@@ -377,8 +375,8 @@ impl FlightBridge for JsonRpcFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<SchemaResult>, Status> {
         let descriptor = request.into_inner();
-        let blockchain_desc = Self::parse_descriptor(&descriptor)?;
-        let schema = Self::get_schema_for_type(blockchain_desc.stream_type)?;
+        let blockchain_desc = Self::parse_descriptor(&descriptor).map_err(|e| *e)?;
+        let schema = Self::get_schema_for_type(blockchain_desc.stream_type).map_err(|e| *e)?;
 
         // Convert Arrow schema to IPC format for Flight
         let ipc_message = {
@@ -432,7 +430,7 @@ impl FlightBridge for JsonRpcFlightBridge {
         );
 
         // Get schema for the stream type
-        let schema = Self::get_schema_for_type(stream_type)?;
+        let schema = Self::get_schema_for_type(stream_type).map_err(|e| *e)?;
 
         // Determine if we should do conversion validation
         // JSON-RPC doesn't give us raw RLP, so we can only do conversion validation
@@ -540,7 +538,7 @@ impl FlightBridge for JsonRpcFlightBridge {
             }
         };
 
-        let schema = Self::get_schema_for_type(stream_type)?;
+        let schema = Self::get_schema_for_type(stream_type).map_err(|e| *e)?;
 
         // Create a stream of RecordBatches from the receiver
         let batch_stream = async_stream::stream! {
@@ -654,8 +652,8 @@ impl FlightService for JsonRpcFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<SchemaResult>, Status> {
         let descriptor = request.into_inner();
-        let stream_type = Self::parse_descriptor(&descriptor)?;
-        let schema = Self::get_schema_for_type(stream_type.stream_type)?;
+        let stream_type = Self::parse_descriptor(&descriptor).map_err(|e| *e)?;
+        let schema = Self::get_schema_for_type(stream_type.stream_type).map_err(|e| *e)?;
 
         // Convert Schema to IPC format
         let options = arrow::ipc::writer::IpcWriteOptions::default();
@@ -680,7 +678,7 @@ impl FlightService for JsonRpcFlightBridge {
     }
 }
 
-fn create_flight_info(stream_type: StreamType) -> Result<FlightInfo, Status> {
+fn create_flight_info(stream_type: StreamType) -> Result<FlightInfo, Box<Status>> {
     let schema = JsonRpcFlightBridge::get_schema_for_type(stream_type)?;
 
     // For discovery, use the stream type as a simple string descriptor

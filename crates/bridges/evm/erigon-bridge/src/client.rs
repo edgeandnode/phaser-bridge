@@ -6,9 +6,9 @@ use crate::proto::remote::{LogsFilterRequest, SubscribeLogsReply, SyncingReply};
 use crate::proto::{BlockReply, BlockRequest, EthbackendClient, Event, SubscribeRequest};
 
 /// Client for connecting to Erigon's gRPC interface
+#[derive(Clone)]
 pub struct ErigonClient {
     client: EthbackendClient<Channel>,
-    endpoint: String,
 }
 
 impl ErigonClient {
@@ -90,7 +90,7 @@ impl ErigonClient {
             response.into_inner().node_name
         );
 
-        Ok(Self { client, endpoint })
+        Ok(Self { client })
     }
 
     /// Get the current syncing status
@@ -281,13 +281,5 @@ impl ErigonClient {
         );
 
         Ok(block)
-    }
-
-    /// Clone the client (for moving into async tasks)
-    pub fn clone(&self) -> ErigonClient {
-        ErigonClient {
-            client: self.client.clone(),
-            endpoint: self.endpoint.clone(),
-        }
     }
 }

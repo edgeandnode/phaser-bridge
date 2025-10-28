@@ -1,5 +1,5 @@
 use alloy::network::AnyRpcBlock;
-use alloy_rpc_types_eth::{Header as RpcHeader, Log};
+use alloy_rpc_types_eth::Log;
 use anyhow::Result;
 use arrow::datatypes::Schema;
 use arrow_array::RecordBatch;

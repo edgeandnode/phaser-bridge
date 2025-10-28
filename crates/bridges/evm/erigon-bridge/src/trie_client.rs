@@ -1,8 +1,8 @@
 /// Client for Erigon's custom TrieBackend service
 use crate::error::ErigonBridgeError;
 use crate::proto::custom::{
-    trie_backend_client::TrieBackendClient, CommitmentNodeBatch, GetNodesByHashReply,
-    GetNodesByHashRequest, GetStateRootReply, GetStateRootRequest, StreamCommitmentRequest,
+    trie_backend_client::TrieBackendClient, CommitmentNodeBatch,
+    GetStateRootReply, GetStateRootRequest, StreamCommitmentRequest,
 };
 use tonic::transport::Channel;
 use tonic::Streaming;
@@ -113,29 +113,6 @@ impl TrieClient {
 
         let response = self.client.stream_commitment_nodes(request).await?;
         Ok(response.into_inner())
-    }
-
-    /// Get specific nodes by their hashes
-    pub async fn get_nodes_by_hash(
-        &mut self,
-        hashes: Vec<Vec<u8>>,
-        as_of_step: Option<u64>,
-    ) -> Result<GetNodesByHashReply, ErigonBridgeError> {
-        let request = GetNodesByHashRequest {
-            hashes,
-            as_of_step: as_of_step.unwrap_or(0),
-        };
-
-        debug!("Requesting {} specific nodes by hash", request.hashes.len());
-
-        let response = self.client.get_nodes_by_hash(request).await?;
-        let reply = response.into_inner();
-
-        if !reply.missing_hashes.is_empty() {
-            warn!("{} nodes were not found", reply.missing_hashes.len());
-        }
-
-        Ok(reply)
     }
 
     /// Test if the TrieBackend service is available
