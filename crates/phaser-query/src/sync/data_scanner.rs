@@ -635,12 +635,16 @@ impl DataScanner {
                 continue;
             }
 
-            // Determine data type from filename
-            let data_type = if filename_str.starts_with("blocks_") {
+            // Determine data type from filename (handle both historical and live_ prefixed files)
+            let data_type = if filename_str.starts_with("blocks_")
+                || filename_str.starts_with("live_blocks_")
+            {
                 "blocks"
-            } else if filename_str.starts_with("transactions_") {
+            } else if filename_str.starts_with("transactions_")
+                || filename_str.starts_with("live_transactions_")
+            {
                 "transactions"
-            } else if filename_str.starts_with("logs_") {
+            } else if filename_str.starts_with("logs_") || filename_str.starts_with("live_logs_") {
                 "logs"
             } else {
                 continue; // Unknown file type
@@ -1262,17 +1266,21 @@ impl DataScanner {
                 entry.metadata()?.len()
             };
 
-            // Categorize by type
-            if filename_str.starts_with("blocks_") {
+            // Categorize by type (handle both historical and live_ prefixed files)
+            if filename_str.starts_with("blocks_") || filename_str.starts_with("live_blocks_") {
                 stats.blocks_files += 1;
                 stats.blocks_disk_bytes += size;
-            } else if filename_str.starts_with("transactions_") {
+            } else if filename_str.starts_with("transactions_")
+                || filename_str.starts_with("live_transactions_")
+            {
                 stats.transactions_files += 1;
                 stats.transactions_disk_bytes += size;
-            } else if filename_str.starts_with("logs_") {
+            } else if filename_str.starts_with("logs_") || filename_str.starts_with("live_logs_") {
                 stats.logs_files += 1;
                 stats.logs_disk_bytes += size;
-            } else if filename_str.starts_with("proofs_") {
+            } else if filename_str.starts_with("proofs_")
+                || filename_str.starts_with("live_proofs_")
+            {
                 stats.proofs_files += 1;
                 stats.proofs_disk_bytes += size;
             }

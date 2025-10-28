@@ -75,12 +75,31 @@ impl SyncWorker {
         parquet_config: Option<ParquetConfig>,
         validation_stage: ValidationStage,
         segment_work: crate::sync::data_scanner::SegmentWork,
+        historical_boundary: Option<u64>,
     ) -> Self {
+        // Cap to_block at historical boundary if present
+        // This prevents syncing blocks that don't exist yet when near chain tip
+        let (effective_to_block, is_truncated) = if let Some(boundary) = historical_boundary {
+            // Don't sync past the block before live streaming starts
+            let boundary_limit = boundary.saturating_sub(1);
+            if to_block > boundary_limit {
+                info!(
+                    "Worker {} capping segment range {}-{} at historical boundary {} (truncated)",
+                    worker_id, from_block, to_block, boundary_limit
+                );
+                (boundary_limit, true)
+            } else {
+                (to_block, false)
+            }
+        } else {
+            (to_block, false)
+        };
+
         // Initialize progress state
         let current_progress = Arc::new(RwLock::new(WorkerProgress {
             worker_id,
             from_block,
-            to_block,
+            to_block: effective_to_block,
             current_phase: "initializing".to_string(),
             blocks_completed: false,
             transactions_completed: false,
@@ -97,7 +116,7 @@ impl SyncWorker {
             bridge_endpoint,
             data_dir,
             from_block,
-            to_block,
+            to_block: effective_to_block,
             segment_size,
             max_file_size_mb,
             _batch_size: batch_size,
@@ -354,15 +373,21 @@ impl SyncWorker {
                 .dec();
         });
 
-        let mut writer = ParquetWriter::with_config(
+        let mut writer = ParquetWriter::with_config_and_mode(
             self.data_dir.clone(),
             self.max_file_size_mb,
             self.segment_size,
             "blocks".to_string(),
             self.parquet_config.clone(),
+            false, // historical sync worker
         )?;
-        // Use segment boundaries for metadata, not gap boundaries
-        writer.set_block_range(self.from_block, self.to_block);
+
+        // Calculate segment boundaries (logical 500K segments)
+        let segment_start = (self.from_block / self.segment_size) * self.segment_size;
+        let segment_end = segment_start + self.segment_size - 1;
+
+        // Set both segment range (for filename) and responsibility range (for metadata)
+        writer.set_ranges(segment_start, segment_end, self.from_block, self.to_block);
 
         // Retry with resume logic
         const INITIAL_BACKOFF_SECS: u64 = 1;
@@ -577,15 +602,21 @@ impl SyncWorker {
                 .dec();
         });
 
-        let mut writer = ParquetWriter::with_config(
+        let mut writer = ParquetWriter::with_config_and_mode(
             self.data_dir.clone(),
             self.max_file_size_mb,
             self.segment_size,
             "transactions".to_string(),
             self.parquet_config.clone(),
+            false, // historical sync worker
         )?;
-        // Use segment boundaries for metadata, not gap boundaries
-        writer.set_block_range(self.from_block, self.to_block);
+
+        // Calculate segment boundaries (logical 500K segments)
+        let segment_start = (self.from_block / self.segment_size) * self.segment_size;
+        let segment_end = segment_start + self.segment_size - 1;
+
+        // Set both segment range (for filename) and responsibility range (for metadata)
+        writer.set_ranges(segment_start, segment_end, self.from_block, self.to_block);
 
         // Check if proof generation is enabled
         let generate_proofs = self
@@ -599,15 +630,21 @@ impl SyncWorker {
                 "Worker {} will generate merkle proofs for transactions",
                 self.worker_id
             );
-            let mut pw = ParquetWriter::with_config(
+            let mut pw = ParquetWriter::with_config_and_mode(
                 self.data_dir.clone(),
                 self.max_file_size_mb,
                 self.segment_size,
                 "proofs".to_string(),
                 self.parquet_config.clone(),
+                false, // historical sync worker
             )?;
-            // Use segment boundaries for metadata, not gap boundaries
-            pw.set_block_range(self.from_block, self.to_block);
+
+            // Calculate segment boundaries (logical 500K segments)
+            let segment_start = (self.from_block / self.segment_size) * self.segment_size;
+            let segment_end = segment_start + self.segment_size - 1;
+
+            // Set both segment range (for filename) and responsibility range (for metadata)
+            pw.set_ranges(segment_start, segment_end, self.from_block, self.to_block);
             Some(pw)
         } else {
             None
@@ -917,15 +954,21 @@ impl SyncWorker {
                 .dec();
         });
 
-        let mut writer = ParquetWriter::with_config(
+        let mut writer = ParquetWriter::with_config_and_mode(
             self.data_dir.clone(),
             self.max_file_size_mb,
             self.segment_size,
             "logs".to_string(),
             self.parquet_config.clone(),
+            false, // historical sync worker
         )?;
-        // Use segment boundaries for metadata, not gap boundaries
-        writer.set_block_range(self.from_block, self.to_block);
+
+        // Calculate segment boundaries (logical 500K segments)
+        let segment_start = (self.from_block / self.segment_size) * self.segment_size;
+        let segment_end = segment_start + self.segment_size - 1;
+
+        // Set both segment range (for filename) and responsibility range (for metadata)
+        writer.set_ranges(segment_start, segment_end, self.from_block, self.to_block);
 
         // Retry with resume logic
         const INITIAL_BACKOFF_SECS: u64 = 1;
