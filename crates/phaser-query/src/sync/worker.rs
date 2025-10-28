@@ -45,6 +45,31 @@ pub struct WorkerProgress {
 
 pub type ProgressTracker = Arc<RwLock<HashMap<u32, WorkerProgress>>>;
 
+/// Progress update data for tracking worker state
+pub struct ProgressUpdate {
+    pub phase: String,
+    pub blocks_done: bool,
+    pub txs_done: bool,
+    pub logs_done: bool,
+    pub current_block: u64,
+    pub blocks_processed: u64,
+    pub bytes_written: u64,
+    pub files_created: u32,
+}
+
+/// Configuration for creating a SyncWorker
+pub struct SyncWorkerConfig {
+    pub bridge_endpoint: String,
+    pub data_dir: PathBuf,
+    pub from_block: u64,
+    pub to_block: u64,
+    pub segment_size: u64,
+    pub max_file_size_mb: u64,
+    pub batch_size: u32,
+    pub parquet_config: Option<ParquetConfig>,
+    pub validation_stage: ValidationStage,
+}
+
 /// A worker that syncs a specific block range from erigon-bridge
 pub struct SyncWorker {
     worker_id: u32,
@@ -65,47 +90,39 @@ pub struct SyncWorker {
 impl SyncWorker {
     pub fn new(
         worker_id: u32,
-        bridge_endpoint: String,
-        data_dir: PathBuf,
-        from_block: u64,
-        to_block: u64,
-        segment_size: u64,
-        max_file_size_mb: u64,
-        batch_size: u32,
-        parquet_config: Option<ParquetConfig>,
-        validation_stage: ValidationStage,
+        config: SyncWorkerConfig,
         segment_work: crate::sync::data_scanner::SegmentWork,
         historical_boundary: Option<u64>,
     ) -> Self {
         // Cap to_block at historical boundary if present
         // This prevents syncing blocks that don't exist yet when near chain tip
-        let (effective_to_block, is_truncated) = if let Some(boundary) = historical_boundary {
+        let (effective_to_block, _is_truncated) = if let Some(boundary) = historical_boundary {
             // Don't sync past the block before live streaming starts
             let boundary_limit = boundary.saturating_sub(1);
-            if to_block > boundary_limit {
+            if config.to_block > boundary_limit {
                 info!(
                     "Worker {} capping segment range {}-{} at historical boundary {} (truncated)",
-                    worker_id, from_block, to_block, boundary_limit
+                    worker_id, config.from_block, config.to_block, boundary_limit
                 );
                 (boundary_limit, true)
             } else {
-                (to_block, false)
+                (config.to_block, false)
             }
         } else {
-            (to_block, false)
+            (config.to_block, false)
         };
 
         // Initialize progress state
         let current_progress = Arc::new(RwLock::new(WorkerProgress {
             worker_id,
-            from_block,
+            from_block: config.from_block,
             to_block: effective_to_block,
             current_phase: "initializing".to_string(),
             blocks_completed: false,
             transactions_completed: false,
             logs_completed: false,
             started_at: std::time::SystemTime::now(),
-            current_block: from_block,
+            current_block: config.from_block,
             blocks_processed: 0,
             bytes_written: 0,
             files_created: 0,
@@ -113,16 +130,16 @@ impl SyncWorker {
 
         Self {
             worker_id,
-            bridge_endpoint,
-            data_dir,
-            from_block,
+            bridge_endpoint: config.bridge_endpoint,
+            data_dir: config.data_dir,
+            from_block: config.from_block,
             to_block: effective_to_block,
-            segment_size,
-            max_file_size_mb,
-            _batch_size: batch_size,
-            parquet_config,
+            segment_size: config.segment_size,
+            max_file_size_mb: config.max_file_size_mb,
+            _batch_size: config.batch_size,
+            parquet_config: config.parquet_config,
             progress_tracker: None,
-            validation_stage,
+            validation_stage: config.validation_stage,
             segment_work,
             current_progress,
         }
@@ -167,17 +184,7 @@ impl SyncWorker {
         progress.current_phase = stage.to_string();
     }
 
-    async fn update_progress(
-        &self,
-        phase: &str,
-        blocks_done: bool,
-        txs_done: bool,
-        logs_done: bool,
-        current_block: u64,
-        blocks_processed: u64,
-        bytes_written: u64,
-        files_created: u32,
-    ) {
+    async fn update_progress(&self, update: ProgressUpdate) {
         if let Some(tracker) = &self.progress_tracker {
             let mut tracker_lock = tracker.write().await;
 
@@ -193,15 +200,15 @@ impl SyncWorker {
                     worker_id: self.worker_id,
                     from_block: self.from_block,
                     to_block: self.to_block,
-                    current_phase: phase.to_string(),
-                    blocks_completed: blocks_done,
-                    transactions_completed: txs_done,
-                    logs_completed: logs_done,
+                    current_phase: update.phase,
+                    blocks_completed: update.blocks_done,
+                    transactions_completed: update.txs_done,
+                    logs_completed: update.logs_done,
                     started_at,
-                    current_block,
-                    blocks_processed,
-                    bytes_written,
-                    files_created,
+                    current_block: update.current_block,
+                    blocks_processed: update.blocks_processed,
+                    bytes_written: update.bytes_written,
+                    files_created: update.files_created,
                 },
             );
         }
@@ -231,16 +238,16 @@ impl SyncWorker {
         );
 
         // Initialize progress
-        self.update_progress(
-            "connecting",
-            blocks_complete,
-            txs_complete,
-            logs_complete,
-            self.from_block,
-            0,
-            0,
-            0,
-        )
+        self.update_progress(ProgressUpdate {
+            phase: "connecting".to_string(),
+            blocks_done: blocks_complete,
+            txs_done: txs_complete,
+            logs_done: logs_complete,
+            current_block: self.from_block,
+            blocks_processed: 0,
+            bytes_written: 0,
+            files_created: 0,
+        })
         .await;
 
         // Connect to bridge via Arrow Flight
@@ -257,16 +264,16 @@ impl SyncWorker {
         // Sync missing blocks ranges
         if !blocks_complete {
             self.update_stage("blocks").await;
-            self.update_progress(
-                "blocks",
-                false,
-                txs_complete,
-                logs_complete,
-                self.from_block,
-                total_batches,
-                total_bytes,
+            self.update_progress(ProgressUpdate {
+                phase: "blocks".to_string(),
+                blocks_done: false,
+                txs_done: txs_complete,
+                logs_done: logs_complete,
+                current_block: self.from_block,
+                blocks_processed: total_batches,
+                bytes_written: total_bytes,
                 files_created,
-            )
+            })
             .await;
 
             for range in &missing_blocks {
@@ -286,16 +293,16 @@ impl SyncWorker {
         // Sync missing transaction ranges
         if !txs_complete {
             self.update_stage("transactions").await;
-            self.update_progress(
-                "transactions",
-                true,
-                false,
-                logs_complete,
-                self.to_block,
-                total_batches,
-                total_bytes,
+            self.update_progress(ProgressUpdate {
+                phase: "transactions".to_string(),
+                blocks_done: true,
+                txs_done: false,
+                logs_done: logs_complete,
+                current_block: self.to_block,
+                blocks_processed: total_batches,
+                bytes_written: total_bytes,
                 files_created,
-            )
+            })
             .await;
 
             for range in &missing_txs {
@@ -315,16 +322,16 @@ impl SyncWorker {
         // Sync missing log ranges
         if !logs_complete {
             self.update_stage("logs").await;
-            self.update_progress(
-                "logs",
-                true,
-                true,
-                false,
-                self.to_block,
-                total_batches,
-                total_bytes,
+            self.update_progress(ProgressUpdate {
+                phase: "logs".to_string(),
+                blocks_done: true,
+                txs_done: true,
+                logs_done: false,
+                current_block: self.to_block,
+                blocks_processed: total_batches,
+                bytes_written: total_bytes,
                 files_created,
-            )
+            })
             .await;
 
             for range in &missing_logs {
@@ -341,16 +348,16 @@ impl SyncWorker {
             }
         }
 
-        self.update_progress(
-            "completed",
-            true,
-            true,
-            true,
-            self.to_block,
-            total_batches,
-            total_bytes,
+        self.update_progress(ProgressUpdate {
+            phase: "completed".to_string(),
+            blocks_done: true,
+            txs_done: true,
+            logs_done: true,
+            current_block: self.to_block,
+            blocks_processed: total_batches,
+            bytes_written: total_bytes,
             files_created,
-        )
+        })
         .await;
 
         info!("Worker {} completed sync successfully", self.worker_id);
@@ -745,7 +752,7 @@ impl SyncWorker {
         to_block: u64,
         writer: &mut ParquetWriter,
         proof_writer: &mut Option<ParquetWriter>,
-        original_from: u64,
+        _original_from: u64,
     ) -> Result<(u64, u64)> {
         // Create historical query descriptor for transactions with configured validation stage
         use phaser_bridge::descriptors::StreamPreferences;
@@ -1057,7 +1064,7 @@ impl SyncWorker {
         from_block: u64,
         to_block: u64,
         writer: &mut ParquetWriter,
-        original_from: u64,
+        _original_from: u64,
     ) -> Result<(u64, u64)> {
         // Create historical query descriptor for logs with configured validation stage
         use phaser_bridge::descriptors::StreamPreferences;
