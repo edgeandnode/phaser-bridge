@@ -27,10 +27,13 @@ pub struct PhaserMetadata {
     pub data_end: u64,
     /// Data type: "blocks", "transactions", or "logs"
     pub data_type: String,
+    /// True if written by live streaming worker, false if written by historical sync worker (added in version 2)
+    #[serde(default)]
+    pub is_live: bool,
 }
 
 impl PhaserMetadata {
-    pub const VERSION: u8 = 1;
+    pub const VERSION: u8 = 2;
 
     pub fn new(
         segment_start: u64,
@@ -50,7 +53,13 @@ impl PhaserMetadata {
             data_start,
             data_end,
             data_type,
+            is_live: false,
         }
+    }
+
+    pub fn with_is_live(mut self, is_live: bool) -> Self {
+        self.is_live = is_live;
+        self
     }
 
     /// Encode metadata to bytes using bincode
@@ -61,7 +70,9 @@ impl PhaserMetadata {
     /// Decode metadata from bytes using bincode
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let meta: Self = bincode::deserialize(bytes)?;
-        if meta.version != Self::VERSION {
+        // Support both version 1 (without is_live) and version 2 (with it)
+        // The #[serde(default)] on is_live handles missing field gracefully
+        if meta.version != 1 && meta.version != Self::VERSION {
             anyhow::bail!("Unsupported metadata version: {}", meta.version);
         }
         Ok(meta)
