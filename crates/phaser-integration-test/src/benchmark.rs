@@ -106,7 +106,7 @@ impl BenchmarkRunner {
                     .collect();
                 let tx_rlps: Vec<_> = tx_envelopes
                     .iter()
-                    .map(|tx| alloy_rlp::encode(tx))
+                    .map(alloy_rlp::encode)
                     .collect();
 
                 use alloy_primitives::keccak256;
@@ -116,7 +116,7 @@ impl BenchmarkRunner {
                 for (idx, tx_rlp) in tx_rlps.iter().enumerate() {
                     let key = alloy_rlp::encode(idx);
                     let key_hash = keccak256(&key);
-                    builder.add_leaf(Nibbles::unpack(&key_hash), tx_rlp);
+                    builder.add_leaf(Nibbles::unpack(key_hash), tx_rlp);
                 }
                 let _root = builder.root();
 
@@ -156,7 +156,7 @@ impl BenchmarkRunner {
 
 // Helper module for Duration serialization in milliseconds
 mod duration_ms {
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::Serializer;
     use std::time::Duration;
 
     pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
@@ -165,12 +165,5 @@ mod duration_ms {
     {
         let ms = duration.as_secs_f64() * 1000.0;
         serializer.serialize_f64(ms)
-    }
-
-    pub fn deserialize<'de, D>(_deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(Duration::from_secs(0))
     }
 }

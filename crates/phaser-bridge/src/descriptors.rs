@@ -15,8 +15,10 @@ pub enum StreamType {
 /// Compression options for data transfer (maps to gRPC compression)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Compression {
     /// No compression
+    #[default]
     None,
     /// Gzip compression (fast, good compression ratio)
     Gzip,
@@ -24,11 +26,6 @@ pub enum Compression {
     Zstd,
 }
 
-impl Default for Compression {
-    fn default() -> Self {
-        Compression::None
-    }
-}
 
 /// Stream preferences for negotiating transfer settings
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,8 +65,10 @@ impl Default for StreamPreferences {
 /// Validation stages for blockchain data
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ValidationStage {
     /// No validation
+    #[default]
     None,
     /// Validate RLP at ingestion (node → bridge)
     Ingestion,
@@ -79,11 +78,6 @@ pub enum ValidationStage {
     Both,
 }
 
-impl Default for ValidationStage {
-    fn default() -> Self {
-        ValidationStage::None
-    }
-}
 
 impl std::fmt::Display for StreamType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

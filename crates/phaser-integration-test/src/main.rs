@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tracing_subscriber;
 
 mod benchmark;
 mod loader;

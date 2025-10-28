@@ -11,9 +11,12 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// Type alias for storage key-value pairs
+type StorageData = HashMap<(String, Vec<u8>), Vec<u8>>;
+
 /// Simple in-memory storage for this example
 struct MemoryStorage {
-    data: Mutex<HashMap<(String, Vec<u8>), Vec<u8>>>,
+    data: Mutex<StorageData>,
 }
 
 impl MemoryStorage {

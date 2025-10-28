@@ -231,24 +231,22 @@ mod tests {
         use typed_arrow::prelude::*;
 
         // Create test data
-        let block_nums = vec![1000u64, 1000, 1001, 1001];
-        let tx_indices = vec![0u32, 1, 0, 1];
+        let block_nums = [1000u64, 1000, 1001, 1001];
+        let tx_indices = [0u32, 1, 0, 1];
 
-        let tx_hashes = vec![
-            Hash32 { bytes: [1u8; 32] },
+        let tx_hashes = [Hash32 { bytes: [1u8; 32] },
             Hash32 { bytes: [2u8; 32] },
             Hash32 { bytes: [3u8; 32] },
-            Hash32 { bytes: [4u8; 32] },
-        ];
+            Hash32 { bytes: [4u8; 32] }];
 
-        let from_addresses = vec![
+        let from_addresses = [
             Address20 { bytes: [10u8; 20] },
             Address20 { bytes: [10u8; 20] }, // Same address, different tx_index
             Address20 { bytes: [20u8; 20] },
             Address20 { bytes: [30u8; 20] },
         ];
 
-        let to_addresses = vec![
+        let to_addresses = [
             Some(Address20 { bytes: [100u8; 20] }),
             None, // Contract creation
             Some(Address20 { bytes: [200u8; 20] }),

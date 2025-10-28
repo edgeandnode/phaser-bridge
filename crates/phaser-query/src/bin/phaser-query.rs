@@ -7,7 +7,6 @@ use phaser_query::{
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{error, info, warn};
-use tracing_subscriber;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -285,7 +284,7 @@ async fn main() -> Result<()> {
 
 async fn start_streaming_service(
     config: PhaserConfig,
-    catalog: std::sync::Arc<phaser_query::catalog::RocksDbCatalog>,
+    _catalog: std::sync::Arc<phaser_query::catalog::RocksDbCatalog>,
     bridge: phaser_query::BridgeConfig,
     live_state: Arc<LiveStreamingState>,
 ) -> Result<()> {

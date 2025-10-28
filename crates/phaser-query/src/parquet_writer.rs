@@ -401,7 +401,7 @@ impl ParquetWriter {
             // Update Phaser metadata in the file footer
             if let Some((segment_start, segment_end)) = self.segment_range {
                 // Get responsibility range (defaults to segment range if not specified)
-                let (resp_start, resp_end) = self
+                let (_resp_start, resp_end) = self
                     .responsibility_range
                     .unwrap_or((segment_start, segment_end));
 
