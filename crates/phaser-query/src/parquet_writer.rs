@@ -364,11 +364,12 @@ impl ParquetWriter {
             if let Some((segment_start, segment_end)) = self.requested_range {
                 // For responsibility_end: use segment_end if we're at the end of the segment
                 // Check if current.end_block is at or beyond segment_end-1 (within last block of segment)
-                let responsibility_end = if current.end_block >= segment_end || current.end_block == segment_end - 1 {
-                    segment_end
-                } else {
-                    current.end_block
-                };
+                let responsibility_end =
+                    if current.end_block >= segment_end || current.end_block == segment_end - 1 {
+                        segment_end
+                    } else {
+                        current.end_block
+                    };
 
                 let phaser_meta = PhaserMetadata::new(
                     segment_start,

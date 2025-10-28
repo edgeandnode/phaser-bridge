@@ -134,11 +134,12 @@ impl StreamingServiceWithWriter {
                             // Set live streaming boundary on first block
                             if !first_block_received && block_num > 0 {
                                 if let Some(ref state) = live_state {
+                                    let id = crate::ChainBridgeId::new(chain_id, &bridge_name);
                                     info!(
                                         "Live streaming started for chain {} bridge '{}' at block {}",
                                         chain_id, bridge_name, block_num
                                     );
-                                    state.set_boundary(chain_id, &bridge_name, block_num).await;
+                                    state.set_boundary(&id, block_num).await;
                                     first_block_received = true;
                                 }
                             }
@@ -169,6 +170,16 @@ impl StreamingServiceWithWriter {
 
     /// Start streaming all data types from bridges with parquet persistence
     pub async fn start_streaming(&mut self) -> Result<()> {
+        // Mark live streaming as enabled for this chain/bridge
+        if let Some(ref state) = self.live_state {
+            let id = crate::ChainBridgeId::new(self.chain_id, &self.bridge_name);
+            state.mark_enabled(&id).await;
+            info!(
+                "Live streaming enabled for chain {} bridge '{}'",
+                self.chain_id, self.bridge_name
+            );
+        }
+
         // Create channels for each data type
         let (blocks_tx, blocks_rx) = mpsc::channel::<RecordBatch>(100);
         let (txs_tx, txs_rx) = mpsc::channel::<RecordBatch>(100);
