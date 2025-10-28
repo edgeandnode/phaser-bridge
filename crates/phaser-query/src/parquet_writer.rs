@@ -25,7 +25,8 @@ pub struct ParquetWriter {
     data_type: String, // "blocks", "transactions", or "logs"
     parquet_config: Option<ParquetConfig>,
     is_live: bool, // true for live streaming, false for historical sync
-    requested_range: Option<(u64, u64)>, // (start, end) blocks for this sync session (segment range)
+    segment_range: Option<(u64, u64)>, // Logical segment boundaries for filename (e.g., 0-499999)
+    responsibility_range: Option<(u64, u64)>, // Actual range this worker is responsible for (may be capped by boundary)
     sequence_number: u32, // Incremented on each file rotation within the same segment
 }
 
@@ -85,15 +86,49 @@ impl ParquetWriter {
             data_type,
             parquet_config,
             is_live,
-            requested_range: None,
+            segment_range: None,
+            responsibility_range: None,
             sequence_number: 0,
         })
     }
 
-    /// Set the block range for this sync session
-    /// This will be added to parquet metadata so scanners know the full intended range
+    /// Set the segment range (logical segment boundaries, used for filename)
+    /// and responsibility range (actual range this worker is responsible for, used for metadata)
+    pub fn set_ranges(
+        &mut self,
+        segment_start: u64,
+        segment_end: u64,
+        responsibility_start: u64,
+        responsibility_end: u64,
+    ) {
+        if segment_end < segment_start {
+            warn!(
+                "segment_end ({}) < segment_start ({}), capping to segment_start",
+                segment_end, segment_start
+            );
+            self.segment_range = Some((segment_start, segment_start));
+        } else {
+            self.segment_range = Some((segment_start, segment_end));
+        }
+
+        if responsibility_end < responsibility_start {
+            warn!("responsibility_end ({}) < responsibility_start ({}), capping to responsibility_start", responsibility_end, responsibility_start);
+            self.responsibility_range = Some((responsibility_start, responsibility_start));
+        } else {
+            self.responsibility_range = Some((responsibility_start, responsibility_end));
+        }
+    }
+
+    /// Set both segment and responsibility to the same range (for backwards compatibility)
     pub fn set_block_range(&mut self, start: u64, end: u64) {
-        self.requested_range = Some((start, end));
+        if end < start {
+            warn!("end ({}) < start ({}), capping to start", end, start);
+            self.segment_range = Some((start, start));
+            self.responsibility_range = Some((start, start));
+        } else {
+            self.segment_range = Some((start, end));
+            self.responsibility_range = Some((start, end));
+        }
     }
 
     pub async fn write_batch(&mut self, batch: RecordBatch) -> Result<u64> {
@@ -202,8 +237,8 @@ impl ParquetWriter {
 
         // Determine responsibility_start based on whether this is the first file in the segment
         let responsibility_start = if self.sequence_number == 0 {
-            // First file in segment - responsible from segment start
-            self.requested_range
+            // First file in segment - responsible from responsibility range start
+            self.responsibility_range
                 .map(|(start, _)| start)
                 .unwrap_or(block_num)
         } else {
@@ -260,7 +295,7 @@ impl ParquetWriter {
         // Add segment range metadata if available
         // This stores the full segment range this file belongs to, plus the contiguous
         // block range this specific file is responsible for
-        if let Some((segment_start, segment_end)) = self.requested_range {
+        if let Some((segment_start, segment_end)) = self.segment_range {
             let mut metadata = Vec::new();
             metadata.push(KeyValue::new(
                 "phaser.segment_start".to_string(),
@@ -342,17 +377,20 @@ impl ParquetWriter {
             current.writer.close()?;
 
             // Build final filename using segment range + sequence number
-            // Format: {data_type}_from_{segment_start}_to_{segment_end}_{sequence}.parquet
-            let final_filename = if let Some((segment_start, segment_end)) = self.requested_range {
+            // Format for historical: {data_type}_from_{segment_start}_to_{segment_end}_{sequence}.parquet
+            // Format for live: live_{data_type}_from_{segment_start}_to_{segment_end}_{sequence}.parquet
+            let final_filename = if let Some((segment_start, segment_end)) = self.segment_range {
+                let prefix = if self.is_live { "live_" } else { "" };
                 format!(
-                    "{}_from_{}_to_{}_{}.parquet",
-                    self.data_type, segment_start, segment_end, self.sequence_number
+                    "{}{}_from_{}_to_{}_{}.parquet",
+                    prefix, self.data_type, segment_start, segment_end, self.sequence_number
                 )
             } else {
                 // Fallback for files without segment range (shouldn't happen in practice)
+                let prefix = if self.is_live { "live_" } else { "" };
                 format!(
-                    "{}_from_{}_to_{}.parquet",
-                    self.data_type, current.start_block, current.end_block
+                    "{}{}_from_{}_to_{}.parquet",
+                    prefix, self.data_type, current.start_block, current.end_block
                 )
             };
             let final_path = self.data_dir.join(final_filename);
@@ -361,12 +399,17 @@ impl ParquetWriter {
             fs::rename(&current.temp_path, &final_path)?;
 
             // Update Phaser metadata in the file footer
-            if let Some((segment_start, segment_end)) = self.requested_range {
-                // For responsibility_end: use segment_end if we're at the end of the segment
-                // Check if current.end_block is at or beyond segment_end-1 (within last block of segment)
+            if let Some((segment_start, segment_end)) = self.segment_range {
+                // Get responsibility range (defaults to segment range if not specified)
+                let (resp_start, resp_end) = self
+                    .responsibility_range
+                    .unwrap_or((segment_start, segment_end));
+
+                // For responsibility_end: use resp_end if we're at the end of the responsibility range
+                // Check if current.end_block is at or beyond resp_end-1 (within last block of range)
                 let responsibility_end =
-                    if current.end_block >= segment_end || current.end_block == segment_end - 1 {
-                        segment_end
+                    if current.end_block >= resp_end || current.end_block == resp_end - 1 {
+                        resp_end
                     } else {
                         current.end_block
                     };
@@ -379,7 +422,8 @@ impl ParquetWriter {
                     current.start_block, // data_start (actual first block with data)
                     current.end_block,  // data_end (actual last block with data)
                     self.data_type.clone(),
-                );
+                )
+                .with_is_live(self.is_live);
 
                 if let Err(e) = PhaserMetadata::update_file_metadata(&final_path, &phaser_meta) {
                     warn!(
@@ -391,13 +435,18 @@ impl ParquetWriter {
             }
 
             // Log the finalization with both segment range and actual data range
-            if let Some((segment_start, segment_end)) = self.requested_range {
+            if let Some((segment_start, segment_end)) = self.segment_range {
+                let (resp_start, resp_end) = self
+                    .responsibility_range
+                    .unwrap_or((segment_start, segment_end));
                 info!(
-                    "Finalized parquet file: {} with {} rows, segment {}-{} seq={} (actual data: {}-{})",
+                    "Finalized parquet file: {} with {} rows, segment {}-{} responsibility {}-{} seq={} (actual data: {}-{})",
                     final_path.display(),
                     current.row_count,
                     segment_start,
                     segment_end,
+                    resp_start,
+                    resp_end,
                     self.sequence_number,
                     current.start_block,
                     current.end_block
