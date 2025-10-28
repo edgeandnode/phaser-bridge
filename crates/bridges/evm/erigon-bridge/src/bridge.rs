@@ -132,10 +132,18 @@ impl ErigonFlightBridge {
         descriptor: &FlightDescriptor,
     ) -> Result<phaser_bridge::descriptors::BlockchainDescriptor, Box<TonicStatus>> {
         if let Some(first) = descriptor.path.first() {
-            serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first)
-                .map_err(|e| Box::new(TonicStatus::invalid_argument(format!("Invalid descriptor: {}", e))))
+            serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first).map_err(
+                |e| {
+                    Box::new(TonicStatus::invalid_argument(format!(
+                        "Invalid descriptor: {}",
+                        e
+                    )))
+                },
+            )
         } else {
-            Err(Box::new(TonicStatus::invalid_argument("Empty descriptor path")))
+            Err(Box::new(TonicStatus::invalid_argument(
+                "Empty descriptor path",
+            )))
         }
     }
 

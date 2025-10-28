@@ -1,8 +1,8 @@
 /// Client for Erigon's custom TrieBackend service
 use crate::error::ErigonBridgeError;
 use crate::proto::custom::{
-    trie_backend_client::TrieBackendClient, CommitmentNodeBatch,
-    GetStateRootReply, GetStateRootRequest, StreamCommitmentRequest,
+    trie_backend_client::TrieBackendClient, CommitmentNodeBatch, GetStateRootReply,
+    GetStateRootRequest, StreamCommitmentRequest,
 };
 use tonic::transport::Channel;
 use tonic::Streaming;

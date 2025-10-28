@@ -26,7 +26,6 @@ pub enum Compression {
     Zstd,
 }
 
-
 /// Stream preferences for negotiating transfer settings
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamPreferences {
@@ -77,7 +76,6 @@ pub enum ValidationStage {
     /// Validate at both stages
     Both,
 }
-
 
 impl std::fmt::Display for StreamType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

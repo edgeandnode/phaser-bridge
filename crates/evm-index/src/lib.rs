@@ -234,10 +234,12 @@ mod tests {
         let block_nums = [1000u64, 1000, 1001, 1001];
         let tx_indices = [0u32, 1, 0, 1];
 
-        let tx_hashes = [Hash32 { bytes: [1u8; 32] },
+        let tx_hashes = [
+            Hash32 { bytes: [1u8; 32] },
             Hash32 { bytes: [2u8; 32] },
             Hash32 { bytes: [3u8; 32] },
-            Hash32 { bytes: [4u8; 32] }];
+            Hash32 { bytes: [4u8; 32] },
+        ];
 
         let from_addresses = [
             Address20 { bytes: [10u8; 20] },

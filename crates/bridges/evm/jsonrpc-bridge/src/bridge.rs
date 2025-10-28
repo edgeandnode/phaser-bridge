@@ -109,8 +109,14 @@ impl JsonRpcFlightBridge {
         descriptor: &FlightDescriptor,
     ) -> std::result::Result<phaser_bridge::descriptors::BlockchainDescriptor, Box<Status>> {
         if let Some(first) = descriptor.path.first() {
-            serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first)
-                .map_err(|e| Box::new(Status::invalid_argument(format!("Invalid descriptor: {}", e))))
+            serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first).map_err(
+                |e| {
+                    Box::new(Status::invalid_argument(format!(
+                        "Invalid descriptor: {}",
+                        e
+                    )))
+                },
+            )
         } else {
             Err(Box::new(Status::invalid_argument("Empty descriptor path")))
         }

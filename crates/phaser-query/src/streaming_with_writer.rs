@@ -121,7 +121,13 @@ impl StreamingServiceWithWriter {
                                 .column(0)
                                 .as_any()
                                 .downcast_ref::<UInt64Array>()
-                                .and_then(|a| if !a.is_empty() { Some(a.value(0)) } else { None })
+                                .and_then(|a| {
+                                    if !a.is_empty() {
+                                        Some(a.value(0))
+                                    } else {
+                                        None
+                                    }
+                                })
                                 .unwrap_or(0);
 
                             info!(

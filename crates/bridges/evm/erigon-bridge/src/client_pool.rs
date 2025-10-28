@@ -338,4 +338,3 @@ impl ClientHandle {
         self.index
     }
 }
-

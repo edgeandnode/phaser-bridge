@@ -365,13 +365,9 @@ impl SyncServer {
                         validation_stage,
                     };
 
-                    let mut worker = SyncWorker::new(
-                        worker_id,
-                        config,
-                        work.clone(),
-                        historical_boundary,
-                    )
-                    .with_progress_tracker(progress_tracker.clone());
+                    let mut worker =
+                        SyncWorker::new(worker_id, config, work.clone(), historical_boundary)
+                            .with_progress_tracker(progress_tracker.clone());
 
                     match worker.run().await {
                         Ok(()) => {

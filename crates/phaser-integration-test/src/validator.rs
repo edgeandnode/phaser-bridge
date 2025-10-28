@@ -114,10 +114,7 @@ impl MerkleValidator {
             .collect::<Result<Vec<_>, _>>()?;
 
         // RLP encode
-        let tx_rlps: Vec<_> = tx_envelopes
-            .iter()
-            .map(alloy_rlp::encode)
-            .collect();
+        let tx_rlps: Vec<_> = tx_envelopes.iter().map(alloy_rlp::encode).collect();
 
         // Build merkle tree
         let mut builder = HashBuilder::default();

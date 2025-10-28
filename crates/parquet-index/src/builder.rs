@@ -201,5 +201,4 @@ fn find_page_for_row(
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}

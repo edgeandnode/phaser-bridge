@@ -104,10 +104,7 @@ impl BenchmarkRunner {
                     .iter()
                     .map(|tx| TxEnvelope::try_from(tx).unwrap())
                     .collect();
-                let tx_rlps: Vec<_> = tx_envelopes
-                    .iter()
-                    .map(alloy_rlp::encode)
-                    .collect();
+                let tx_rlps: Vec<_> = tx_envelopes.iter().map(alloy_rlp::encode).collect();
 
                 use alloy_primitives::keccak256;
                 use alloy_trie::{HashBuilder, Nibbles};
