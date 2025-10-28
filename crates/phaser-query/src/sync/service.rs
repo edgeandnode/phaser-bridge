@@ -524,13 +524,26 @@ impl SyncService for SyncServer {
             ));
         }
 
-        // Wait for live streaming to initialize (if it's running)
+        // Wait for live streaming to initialize (if it's enabled)
         // This gives us the exact boundary where historical sync should stop
-        info!("Waiting for live streaming boundary (timeout: 10 seconds)...");
-        let historical_boundary = self
-            .live_state
-            .wait_for_boundary(req.chain_id, &req.bridge_name, 10)
-            .await;
+        let id = crate::ChainBridgeId::new(req.chain_id, &req.bridge_name);
+        let historical_boundary = if self.live_state.is_enabled(&id).await {
+            info!("Live streaming is enabled, waiting for boundary...");
+            // Wait with longer timeout when streaming is enabled (120 seconds)
+            let boundary = self.live_state.wait_for_boundary(&id, 120).await;
+
+            if boundary.is_none() {
+                return Err(Status::internal(
+                    "Live streaming is enabled but failed to initialize within timeout",
+                ));
+            }
+
+            boundary
+        } else {
+            // No live streaming enabled
+            info!("Live streaming not enabled, using full requested range");
+            None
+        };
 
         // Determine final to_block based on live streaming boundary
         let to_block = if let Some(boundary_block) = historical_boundary {
@@ -547,8 +560,6 @@ impl SyncService for SyncServer {
                 req.to_block
             }
         } else {
-            // No live streaming detected - use full requested range
-            info!("No live streaming boundary detected, using full requested range");
             req.to_block
         };
 
@@ -915,10 +926,8 @@ impl SyncService for SyncServer {
             .map_err(|e| Status::internal(format!("Failed to analyze sync range: {}", e)))?;
 
         // Get historical boundary from LiveStreamingState to avoid cleaning live streaming temp files
-        let historical_boundary = self
-            .live_state
-            .get_boundary(req.chain_id, &req.bridge_name)
-            .await;
+        let id = crate::ChainBridgeId::new(req.chain_id, &req.bridge_name);
+        let historical_boundary = self.live_state.get_boundary(&id).await;
 
         // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
         let segments_to_clean: Vec<u64> = if let Some(boundary_block) = historical_boundary {

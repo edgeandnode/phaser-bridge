@@ -13,55 +13,89 @@ pub mod trie_writer;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+/// Type alias for blockchain chain ID
+pub type ChainId = u64;
+
+/// Identifier for a specific chain/bridge combination
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct ChainBridgeId {
+    pub chain_id: ChainId,
+    pub bridge_name: String,
+}
+
+impl ChainBridgeId {
+    pub fn new(chain_id: ChainId, bridge_name: impl Into<String>) -> Self {
+        Self {
+            chain_id,
+            bridge_name: bridge_name.into(),
+        }
+    }
+}
 
 /// Shared state tracking live streaming boundaries per chain/bridge
 /// This allows the sync service to know where live streaming has started
 #[derive(Debug, Clone)]
 pub struct LiveStreamingState {
-    /// Map from (chain_id, bridge_name) to the current block number being streamed
+    /// Map from chain/bridge to the current block number being streamed
     /// Set when the first block is received by the streaming service
-    boundaries: Arc<RwLock<HashMap<(u64, String), u64>>>,
+    boundaries: Arc<RwLock<HashMap<ChainBridgeId, u64>>>,
+    /// Track which chain/bridge combinations have live streaming enabled
+    enabled: Arc<RwLock<HashSet<ChainBridgeId>>>,
 }
 
 impl LiveStreamingState {
     pub fn new() -> Self {
         Self {
             boundaries: Arc::new(RwLock::new(HashMap::new())),
+            enabled: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
+    /// Mark live streaming as enabled for a chain/bridge
+    /// This should be called when starting a live streaming service
+    pub async fn mark_enabled(&self, id: &ChainBridgeId) {
+        let mut enabled = self.enabled.write().await;
+        enabled.insert(id.clone());
+    }
+
+    /// Check if live streaming is enabled for a chain/bridge
+    pub async fn is_enabled(&self, id: &ChainBridgeId) -> bool {
+        let enabled = self.enabled.read().await;
+        enabled.contains(id)
+    }
+
     /// Set the live streaming boundary for a chain/bridge
-    pub async fn set_boundary(&self, chain_id: u64, bridge_name: &str, block_number: u64) {
+    pub async fn set_boundary(&self, id: &ChainBridgeId, block_number: u64) {
         let mut boundaries = self.boundaries.write().await;
-        boundaries.insert((chain_id, bridge_name.to_string()), block_number);
+        boundaries.insert(id.clone(), block_number);
     }
 
     /// Get the live streaming boundary for a chain/bridge
     /// Returns None if live streaming hasn't started yet for this chain/bridge
-    pub async fn get_boundary(&self, chain_id: u64, bridge_name: &str) -> Option<u64> {
+    pub async fn get_boundary(&self, id: &ChainBridgeId) -> Option<u64> {
         let boundaries = self.boundaries.read().await;
-        boundaries
-            .get(&(chain_id, bridge_name.to_string()))
-            .copied()
+        boundaries.get(id).copied()
     }
 
     /// Wait for live streaming to initialize (with timeout)
     /// Returns the boundary block number if initialized within timeout
-    pub async fn wait_for_boundary(
-        &self,
-        chain_id: u64,
-        bridge_name: &str,
-        timeout_secs: u64,
-    ) -> Option<u64> {
+    /// Only waits if live streaming is enabled for this chain/bridge
+    pub async fn wait_for_boundary(&self, id: &ChainBridgeId, timeout_secs: u64) -> Option<u64> {
         use tokio::time::{sleep, Duration};
+
+        // Only wait if live streaming is enabled
+        if !self.is_enabled(id).await {
+            return None;
+        }
 
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(timeout_secs) {
-            if let Some(boundary) = self.get_boundary(chain_id, bridge_name).await {
+            if let Some(boundary) = self.get_boundary(id).await {
                 return Some(boundary);
             }
             sleep(Duration::from_millis(100)).await;
