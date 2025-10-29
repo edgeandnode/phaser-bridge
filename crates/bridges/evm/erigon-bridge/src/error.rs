@@ -40,6 +40,9 @@ pub enum ErigonBridgeError {
 
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
+
+    #[error("Stream protocol error: {0}")]
+    StreamProtocol(#[from] phaser_bridge::StreamError),
 }
 
 /// Implements conversion from tonic::Status to ErigonBridgeError
@@ -71,6 +74,9 @@ impl From<ErigonBridgeError> for Status {
             ErigonBridgeError::ValidationError(msg) => Status::failed_precondition(msg),
             ErigonBridgeError::ConnectionFailed(msg) => {
                 Status::unavailable(format!("Connection failed: {}", msg))
+            }
+            ErigonBridgeError::StreamProtocol(stream_err) => {
+                Status::aborted(format!("Stream protocol violation: {}", stream_err))
             }
         }
     }

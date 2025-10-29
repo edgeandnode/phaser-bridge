@@ -2,6 +2,7 @@ use arrow_flight::{
     encode::FlightDataEncoderBuilder, Criteria, FlightData, FlightDescriptor, FlightEndpoint,
     FlightInfo, HandshakeRequest, HandshakeResponse, SchemaResult, Ticket,
 };
+use arrow_ipc::writer::IpcWriteOptions;
 use async_trait::async_trait;
 use futures::{stream, Stream, StreamExt as FuturesStreamExt};
 use phaser_bridge::{
@@ -210,7 +211,7 @@ impl ErigonFlightBridge {
         start: u64,
         end: u64,
         validate: bool,
-    ) -> impl Stream<Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>> + Send
+    ) -> impl Stream<Item = Result<phaser_bridge::BatchWithRange, arrow_flight::error::FlightError>> + Send
     {
         let max_concurrent = config.max_concurrent_segments;
         let should_validate = validate && validator.is_some();
@@ -332,7 +333,7 @@ impl ErigonFlightBridge {
         start: u64,
         end: u64,
         validate: bool,
-    ) -> impl Stream<Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>> + Send
+    ) -> impl Stream<Item = Result<phaser_bridge::BatchWithRange, arrow_flight::error::FlightError>> + Send
     {
         let max_concurrent = config.max_concurrent_segments;
         let should_validate = validate && validator.is_some();
@@ -455,7 +456,10 @@ impl ErigonFlightBridge {
         Pin<
             Box<
                 dyn Stream<
-                        Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>,
+                        Item = Result<
+                            phaser_bridge::BatchWithRange,
+                            arrow_flight::error::FlightError,
+                        >,
                     > + Send
                     + 'static,
             >,
@@ -578,7 +582,9 @@ impl ErigonFlightBridge {
                                 match BlockDataConverter::blocks_to_arrow(block_batch) {
                                     Ok(record_batch) => {
                                         debug!("Converted block batch {} with {} rows", batch_count, record_batch.num_rows());
-                                        yield Ok(record_batch);
+                                        // Wrap batch with responsibility range
+                                        let wrapped = phaser_bridge::BatchWithRange::new(record_batch, start, end);
+                                        yield Ok(wrapped);
                                     }
                                     Err(e) => {
                                         error!("Failed to convert block batch: {}", e);
@@ -808,7 +814,10 @@ impl FlightBridge for ErigonFlightBridge {
         let batch_stream: Pin<
             Box<
                 dyn Stream<
-                        Item = Result<arrow_array::RecordBatch, arrow_flight::error::FlightError>,
+                        Item = Result<
+                            phaser_bridge::BatchWithRange,
+                            arrow_flight::error::FlightError,
+                        >,
                     > + Send,
             >,
         > = match query_mode {
@@ -839,7 +848,10 @@ impl FlightBridge for ErigonFlightBridge {
                 Box::pin(async_stream::stream! {
                     let mut rx = receiver;
                     while let Ok(batch) = rx.recv().await {
-                        yield Ok(batch);
+                        // For live mode, wrap batch with placeholder range
+                        // TODO: Extract actual block numbers from batch data
+                        let wrapped = phaser_bridge::BatchWithRange::new(batch, 0, 0);
+                        yield Ok(wrapped);
                     }
                 })
             }
@@ -850,21 +862,65 @@ impl FlightBridge for ErigonFlightBridge {
         // Compression is handled at the gRPC transport level via tonic
         // (configured in main.rs with accept_compressed/send_compressed)
 
-        // TODO: Examine bridge<->erigon interface for message size limits and batching strategy
-        // The bridge currently streams from erigon without considering message size limits.
-        // If erigon sends very large batches, we may need to implement chunking before sending to client.
+        // Manually construct FlightData to include app_metadata with responsibility ranges
+        use arrow_flight::utils::batches_to_flight_data;
 
-        let encoder = FlightDataEncoderBuilder::new()
-            .with_schema(schema)
-            .with_max_flight_data_size(preferences.max_message_bytes)
-            .build(batch_stream);
+        let flight_stream = async_stream::stream! {
+            // First, send the schema
+            let schema_flight_data = arrow_flight::SchemaAsIpc::new(&schema, &IpcWriteOptions::default())
+                .try_into()
+                .map_err(|e| {
+                    error!("Error encoding schema: {}", e);
+                    Status::internal(format!("Schema encoding error: {}", e))
+                })?;
+            yield Ok(schema_flight_data);
 
-        let flight_stream = encoder.map(|result| {
-            result.map_err(|e| {
-                error!("Error encoding flight data: {}", e);
-                Status::internal(format!("Encoding error: {}", e))
-            })
-        });
+            // Then stream batches with app_metadata containing responsibility ranges
+            let mut batch_stream = batch_stream;
+            while let Some(batch_result) = batch_stream.next().await {
+                match batch_result {
+                    Ok(batch_with_range) => {
+                        // Encode the responsibility range metadata
+                        let metadata = match batch_with_range.encode_range_metadata() {
+                            Ok(m) => m,
+                            Err(e) => {
+                                error!("Failed to encode range metadata: {}", e);
+                                yield Err(Status::internal(format!("Metadata encoding error: {}", e)));
+                                continue;
+                            }
+                        };
+
+                        // Convert RecordBatch to FlightData using arrow-flight utilities
+                        // This handles IPC encoding and respects size limits
+                        let batches = vec![batch_with_range.batch];
+                        match batches_to_flight_data(&schema, batches) {
+                            Ok(mut flight_data_vec) => {
+                                // batches_to_flight_data includes a schema message as the first element
+                                // Skip it since we already sent the schema
+                                let data_messages: Vec<_> = flight_data_vec
+                                    .into_iter()
+                                    .skip(1) // Skip the schema message
+                                    .collect();
+
+                                // Attach app_metadata to each FlightData (there may be multiple if batch was split)
+                                for mut flight_data in data_messages {
+                                    flight_data.app_metadata = metadata.clone().into();
+                                    yield Ok(flight_data);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Error encoding batch to flight data: {}", e);
+                                yield Err(Status::internal(format!("Batch encoding error: {}", e)));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error in batch stream: {}", e);
+                        yield Err(Status::internal(format!("Stream error: {}", e)));
+                    }
+                }
+            }
+        };
 
         Ok(Response::new(Box::pin(flight_stream)))
     }

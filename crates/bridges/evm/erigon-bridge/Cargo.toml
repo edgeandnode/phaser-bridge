@@ -25,6 +25,7 @@ arrow = { workspace = true }
 arrow-flight = { workspace = true }
 arrow-array = "56.1"
 arrow-schema = "56.1"
+arrow-ipc = "56.1"
 
 # Async and gRPC
 tokio = { workspace = true }
