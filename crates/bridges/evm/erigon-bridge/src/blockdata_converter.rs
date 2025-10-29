@@ -14,7 +14,6 @@ use evm_common::types::{Address20, Hash32};
 use std::collections::HashMap;
 use tracing::{debug, error, warn};
 use typed_arrow::prelude::BuildRows;
-use typed_arrow::schema::IntoRecordBatch;
 
 /// Converter for BlockDataBackend RLP data to Arrow format
 pub struct BlockDataConverter;

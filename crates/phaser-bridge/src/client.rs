@@ -235,9 +235,9 @@ impl FlightBridgeClient {
 
                     // Decode using Arrow IPC
                     let cursor = Cursor::new(ipc_data);
-                    let mut reader = StreamReader::try_new(cursor, None)?;
+                    let reader = StreamReader::try_new(cursor, None)?;
 
-                    while let Some(batch_result) = reader.next() {
+                    for batch_result in reader {
                         let batch = batch_result?;
                         yield (batch, responsibility_range);
                     }

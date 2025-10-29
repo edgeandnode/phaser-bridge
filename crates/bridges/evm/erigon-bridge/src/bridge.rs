@@ -867,12 +867,8 @@ impl FlightBridge for ErigonFlightBridge {
 
         let flight_stream = async_stream::stream! {
             // First, send the schema
-            let schema_flight_data = arrow_flight::SchemaAsIpc::new(&schema, &IpcWriteOptions::default())
-                .try_into()
-                .map_err(|e| {
-                    error!("Error encoding schema: {}", e);
-                    Status::internal(format!("Schema encoding error: {}", e))
-                })?;
+            let schema_flight_data: FlightData = arrow_flight::SchemaAsIpc::new(&schema, &IpcWriteOptions::default())
+                .into();
             yield Ok(schema_flight_data);
 
             // Then stream batches with app_metadata containing responsibility ranges
@@ -894,7 +890,7 @@ impl FlightBridge for ErigonFlightBridge {
                         // This handles IPC encoding and respects size limits
                         let batches = vec![batch_with_range.batch];
                         match batches_to_flight_data(&schema, batches) {
-                            Ok(mut flight_data_vec) => {
+                            Ok(flight_data_vec) => {
                                 // batches_to_flight_data includes a schema message as the first element
                                 // Skip it since we already sent the schema
                                 let data_messages: Vec<_> = flight_data_vec
