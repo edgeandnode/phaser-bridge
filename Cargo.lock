@@ -1939,6 +1939,7 @@ dependencies = [
 [[package]]
 name = "core-executor"
 version = "0.1.0"
+source = "git+https://github.com/dwerner/core-executor?rev=376f2c62abbaceafef639fa24ab82199a0ce8cfe#376f2c62abbaceafef639fa24ab82199a0ce8cfe"
 dependencies = [
  "async-channel 1.9.0",
  "async-executor",
@@ -1948,7 +1949,7 @@ dependencies = [
  "futures-util",
  "hwlocality",
  "thiserror 1.0.69",
- "wat-cpu 0.1.0",
+ "wat-cpu 0.1.0 (git+https://github.com/dwerner/core-executor?rev=376f2c62abbaceafef639fa24ab82199a0ce8cfe)",
 ]
 
 [[package]]
@@ -4295,7 +4296,7 @@ dependencies = [
  "bincode",
  "chrono",
  "clap",
- "core-executor 0.1.0",
+ "core-executor 0.1.0 (git+https://github.com/dwerner/core-executor?rev=376f2c62abbaceafef639fa24ab82199a0ce8cfe)",
  "erigon-bridge",
  "evm-common",
  "futures",
@@ -6034,6 +6035,7 @@ checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
 [[package]]
 name = "typed-arrow"
 version = "0.4.1"
+source = "git+https://github.com/tonbo-io/typed-arrow?rev=30f2507147e8b48d51a26285bf8c84fdd58afa84#30f2507147e8b48d51a26285bf8c84fdd58afa84"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -6047,6 +6049,7 @@ dependencies = [
 [[package]]
 name = "typed-arrow-derive"
 version = "0.4.1"
+source = "git+https://github.com/tonbo-io/typed-arrow?rev=30f2507147e8b48d51a26285bf8c84fdd58afa84#30f2507147e8b48d51a26285bf8c84fdd58afa84"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6357,6 +6360,7 @@ dependencies = [
 [[package]]
 name = "wat-cpu"
 version = "0.1.0"
+source = "git+https://github.com/dwerner/core-executor?rev=376f2c62abbaceafef639fa24ab82199a0ce8cfe#376f2c62abbaceafef639fa24ab82199a0ce8cfe"
 dependencies = [
  "libc",
  "winapi",

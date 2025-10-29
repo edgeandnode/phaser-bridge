@@ -110,21 +110,18 @@ impl MerkleValidator {
         // Convert to Alloy types
         let tx_envelopes: Vec<_> = txs
             .iter()
-            .map(|tx| TxEnvelope::try_from(tx))
+            .map(TxEnvelope::try_from)
             .collect::<Result<Vec<_>, _>>()?;
 
         // RLP encode
-        let tx_rlps: Vec<_> = tx_envelopes
-            .iter()
-            .map(|tx| alloy_rlp::encode(tx))
-            .collect();
+        let tx_rlps: Vec<_> = tx_envelopes.iter().map(alloy_rlp::encode).collect();
 
         // Build merkle tree
         let mut builder = HashBuilder::default();
         for (idx, tx_rlp) in tx_rlps.iter().enumerate() {
             let key = alloy_rlp::encode(idx);
             let key_hash = keccak256(&key);
-            builder.add_leaf(Nibbles::unpack(&key_hash), tx_rlp);
+            builder.add_leaf(Nibbles::unpack(key_hash), tx_rlp);
         }
 
         let computed_root = builder.root();
@@ -144,7 +141,7 @@ impl MerkleValidator {
 
 // Helper module for Duration serialization
 mod humantime_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::Serializer;
     use std::time::Duration;
 
     pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
@@ -152,14 +149,5 @@ mod humantime_serde {
         S: Serializer,
     {
         serializer.serialize_str(&format!("{:?}", duration))
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        // Simple parsing - just for completeness
-        Ok(Duration::from_secs(0))
     }
 }

@@ -159,8 +159,8 @@ impl BlockDataClient {
                 }
                 Ok(None) => {
                     error!("BlockDataBackend service returned no data");
-                    Err(ErigonBridgeError::ErigonClient(tonic::Status::not_found(
-                        "No blocks returned",
+                    Err(ErigonBridgeError::ErigonClient(Box::new(
+                        tonic::Status::not_found("No blocks returned"),
                     )))
                 }
                 Err(e) => {

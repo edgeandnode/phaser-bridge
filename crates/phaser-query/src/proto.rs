@@ -1,5 +1,4 @@
 /// Generated protobuf code for Erigon gRPC interfaces and admin services
-
 // Include the generated code directly from the src/generated directory
 pub mod types {
     include!("generated/types.rs");

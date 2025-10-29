@@ -2,7 +2,7 @@ use crate::proto::admin::sync_service_server::{SyncService, SyncServiceServer};
 use crate::proto::admin::*;
 use crate::sync::data_scanner::DataScanner;
 use crate::sync::metrics;
-use crate::sync::worker::{ProgressTracker, SyncWorker};
+use crate::sync::worker::{ProgressTracker, SyncWorker, SyncWorkerConfig};
 use crate::PhaserConfig;
 use anyhow::Result;
 use core_executor::ThreadPoolExecutor;
@@ -137,7 +137,16 @@ struct SyncJobState {
     active_workers: u32,
     error: Option<String>,
     progress_tracker: ProgressTracker,
-    gap_analysis: Option<DataGapAnalysis>,
+}
+
+/// Configuration for a sync job
+struct SyncJobConfig {
+    chain_id: u64,
+    bridge_name: String,
+    bridge_endpoint: String,
+    from_block: u64,
+    to_block: u64,
+    historical_boundary: Option<u64>,
 }
 
 /// Server implementation for the sync admin service
@@ -182,13 +191,8 @@ impl SyncServer {
         config: Arc<PhaserConfig>,
         jobs: Arc<RwLock<HashMap<String, SyncJobState>>>,
         job_id: String,
-        chain_id: u64,
-        bridge_name: String,
-        bridge_endpoint: String,
-        from_block: u64,
-        to_block: u64,
+        job_config: SyncJobConfig,
         progress_tracker: ProgressTracker,
-        historical_boundary: Option<u64>,
         executor: Arc<Mutex<ThreadPoolExecutor>>,
     ) -> Result<()> {
         // Update status to RUNNING
@@ -202,13 +206,13 @@ impl SyncServer {
 
         info!(
             "Starting sync job {} with {} workers: blocks {}-{}",
-            job_id, config.sync_parallelism, from_block, to_block
+            job_id, config.sync_parallelism, job_config.from_block, job_config.to_block
         );
 
         let segment_size = config.segment_size;
 
         // Find which segments need to be synced (supports resume)
-        let data_dir = config.bridge_data_dir(chain_id, &bridge_name);
+        let data_dir = config.bridge_data_dir(job_config.chain_id, &job_config.bridge_name);
         let scanner = DataScanner::new(data_dir.clone(), executor);
 
         // Use boundary from LiveStreamingState (already computed in start_sync)
@@ -216,12 +220,12 @@ impl SyncServer {
 
         // Analyze what needs syncing
         let mut analysis = scanner
-            .analyze_sync_range(from_block, to_block, segment_size)
+            .analyze_sync_range(job_config.from_block, job_config.to_block, segment_size)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to analyze sync range: {}", e))?;
 
         // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
-        let segments_to_clean: Vec<u64> = if let Some(boundary) = historical_boundary {
+        let segments_to_clean: Vec<u64> = if let Some(boundary) = job_config.historical_boundary {
             let live_segment = (boundary + 1) / segment_size;
             analysis
                 .segments_needing_work
@@ -257,14 +261,14 @@ impl SyncServer {
         if !analysis.needs_sync() {
             info!(
                 "All segments already synced for range {}-{}",
-                from_block, to_block
+                job_config.from_block, job_config.to_block
             );
             // Mark job as complete
             let mut jobs_lock = jobs.write().await;
             if let Some(job) = jobs_lock.get_mut(&job_id) {
                 job.status = SyncStatus::Completed as i32;
-                job.blocks_synced = to_block - from_block + 1;
-                job.current_block = to_block;
+                job.blocks_synced = job_config.to_block - job_config.from_block + 1;
+                job.current_block = job_config.to_block;
             }
             return Ok(());
         }
@@ -292,13 +296,14 @@ impl SyncServer {
         const MAX_BACKOFF_SECS: u64 = 10;
 
         for worker_id in 0..num_workers {
-            let bridge_endpoint = bridge_endpoint.clone();
+            let bridge_endpoint = job_config.bridge_endpoint.clone();
             let data_dir = data_dir.clone();
             let segment_queue = segment_queue.clone();
             let progress_tracker = progress_tracker.clone();
             let parquet_config = config.parquet.clone();
             let validation_stage = config.validation_stage;
             let job_complete = job_complete.clone();
+            let historical_boundary = job_config.historical_boundary;
 
             let handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
                 loop {
@@ -348,21 +353,21 @@ impl SyncServer {
                     );
 
                     // Create and run worker for this segment
-                    let mut worker = SyncWorker::new(
-                        worker_id,
-                        bridge_endpoint.clone(),
-                        data_dir.clone(),
-                        segment_from,
-                        segment_to,
+                    let config = SyncWorkerConfig {
+                        bridge_endpoint: bridge_endpoint.clone(),
+                        data_dir: data_dir.clone(),
+                        from_block: segment_from,
+                        to_block: segment_to,
                         segment_size,
                         max_file_size_mb,
-                        1000, // batch_size
-                        parquet_config.clone(),
+                        batch_size: 1000,
+                        parquet_config: parquet_config.clone(),
                         validation_stage,
-                        work.clone(),
-                        historical_boundary,
-                    )
-                    .with_progress_tracker(progress_tracker.clone());
+                    };
+
+                    let mut worker =
+                        SyncWorker::new(worker_id, config, work.clone(), historical_boundary)
+                            .with_progress_tracker(progress_tracker.clone());
 
                     match worker.run().await {
                         Ok(()) => {
@@ -494,8 +499,8 @@ impl SyncServer {
             let mut jobs_lock = jobs.write().await;
             if let Some(job) = jobs_lock.get_mut(&job_id) {
                 job.status = SyncStatus::Completed as i32;
-                job.blocks_synced = to_block - from_block + 1;
-                job.current_block = to_block;
+                job.blocks_synced = job_config.to_block - job_config.from_block + 1;
+                job.current_block = job_config.to_block;
                 job.active_workers = 0;
             }
         }
@@ -629,7 +634,6 @@ impl SyncService for SyncServer {
             active_workers: 0,
             error: None,
             progress_tracker: progress_tracker.clone(),
-            gap_analysis: Some(gap_analysis.clone()),
         };
 
         // Store job state
@@ -642,24 +646,24 @@ impl SyncService for SyncServer {
         let config = self.config.clone();
         let jobs = self.jobs.clone();
         let job_id_clone = job_id.clone();
-        let bridge_endpoint = bridge.endpoint.clone();
-        let bridge_name = req.bridge_name.clone();
-        let chain_id = req.chain_id;
-        let from_block = req.from_block;
         let executor = self.executor.clone();
+
+        let job_config = SyncJobConfig {
+            chain_id: req.chain_id,
+            bridge_name: req.bridge_name.clone(),
+            bridge_endpoint: bridge.endpoint.clone(),
+            from_block: req.from_block,
+            to_block,
+            historical_boundary,
+        };
 
         tokio::spawn(async move {
             if let Err(e) = Self::run_sync_job(
                 config,
                 jobs,
                 job_id_clone,
-                chain_id,
-                bridge_name,
-                bridge_endpoint,
-                from_block,
-                to_block,
+                job_config,
                 progress_tracker,
-                historical_boundary,
                 executor,
             )
             .await

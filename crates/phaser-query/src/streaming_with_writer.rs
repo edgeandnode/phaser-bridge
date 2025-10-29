@@ -116,12 +116,18 @@ impl StreamingServiceWithWriter {
                 match batch_result {
                     Ok(batch) => {
                         // Special logging for blocks to show block number
-                        let block_number = if matches!(stream_type, StreamType::Blocks) {
+                        let _block_number = if matches!(stream_type, StreamType::Blocks) {
                             let block_num = batch
                                 .column(0)
                                 .as_any()
                                 .downcast_ref::<UInt64Array>()
-                                .and_then(|a| if a.len() > 0 { Some(a.value(0)) } else { None })
+                                .and_then(|a| {
+                                    if !a.is_empty() {
+                                        Some(a.value(0))
+                                    } else {
+                                        None
+                                    }
+                                })
                                 .unwrap_or(0);
 
                             info!(

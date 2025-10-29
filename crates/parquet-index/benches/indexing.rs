@@ -3,7 +3,7 @@
 /// Measures how fast we can build indexes from parquet files of varying sizes.
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use evm_index::EvmTransactionIndexer;
-use parquet_index::{FileRegistry, IndexBuilder, IndexStorage, IndexableSchema};
+use parquet_index::{IndexBuilder, IndexableSchema};
 use parquet_index_rocksdb::{RocksDbFileRegistry, RocksDbIndexStorage};
 use std::sync::Arc;
 use tempfile::TempDir;

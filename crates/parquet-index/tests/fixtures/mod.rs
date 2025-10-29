@@ -50,7 +50,7 @@ impl TestTransaction {
             tx_hash: hash32_from_u64(i as u64),
             from: address20_from_u64((i % 50) as u64),
             // Every 10th transaction is a contract creation (to=None)
-            to: if i % 10 == 0 {
+            to: if i.is_multiple_of(10) {
                 None
             } else {
                 Some(address20_from_u64(((i + 50) % 50) as u64))

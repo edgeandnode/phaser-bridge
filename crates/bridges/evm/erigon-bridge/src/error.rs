@@ -15,7 +15,7 @@ pub enum ErigonBridgeError {
     SchemaCreation(#[from] arrow::error::ArrowError),
 
     #[error("Erigon gRPC client error: {0}")]
-    ErigonClient(#[from] tonic::Status),
+    ErigonClient(Box<tonic::Status>),
 
     #[error("RLP decoding error: {0}")]
     RlpDecoding(#[from] alloy_rlp::Error),
@@ -40,6 +40,13 @@ pub enum ErigonBridgeError {
 
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
+}
+
+/// Implements conversion from tonic::Status to ErigonBridgeError
+impl From<Status> for ErigonBridgeError {
+    fn from(status: Status) -> Self {
+        ErigonBridgeError::ErigonClient(Box::new(status))
+    }
 }
 
 /// Implements conversion from our error to a gRPC Status for proper error reporting

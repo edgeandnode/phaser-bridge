@@ -28,7 +28,6 @@ pub struct SegmentInfo {
 }
 
 pub struct SegmentData {
-    pub segment_id: u64,
     pub blocks: HashMap<u64, BlockRecord>,
     pub transactions_by_block: HashMap<u64, Vec<TransactionRecord>>,
 }
@@ -108,7 +107,6 @@ impl DataLoader {
         );
 
         Ok(SegmentData {
-            segment_id,
             blocks: blocks_map,
             transactions_by_block: txs_by_block,
         })

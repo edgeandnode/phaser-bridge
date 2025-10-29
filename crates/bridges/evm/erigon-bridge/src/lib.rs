@@ -5,8 +5,8 @@ pub mod client;
 pub mod client_pool;
 pub mod converter;
 pub mod error;
+#[allow(dead_code)]
 pub mod generated;
-pub mod kv_client;
 pub mod metrics;
 pub mod proto;
 pub mod segment_worker;

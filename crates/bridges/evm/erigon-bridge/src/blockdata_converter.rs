@@ -3,17 +3,15 @@
 /// This module handles the RLP bytes → alloy types conversion,
 /// then uses the From impls in evm-common to convert to typed-arrow records
 use crate::error::ErigonBridgeError;
-use crate::proto::custom::{BlockBatch, ReceiptData, TransactionBatch};
+use crate::proto::custom::{BlockBatch, ReceiptData};
 use alloy_consensus::{Header, ReceiptEnvelope, TxEnvelope};
 use alloy_rlp::Decodable;
-use arrow::datatypes::Schema;
 use arrow_array::RecordBatch;
 use evm_common::block::BlockRecord;
 use evm_common::log::{LogContext, LogRecord};
 use evm_common::transaction::{RecoverSender, TransactionContext, TransactionRecord};
 use evm_common::types::{Address20, Hash32};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tracing::{debug, error, warn};
 use typed_arrow::prelude::BuildRows;
 
@@ -21,21 +19,6 @@ use typed_arrow::prelude::BuildRows;
 pub struct BlockDataConverter;
 
 impl BlockDataConverter {
-    /// Get the Arrow schema for blocks
-    pub fn block_schema() -> Arc<Schema> {
-        evm_common::block_arrow_schema()
-    }
-
-    /// Get the Arrow schema for transactions
-    pub fn transaction_schema() -> Arc<Schema> {
-        evm_common::transaction_arrow_schema()
-    }
-
-    /// Get the Arrow schema for logs
-    pub fn log_schema() -> Arc<Schema> {
-        evm_common::log_arrow_schema()
-    }
-
     /// Convert a BlockBatch to Arrow RecordBatch
     pub fn blocks_to_arrow(batch: BlockBatch) -> Result<RecordBatch, ErigonBridgeError> {
         let mut builders = BlockRecord::new_builders(batch.blocks.len());
@@ -61,85 +44,6 @@ impl BlockDataConverter {
         }
 
         debug!("Converted {} blocks to Arrow", num_blocks);
-
-        let arrays = builders.finish();
-        Ok(arrays.into_record_batch())
-    }
-
-    /// Convert a TransactionBatch to Arrow RecordBatch
-    ///
-    /// Note: This returns transactions WITHOUT receipt data (gas_used=0, status=false)
-    /// since StreamTransactions doesn't include receipts
-    pub fn transactions_to_arrow(
-        batch: TransactionBatch,
-        block_timestamps: &HashMap<u64, i64>, // block_number -> timestamp in nanos
-    ) -> Result<RecordBatch, ErigonBridgeError> {
-        let mut builders = TransactionRecord::new_builders(batch.transactions.len());
-        let num_transactions = batch.transactions.len();
-
-        for tx_data in &batch.transactions {
-            // Decode RLP → alloy TxEnvelope
-            let tx = match TxEnvelope::decode(&mut tx_data.rlp_transaction.as_slice()) {
-                Ok(t) => t,
-                Err(e) => {
-                    error!(
-                        "Failed to decode RLP transaction for block {} tx {}: {}",
-                        tx_data.block_number, tx_data.tx_index, e
-                    );
-                    continue;
-                }
-            };
-
-            // Recover sender address from signature - skip if recovery fails
-            let sender = match tx.recover_sender() {
-                Some(addr) => addr,
-                None => {
-                    warn!(
-                        "Failed to recover sender for block {} tx {} - skipping transaction",
-                        tx_data.block_number, tx_data.tx_index
-                    );
-                    continue;
-                }
-            };
-
-            let block_hash = Hash32 {
-                bytes: tx_data
-                    .block_hash
-                    .as_slice()
-                    .try_into()
-                    .unwrap_or([0u8; 32]),
-            };
-
-            // Get block timestamp (default to 0 if not found)
-            let timestamp = block_timestamps
-                .get(&tx_data.block_number)
-                .copied()
-                .unwrap_or_else(|| {
-                    warn!(
-                        "Missing timestamp for block {}, using 0",
-                        tx_data.block_number
-                    );
-                    0
-                });
-
-            // Build context for conversion
-            let ctx = TransactionContext {
-                tx: &tx,
-                block_hash,
-                block_num: tx_data.block_number,
-                timestamp,
-                tx_index: tx_data.tx_index,
-                from: sender,
-                gas_used: 0,   // Not available without receipt
-                status: false, // Not available without receipt (false = unknown)
-            };
-
-            // Use From impl: TransactionContext → TransactionRecord
-            let record = TransactionRecord::from(ctx);
-            builders.append_row(record);
-        }
-
-        debug!("Converted {} transactions to Arrow", num_transactions);
 
         let arrays = builders.finish();
         Ok(arrays.into_record_batch())

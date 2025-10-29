@@ -4,7 +4,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use evm_index::{EvmTransactionIndexer, CF_TX_BY_HASH};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet_index::{FileRegistry, IndexBuilder, IndexStorage, IndexableSchema, PageReader};
+use parquet_index::{IndexBuilder, IndexStorage, IndexableSchema, PageReader};
 use parquet_index_rocksdb::{RocksDbFileRegistry, RocksDbIndexStorage};
 use parquet_index_schema::PagePointer;
 use std::fs::File;
@@ -99,11 +99,11 @@ fn bench_full_scan(c: &mut Criterion) {
             b.iter(|| {
                 let file = File::open(&parquet_path).unwrap();
                 let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-                let mut reader = builder.build().unwrap();
+                let reader = builder.build().unwrap();
 
                 // Read all batches
                 let mut total_rows = 0;
-                while let Some(batch_result) = reader.next() {
+                for batch_result in reader {
                     let batch = batch_result.unwrap();
                     total_rows += batch.num_rows();
                 }
@@ -154,11 +154,11 @@ fn bench_indexed_vs_scan(c: &mut Criterion) {
         b.iter(|| {
             let file = File::open(&parquet_path).unwrap();
             let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-            let mut reader = builder.build().unwrap();
+            let reader = builder.build().unwrap();
 
             // Scan until we find the transaction (simplified)
             let mut found = false;
-            while let Some(batch_result) = reader.next() {
+            for batch_result in reader {
                 let batch = batch_result.unwrap();
                 if batch.num_rows() > 0 {
                     // In real scenario we'd check tx_hash column

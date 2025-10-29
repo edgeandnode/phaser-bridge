@@ -1,6 +1,10 @@
 use crate::types::Hash32;
 use typed_arrow::{List, Record};
 
+/// Type alias for transaction proof generation result
+/// Tuple of (root_hash, proof_nodes, rlp_value)
+pub type TransactionProofResult = (Hash32, Vec<Vec<u8>>, Vec<u8>);
+
 /// Merkle proof record for transaction or receipt inclusion
 #[derive(Record, Clone, Debug)]
 pub struct MerkleProofRecord {
@@ -82,7 +86,7 @@ impl MerkleProofRecord {
 pub fn generate_transaction_proof(
     transactions: &[Vec<u8>],
     index: usize,
-) -> Result<(Hash32, Vec<Vec<u8>>, Vec<u8>), anyhow::Error> {
+) -> Result<TransactionProofResult, anyhow::Error> {
     use alloy_primitives::keccak256;
     use alloy_trie::{HashBuilder, Nibbles};
 
@@ -97,7 +101,7 @@ pub fn generate_transaction_proof(
     // Compute the nibbles for the target index
     let target_key = alloy_rlp::encode(index);
     let target_key_hash = keccak256(&target_key);
-    let target_nibbles = Nibbles::unpack(&target_key_hash);
+    let target_nibbles = Nibbles::unpack(target_key_hash);
 
     // Create proof retainer for this specific index
     let proof_retainer = alloy_trie::proof::ProofRetainer::from_iter([target_nibbles]);
@@ -108,7 +112,7 @@ pub fn generate_transaction_proof(
     for (idx, tx_rlp) in transactions.iter().enumerate() {
         let key = alloy_rlp::encode(idx);
         let key_hash = keccak256(&key);
-        builder.add_leaf(Nibbles::unpack(&key_hash), tx_rlp);
+        builder.add_leaf(Nibbles::unpack(key_hash), tx_rlp);
     }
 
     // Get the root
@@ -143,7 +147,7 @@ pub fn verify_proof(proof: &MerkleProofRecord) -> Result<(), anyhow::Error> {
     // Encode the index as the key
     let key = alloy_rlp::encode(proof.tx_index);
     let key_hash = keccak256(&key);
-    let nibbles = Nibbles::unpack(&key_hash);
+    let nibbles = Nibbles::unpack(key_hash);
 
     // Convert proof nodes to Bytes
     let proof_nodes: Vec<Bytes> = proof

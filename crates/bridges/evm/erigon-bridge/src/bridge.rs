@@ -35,7 +35,6 @@ pub struct ErigonFlightBridge {
     streaming_service: Arc<StreamingService>,
     validator: Option<Arc<dyn ValidationExecutor>>,
     segment_config: SegmentConfig,
-    endpoint: String,
 }
 
 impl ErigonFlightBridge {
@@ -113,7 +112,6 @@ impl ErigonFlightBridge {
             streaming_service,
             validator,
             segment_config: segment_config.unwrap_or_default(),
-            endpoint,
         })
     }
 
@@ -132,12 +130,20 @@ impl ErigonFlightBridge {
     /// Parse a FlightDescriptor to extract the BlockchainDescriptor
     fn parse_descriptor(
         descriptor: &FlightDescriptor,
-    ) -> Result<phaser_bridge::descriptors::BlockchainDescriptor, TonicStatus> {
+    ) -> Result<phaser_bridge::descriptors::BlockchainDescriptor, Box<TonicStatus>> {
         if let Some(first) = descriptor.path.first() {
-            serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first)
-                .map_err(|e| TonicStatus::invalid_argument(format!("Invalid descriptor: {}", e)))
+            serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first).map_err(
+                |e| {
+                    Box::new(TonicStatus::invalid_argument(format!(
+                        "Invalid descriptor: {}",
+                        e
+                    )))
+                },
+            )
         } else {
-            Err(TonicStatus::invalid_argument("Empty descriptor path"))
+            Err(Box::new(TonicStatus::invalid_argument(
+                "Empty descriptor path",
+            )))
         }
     }
 
@@ -192,20 +198,6 @@ impl ErigonFlightBridge {
         };
 
         Ok(stream)
-    }
-
-    /// Check if an error is transient and should be retried
-    fn is_transient_error(err: &ErigonBridgeError) -> bool {
-        match err {
-            ErigonBridgeError::ErigonClient(e) => {
-                let err_str = e.to_string();
-                err_str.contains("txn 0 already rollback")
-                    || err_str.contains("Timeout expired")
-                    || err_str.contains("connection")
-                    || err_str.contains("Cancelled")
-            }
-            _ => false,
-        }
     }
 
     /// Process transactions using segment-based workers
@@ -713,7 +705,7 @@ impl FlightBridge for ErigonFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<FlightInfo>, Status> {
         let descriptor = request.into_inner();
-        let blockchain_desc = Self::parse_descriptor(&descriptor)?;
+        let blockchain_desc = Self::parse_descriptor(&descriptor).map_err(|e| *e)?;
 
         let info = create_flight_info(blockchain_desc.stream_type)?;
 
@@ -725,7 +717,7 @@ impl FlightBridge for ErigonFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> Result<Response<SchemaResult>, Status> {
         let descriptor = request.into_inner();
-        let blockchain_desc = Self::parse_descriptor(&descriptor)?;
+        let blockchain_desc = Self::parse_descriptor(&descriptor).map_err(|e| *e)?;
         let schema = Self::get_schema_for_type(blockchain_desc.stream_type);
 
         // Convert Arrow schema to IPC format for Flight

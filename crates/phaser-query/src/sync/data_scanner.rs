@@ -675,7 +675,7 @@ impl DataScanner {
                 .into_iter()
                 .enumerate()
                 .map(|(idx, task)| {
-                    let data_dir = self.data_dir.clone();
+                    let _data_dir = self.data_dir.clone();
                     executor.spawn_on_any(async move {
                         // Progress logging every 50 files
                         if idx > 0 && idx % 50 == 0 {
@@ -826,48 +826,6 @@ impl DataScanner {
         }
 
         gaps
-    }
-
-    /// Check if a segment is complete using the in-memory catalog
-    fn is_segment_complete(
-        catalog: &DataCatalog,
-        data_type: &str,
-        segment_start: u64,
-        segment_end: u64,
-    ) -> bool {
-        let ranges = catalog.get_ranges(data_type);
-
-        if ranges.is_empty() {
-            return false;
-        }
-
-        // Check if the union of ranges covers [segment_start, segment_end]
-        let mut covered_up_to = segment_start.saturating_sub(1);
-
-        for range in ranges {
-            // Only consider ranges that could cover this segment
-            if range.end < segment_start {
-                continue; // This range ends before segment starts
-            }
-            if range.start > segment_end {
-                break; // Ranges are sorted, no more can overlap
-            }
-
-            // If there's a gap, segment is not complete
-            if range.start > covered_up_to + 1 {
-                return false;
-            }
-
-            // Extend coverage
-            covered_up_to = covered_up_to.max(range.end);
-
-            // If we've covered the entire segment, we're done
-            if covered_up_to >= segment_end {
-                return true;
-            }
-        }
-
-        false
     }
 
     /// Analyze sync range and find gaps
@@ -1245,7 +1203,7 @@ impl DataScanner {
 
         for entry in fs::read_dir(&self.data_dir)? {
             let entry = entry?;
-            let path = entry.path();
+            let _path = entry.path();
             let filename = entry.file_name();
             let filename_str = filename.to_string_lossy();
 

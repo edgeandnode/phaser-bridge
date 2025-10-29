@@ -3,7 +3,7 @@
 /// Measures how fast we can lookup transactions from indexes.
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use evm_index::{EvmTransactionIndexer, CF_TX_BY_FROM, CF_TX_BY_HASH};
-use parquet_index::{FileRegistry, IndexBuilder, IndexStorage, IndexableSchema};
+use parquet_index::{IndexBuilder, IndexStorage, IndexableSchema};
 use parquet_index_rocksdb::{RocksDbFileRegistry, RocksDbIndexStorage};
 use parquet_index_schema::PagePointer;
 use std::sync::Arc;

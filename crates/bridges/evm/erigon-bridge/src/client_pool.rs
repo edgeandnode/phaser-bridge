@@ -255,21 +255,6 @@ impl ClientPool {
         ))
     }
 
-    /// Get pool statistics
-    pub fn stats(&self) -> PoolStats {
-        let healthy_count = self
-            .connections
-            .iter()
-            .filter(|c| c.healthy.load(Ordering::Acquire))
-            .count();
-
-        PoolStats {
-            total_connections: self.connections.len(),
-            healthy_connections: healthy_count,
-            unhealthy_connections: self.connections.len() - healthy_count,
-        }
-    }
-
     /// Start background task to periodically check connection health
     fn start_health_checker(&self) {
         let connections = self.connections.clone();
@@ -352,12 +337,4 @@ impl ClientHandle {
     pub fn index(&self) -> usize {
         self.index
     }
-}
-
-/// Connection pool statistics
-#[derive(Debug, Clone)]
-pub struct PoolStats {
-    pub total_connections: usize,
-    pub healthy_connections: usize,
-    pub unhealthy_connections: usize,
 }

@@ -242,7 +242,7 @@ fn test_prefix_scan_by_address() -> Result<()> {
         assert_eq!(key.len(), 32, "Key should be 32 bytes");
 
         // Value should be valid PagePointer
-        let pointer = PagePointer::from_bytes(&value)?;
+        let pointer = PagePointer::from_bytes(value)?;
         assert!(pointer.row_group < 100);
         assert!(pointer.page_index < 100);
     }

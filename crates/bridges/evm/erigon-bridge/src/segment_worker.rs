@@ -247,7 +247,7 @@ impl SegmentWorker {
                         error!("Worker {} segment {}: Transaction stream error after {} batches: {}",
                             worker_id, segment_id, batch_count, e);
                         metrics::GRPC_STREAMS_ACTIVE.with_label_values(&["transactions"]).dec();
-                        yield Err(ErigonBridgeError::ErigonClient(e));
+                        yield Err(ErigonBridgeError::ErigonClient(Box::new(e)));
                         return;
                     }
                 }
@@ -569,7 +569,7 @@ impl SegmentWorker {
                         "Blocks {}-{}: Header stream error after {} batches: {}",
                         segment_start, segment_end, batch_count, e
                     );
-                    return Err(ErigonBridgeError::ErigonClient(e));
+                    return Err(ErigonBridgeError::ErigonClient(Box::new(e)));
                 }
             }
         }
@@ -727,7 +727,7 @@ impl SegmentWorker {
                         "Blocks {}-{}: Receipt stream error after {} batches: {}",
                         from_block, to_block, batch_count, e
                     );
-                    return Err(ErigonBridgeError::ErigonClient(e));
+                    return Err(ErigonBridgeError::ErigonClient(Box::new(e)));
                 }
             }
         }

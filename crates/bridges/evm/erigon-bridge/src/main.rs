@@ -6,7 +6,6 @@ mod client_pool;
 mod converter;
 mod error;
 mod generated;
-mod kv_client;
 mod metrics;
 mod proto;
 mod segment_worker;
