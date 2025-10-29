@@ -170,6 +170,84 @@ impl FlightBridgeClient {
         Ok(stream)
     }
 
+    /// Subscribe with access to app_metadata (responsibility ranges)
+    /// Returns a stream of (RecordBatch, Option<(u64, u64)>) where the tuple is (start_block, end_block)
+    ///
+    /// This method accesses raw FlightData messages to preserve app_metadata that contains
+    /// responsibility range information (which blocks were processed, even if they had 0 rows).
+    pub async fn subscribe_with_metadata(
+        &mut self,
+        descriptor: &BlockchainDescriptor,
+    ) -> Result<
+        impl futures::Stream<
+            Item = Result<(RecordBatch, Option<(u64, u64)>), arrow_flight::error::FlightError>,
+        >,
+        anyhow::Error,
+    > {
+        use crate::BatchWithRange;
+        use arrow_ipc::reader::StreamReader;
+        use std::io::Cursor;
+
+        let ticket = descriptor.to_ticket();
+
+        info!(
+            "Subscribing to data with metadata from bridge ({})",
+            descriptor.stream_type.to_string()
+        );
+
+        // Access the inner FlightServiceClient to get raw FlightData stream
+        // We need mutable access to the client
+        let mut inner_client = self.client.inner().clone();
+        let response = inner_client.do_get(ticket).await?;
+        let mut flight_data_stream = response.into_inner();
+
+        // Manually decode FlightData to preserve app_metadata
+        let stream = async_stream::try_stream! {
+            let mut schema_received = false;
+            let mut schema_bytes = Vec::new();
+
+            while let Some(flight_data_result) = flight_data_stream.next().await {
+                let flight_data = flight_data_result.map_err(|e| {
+                    arrow_flight::error::FlightError::Tonic(Box::new(e))
+                })?;
+
+                // First message contains the schema
+                if !schema_received {
+                    schema_bytes.extend_from_slice(&flight_data.data_header);
+                    schema_bytes.extend_from_slice(&flight_data.data_body);
+                    schema_received = true;
+                    continue;
+                }
+
+                // Extract app_metadata (responsibility range)
+                let responsibility_range = if !flight_data.app_metadata.is_empty() {
+                    BatchWithRange::decode_range_metadata(&flight_data.app_metadata)
+                } else {
+                    None
+                };
+
+                // Decode the RecordBatch from IPC data
+                if !flight_data.data_body.is_empty() {
+                    // Combine header and body into a single buffer for IPC decoding
+                    let mut ipc_data = Vec::new();
+                    ipc_data.extend_from_slice(&flight_data.data_header);
+                    ipc_data.extend_from_slice(&flight_data.data_body);
+
+                    // Decode using Arrow IPC
+                    let cursor = Cursor::new(ipc_data);
+                    let mut reader = StreamReader::try_new(cursor, None)?;
+
+                    while let Some(batch_result) = reader.next() {
+                        let batch = batch_result?;
+                        yield (batch, responsibility_range);
+                    }
+                }
+            }
+        };
+
+        Ok(stream)
+    }
+
     /// Get schema for a stream type
     pub async fn get_schema(
         &mut self,
