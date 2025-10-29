@@ -52,26 +52,3 @@ lazy_static! {
         &["segment_num"]
     ).unwrap();
 }
-
-/// Categorize errors for metrics
-pub fn categorize_error(err: &anyhow::Error) -> &'static str {
-    let err_str = err.to_string().to_lowercase();
-
-    if err_str.contains("connection") || err_str.contains("connect") {
-        "connection"
-    } else if err_str.contains("timeout") || err_str.contains("timed out") {
-        "timeout"
-    } else if err_str.contains("no data") || err_str.contains("empty") {
-        "no_data"
-    } else if err_str.contains("failed to make progress") {
-        "stuck_worker"
-    } else if err_str.contains("validation") || err_str.contains("invalid") {
-        "validation"
-    } else if err_str.contains("io error") || err_str.contains("file") {
-        "disk_io"
-    } else if err_str.contains("cancelled") {
-        "cancelled"
-    } else {
-        "unknown"
-    }
-}
