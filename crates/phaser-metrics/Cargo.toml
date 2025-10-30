@@ -1,0 +1,8 @@
+[package]
+name = "phaser-metrics"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+phaser-bridge = { path = "../phaser-bridge" }
+prometheus = "0.13"

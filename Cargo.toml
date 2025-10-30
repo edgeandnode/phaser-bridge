@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/phaser-query",
     "crates/phaser-bridge",
+    "crates/phaser-metrics",
     "crates/bridges/evm/erigon-bridge",
     "crates/bridges/evm/jsonrpc-bridge",
     "crates/schemas/evm/common",

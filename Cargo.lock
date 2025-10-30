@@ -4272,6 +4272,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "phaser-metrics"
+version = "0.1.0"
+dependencies = [
+ "phaser-bridge",
+ "prometheus",
+]
+
+[[package]]
 name = "phaser-parquet-metadata"
 version = "0.1.0"
 dependencies = [
@@ -4305,12 +4313,11 @@ dependencies = [
  "evm-common",
  "futures",
  "jsonrpsee",
- "lazy_static",
  "num_cpus",
  "parquet",
  "phaser-bridge",
+ "phaser-metrics",
  "phaser-parquet-metadata",
- "prometheus",
  "prost",
  "prost-types",
  "rocksdb",
