@@ -20,7 +20,7 @@ pub struct BlockDataConverter;
 
 impl BlockDataConverter {
     /// Convert a BlockBatch to Arrow RecordBatch
-    pub fn blocks_to_arrow(batch: BlockBatch) -> Result<RecordBatch, ErigonBridgeError> {
+    pub(crate) fn blocks_to_arrow(batch: BlockBatch) -> Result<RecordBatch, ErigonBridgeError> {
         let mut builders = BlockRecord::new_builders(batch.blocks.len());
         let num_blocks = batch.blocks.len();
 
@@ -46,6 +46,7 @@ impl BlockDataConverter {
         debug!("Converted {} blocks to Arrow", num_blocks);
 
         let arrays = builders.finish();
+
         Ok(arrays.into_record_batch())
     }
 

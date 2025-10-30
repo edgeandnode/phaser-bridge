@@ -395,19 +395,10 @@ impl SyncServer {
                                 "Segment completed successfully"
                             );
                         }
-                        Err(e) => {
-                            let error_category = metrics::categorize_error(&e);
-
-                            // Detect which data type failed from error message
-                            let data_type = if e.to_string().contains("blocks") {
-                                "blocks"
-                            } else if e.to_string().contains("transactions") {
-                                "transactions"
-                            } else if e.to_string().contains("logs") {
-                                "logs"
-                            } else {
-                                "unknown"
-                            };
+                        Err(sync_err) => {
+                            // We now have a rich SyncError with all context preserved
+                            let error_category = sync_err.category.as_str();
+                            let data_type = sync_err.data_type.as_str();
 
                             // Metrics
                             metrics::SYNC_ERRORS
@@ -439,7 +430,9 @@ impl SyncServer {
                                     backoff_secs = backoff_secs,
                                     error_type = error_category,
                                     data_type = data_type,
-                                    error = %e,
+                                    from_block = sync_err.from_block,
+                                    to_block = sync_err.to_block,
+                                    error = %sync_err,
                                     "Segment failed, will retry"
                                 );
                             } else {
@@ -450,7 +443,9 @@ impl SyncServer {
                                     backoff_secs = backoff_secs,
                                     error_type = error_category,
                                     data_type = data_type,
-                                    error = %e,
+                                    from_block = sync_err.from_block,
+                                    to_block = sync_err.to_block,
+                                    error = %sync_err,
                                     "Segment persistently failing - continuing to retry with {}s backoff",
                                     MAX_BACKOFF_SECS
                                 );

@@ -14,6 +14,7 @@ use alloy_primitives::Bytes;
 use alloy_rlp::Decodable;
 use arrow_array::RecordBatch;
 use futures::stream::StreamExt;
+use phaser_bridge::{BatchWithRange, StreamError};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -122,10 +123,10 @@ impl SegmentWorker {
 
     /// Process the segment: fetch blocks, validate, convert to Arrow
     ///
-    /// Returns a stream of Arrow RecordBatches, yielding one per validation batch
+    /// Returns a stream of BatchWithRange, yielding one per validation batch
     pub fn process(
         self,
-    ) -> impl futures::Stream<Item = Result<RecordBatch, ErigonBridgeError>> + Send {
+    ) -> impl futures::Stream<Item = Result<BatchWithRange, ErigonBridgeError>> + Send {
         match self.data_type {
             SegmentDataType::Transactions => self.process_transactions().boxed(),
             SegmentDataType::Logs => self.process_logs().boxed(),
@@ -135,7 +136,7 @@ impl SegmentWorker {
     /// Process transactions for this segment with eager validation
     fn process_transactions(
         self,
-    ) -> impl futures::Stream<Item = Result<RecordBatch, ErigonBridgeError>> + Send {
+    ) -> impl futures::Stream<Item = Result<BatchWithRange, ErigonBridgeError>> + Send {
         async_stream::stream! {
             let worker_id = self.worker_id;
             let segment_id = self.segment_start / 500_000; // Calculate segment ID
@@ -326,8 +327,9 @@ impl SegmentWorker {
             };
 
             // Yield this batch immediately - no buffering!
+            // Wrap with responsibility range metadata
             yielded_batches += 1;
-            yield Ok(arrow_batch);
+            yield Ok(BatchWithRange::new(arrow_batch, start_block, end_block));
             }
 
             // Move to next chunk
@@ -337,23 +339,32 @@ impl SegmentWorker {
         // Record successful completion
         let duration = phase_start.elapsed().as_secs_f64();
 
-        // Detect empty streams
+        // Detect empty streams and ERROR OUT
         if yielded_batches == 0 {
             error!(
-                "Worker {} segment {}: EMPTY STREAM - Processed {} blocks but yielded ZERO RecordBatches!",
+                "Worker {} segment {}: EMPTY STREAM - Processed {} blocks but yielded ZERO RecordBatches! \
+                This indicates the client disconnected or dropped the stream before receiving data.",
                 worker_id,
                 segment_id,
                 total_blocks
             );
-        } else {
-            info!(
-                "Worker {} segment {}: Completed transaction processing in {:.2}s, yielded {} RecordBatches",
-                worker_id,
-                segment_id,
-                duration,
-                yielded_batches
-            );
+            metrics::set_worker_stage(worker_id, segment_id, metrics::WorkerStage::Idle);
+            metrics::record_segment_complete("transactions", false);
+            yield Err(ErigonBridgeError::StreamProtocol(StreamError::ZeroBatchesConsumed {
+                start: self.segment_start,
+                end: self.segment_end,
+                yielded: 0,
+            }));
+            return;
         }
+
+        info!(
+            "Worker {} segment {}: Completed transaction processing in {:.2}s, yielded {} RecordBatches",
+            worker_id,
+            segment_id,
+            duration,
+            yielded_batches
+        );
 
         metrics::SEGMENT_DURATION
             .with_label_values(&["transactions"])
@@ -366,7 +377,7 @@ impl SegmentWorker {
     /// Process logs/receipts for this segment
     fn process_logs(
         self,
-    ) -> impl futures::Stream<Item = Result<RecordBatch, ErigonBridgeError>> + Send {
+    ) -> impl futures::Stream<Item = Result<BatchWithRange, ErigonBridgeError>> + Send {
         async_stream::stream! {
         let total_blocks = self.segment_end - self.segment_start + 1;
         let mut yielded_batches = 0u64;
@@ -487,9 +498,10 @@ impl SegmentWorker {
                 };
 
                 // Yield each batch immediately
+                // Wrap with responsibility range metadata
                 for batch in batches {
                     yielded_batches += 1;
-                    yield Ok(batch);
+                    yield Ok(BatchWithRange::new(batch, current_block, chunk_end));
                 }
             }
 
@@ -497,22 +509,29 @@ impl SegmentWorker {
             current_block = chunk_end + 1;
         }
 
-        // Detect empty streams
+        // Detect empty streams and ERROR OUT
         if yielded_batches == 0 {
             error!(
-                "Segment {}-{}: EMPTY STREAM - Processed {} blocks but yielded ZERO RecordBatches!",
+                "Segment {}-{}: EMPTY STREAM - Processed {} blocks but yielded ZERO RecordBatches! \
+                This indicates the client disconnected or dropped the stream before receiving data.",
                 self.segment_start,
                 self.segment_end,
                 total_blocks
             );
-        } else {
-            info!(
-                "Segment {}-{}: Completed log processing, yielded {} RecordBatches",
-                self.segment_start,
-                self.segment_end,
-                yielded_batches
-            );
+            yield Err(ErigonBridgeError::StreamProtocol(StreamError::ZeroBatchesConsumed {
+                start: self.segment_start,
+                end: self.segment_end,
+                yielded: 0,
+            }));
+            return;
         }
+
+        info!(
+            "Segment {}-{}: Completed log processing, yielded {} RecordBatches",
+            self.segment_start,
+            self.segment_end,
+            yielded_batches
+        );
         }
     }
 

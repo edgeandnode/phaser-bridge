@@ -1,0 +1,6 @@
+# Rustfmt configuration for phaser
+
+# Ignore generated protobuf files
+ignore = [
+    "crates/bridges/evm/erigon-bridge/src/generated/",
+]
