@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 # Local dependencies
 phaser-bridge = { workspace = true }
+phaser-metrics = { workspace = true }
 evm-common = { workspace = true }
 validators-evm = { workspace = true }
 

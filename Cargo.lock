@@ -2386,6 +2386,7 @@ dependencies = [
  "lazy_static",
  "num_cpus",
  "phaser-bridge",
+ "phaser-metrics",
  "prometheus",
  "prost",
  "prost-types",

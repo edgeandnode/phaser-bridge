@@ -151,7 +151,8 @@ async fn main() -> Result<()> {
 
         let make_svc = hyper::service::make_service_fn(|_conn| async {
             Ok::<_, Infallible>(hyper::service::service_fn(|_req| async {
-                let metrics = metrics::gather_metrics();
+                let metrics = metrics::gather_metrics()
+                    .unwrap_or_else(|e| format!("Error gathering metrics: {}", e));
                 let mut response = hyper::Response::new(hyper::Body::from(metrics));
                 response.headers_mut().insert(
                     hyper::header::CONTENT_TYPE,

@@ -7,7 +7,7 @@
 use crate::blockdata_client::BlockDataClient;
 use crate::blockdata_converter::BlockDataConverter;
 use crate::error::ErigonBridgeError;
-use crate::metrics;
+use crate::metrics::{SegmentMetrics, WorkerStage};
 use crate::proto::custom::TransactionData;
 use alloy_consensus::Header;
 use alloy_primitives::Bytes;
@@ -78,6 +78,7 @@ pub struct SegmentWorker {
     config: SegmentConfig,
     validator: Option<Arc<dyn ValidationExecutor>>,
     data_type: SegmentDataType,
+    metrics: crate::metrics::BridgeMetrics,
 }
 
 impl SegmentWorker {
@@ -89,6 +90,7 @@ impl SegmentWorker {
         blockdata_client: BlockDataClient,
         config: SegmentConfig,
         validator: Option<Arc<dyn ValidationExecutor>>,
+        metrics: crate::metrics::BridgeMetrics,
     ) -> Self {
         Self {
             worker_id,
@@ -98,6 +100,7 @@ impl SegmentWorker {
             config,
             validator,
             data_type: SegmentDataType::Transactions,
+            metrics,
         }
     }
 
@@ -109,6 +112,7 @@ impl SegmentWorker {
         blockdata_client: BlockDataClient,
         config: SegmentConfig,
         validator: Option<Arc<dyn ValidationExecutor>>,
+        metrics: crate::metrics::BridgeMetrics,
     ) -> Self {
         Self {
             worker_id,
@@ -118,6 +122,7 @@ impl SegmentWorker {
             config,
             validator,
             data_type: SegmentDataType::Logs,
+            metrics,
         }
     }
 
@@ -154,7 +159,8 @@ impl SegmentWorker {
             );
 
             // Set initial worker stage
-            metrics::set_worker_stage(worker_id, segment_id, metrics::WorkerStage::Blocks);
+            self.metrics
+                .set_worker_stage(worker_id, segment_id, WorkerStage::Blocks);
 
             // Clone the client at the start (shares underlying HTTP/2 connection)
             let mut client = self.blockdata_client.clone();
@@ -177,7 +183,7 @@ impl SegmentWorker {
                 Err(e) => {
                     error!("Worker {} segment {}: Failed to fetch headers for blocks {}-{}: {}",
                         worker_id, segment_id, current_block, chunk_end, e);
-                    metrics::record_segment_complete("blocks", false);
+                    self.metrics.segment_attempt(false);
                     yield Err(e);
                     return;
                 }
@@ -200,14 +206,15 @@ impl SegmentWorker {
             // Update progress - blocks phase
             let blocks_processed = current_block - self.segment_start;
             let progress_pct = (blocks_processed as f64 / total_blocks as f64) * 100.0;
-            metrics::set_worker_progress(worker_id, segment_id, "blocks", progress_pct);
-            metrics::BLOCKS_PROCESSED
-                .with_label_values(&[&worker_id.to_string(), &segment_id.to_string()])
-                .inc_by(num_headers as u64);
+            self.metrics
+                .set_worker_progress(worker_id, segment_id, "blocks", progress_pct);
+            self.metrics
+                .items_processed_inc(worker_id, segment_id, "blocks", num_headers as u64);
 
             // Transition to transactions phase on first chunk only
             if first_chunk {
-                metrics::set_worker_stage(worker_id, segment_id, metrics::WorkerStage::Transactions);
+                self.metrics
+                    .set_worker_stage(worker_id, segment_id, WorkerStage::Transactions);
                 first_chunk = false;
             }
 
@@ -218,7 +225,7 @@ impl SegmentWorker {
             let start_block = chunk.first().unwrap().0;
             let end_block = chunk.last().unwrap().0;
 
-            metrics::GRPC_STREAMS_ACTIVE.with_label_values(&["transactions"]).inc();
+            self.metrics.grpc_stream_inc("transactions");
 
             debug!(
                 "Worker {} segment {}: Streaming transactions for blocks {}-{}",
@@ -240,14 +247,13 @@ impl SegmentWorker {
                             worker_id, segment_id, batch_count, tx_batch.transactions.len());
                         let tx_count = tx_batch.transactions.len() as u64;
                         all_transactions.extend(tx_batch.transactions);
-                        metrics::TRANSACTIONS_PROCESSED
-                            .with_label_values(&[&worker_id.to_string(), &segment_id.to_string()])
-                            .inc_by(tx_count);
+                        self.metrics
+                            .items_processed_inc(worker_id, segment_id, "transactions", tx_count);
                     }
                     Err(e) => {
                         error!("Worker {} segment {}: Transaction stream error after {} batches: {}",
                             worker_id, segment_id, batch_count, e);
-                        metrics::GRPC_STREAMS_ACTIVE.with_label_values(&["transactions"]).dec();
+                        self.metrics.grpc_stream_dec("transactions");
                         yield Err(ErigonBridgeError::ErigonClient(Box::new(e)));
                         return;
                     }
@@ -257,7 +263,7 @@ impl SegmentWorker {
             // Stream completed successfully
             info!("Worker {} segment {}: Transaction stream completed for blocks {}-{}, received {} batches with {} total transactions",
                 worker_id, segment_id, start_block, end_block, batch_count, all_transactions.len());
-            metrics::GRPC_STREAMS_ACTIVE.with_label_values(&["transactions"]).dec();
+            self.metrics.grpc_stream_dec("transactions");
 
             // Peekable iterator to pull transactions for each block
             let mut tx_iter = all_transactions.into_iter().peekable();
@@ -320,7 +326,7 @@ impl SegmentWorker {
                 Ok(batch) => batch,
                 Err(e) => {
                     // Clean up metrics before error return
-                    metrics::record_segment_complete("transactions", false);
+                    self.metrics.segment_attempt(false);
                     yield Err(e);
                     return;
                 }
@@ -348,8 +354,9 @@ impl SegmentWorker {
                 segment_id,
                 total_blocks
             );
-            metrics::set_worker_stage(worker_id, segment_id, metrics::WorkerStage::Idle);
-            metrics::record_segment_complete("transactions", false);
+            self.metrics
+                .set_worker_stage(worker_id, segment_id, WorkerStage::Idle);
+            self.metrics.segment_attempt(false);
             yield Err(ErigonBridgeError::StreamProtocol(StreamError::ZeroBatchesConsumed {
                 start: self.segment_start,
                 end: self.segment_end,
@@ -366,11 +373,11 @@ impl SegmentWorker {
             yielded_batches
         );
 
-        metrics::SEGMENT_DURATION
-            .with_label_values(&["transactions"])
-            .observe(duration);
-        metrics::set_worker_stage(worker_id, segment_id, metrics::WorkerStage::Idle);
-        metrics::record_segment_complete("transactions", true);
+        self.metrics
+            .segment_duration("transactions", duration);
+        self.metrics
+            .set_worker_stage(worker_id, segment_id, WorkerStage::Idle);
+        self.metrics.segment_attempt(true);
         }
     }
 

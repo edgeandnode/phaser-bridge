@@ -20,6 +20,7 @@ use crate::client::ErigonClient;
 use crate::client_pool::{ClientPool, PoolConfig};
 use crate::converter::ErigonDataConverter;
 use crate::error::ErigonBridgeError;
+use crate::metrics::BridgeMetrics;
 use crate::segment_worker::{split_into_segments, SegmentConfig, SegmentWorker};
 use crate::streaming_service::StreamingService;
 use crate::trie_client::TrieClient;
@@ -36,6 +37,7 @@ pub struct ErigonFlightBridge {
     streaming_service: Arc<StreamingService>,
     validator: Option<Arc<dyn ValidationExecutor>>,
     segment_config: SegmentConfig,
+    metrics: BridgeMetrics,
 }
 
 impl ErigonFlightBridge {
@@ -105,6 +107,9 @@ impl ErigonFlightBridge {
             }
         });
 
+        // Initialize metrics
+        let metrics = BridgeMetrics::new("erigon_bridge", chain_id, "erigon");
+
         Ok(Self {
             client: Arc::new(tokio::sync::Mutex::new(client)),
             blockdata_pool: Arc::new(blockdata_pool),
@@ -113,6 +118,7 @@ impl ErigonFlightBridge {
             streaming_service,
             validator,
             segment_config: segment_config.unwrap_or_default(),
+            metrics,
         })
     }
 
@@ -205,6 +211,7 @@ impl ErigonFlightBridge {
     ///
     /// Extracted as a separate function to avoid lifetime capture issues
     fn process_transactions_with_segments(
+        &self,
         pool: Arc<ClientPool>,
         config: SegmentConfig,
         validator: Option<Arc<dyn ValidationExecutor>>,
@@ -215,6 +222,7 @@ impl ErigonFlightBridge {
     {
         let max_concurrent = config.max_concurrent_segments;
         let should_validate = validate && validator.is_some();
+        let metrics = self.metrics.clone();
 
         // Split range into segments
         let segments = split_into_segments(start, end, config.segment_size);
@@ -231,6 +239,7 @@ impl ErigonFlightBridge {
                 } else {
                     None
                 };
+                let metrics = metrics.clone();
 
                 async move {
                     // Get a client from the pool for this segment
@@ -294,7 +303,13 @@ impl ErigonFlightBridge {
                     );
 
                     let worker = SegmentWorker::new(
-                        worker_id, seg_start, seg_end, client, config, validator,
+                        worker_id,
+                        seg_start,
+                        seg_end,
+                        client,
+                        config,
+                        validator,
+                        metrics.clone(),
                     );
 
                     // Convert the stream to handle FlightError
@@ -327,6 +342,7 @@ impl ErigonFlightBridge {
     ///
     /// Extracted as a separate function to avoid lifetime capture issues
     fn process_logs_with_segments(
+        &self,
         pool: Arc<ClientPool>,
         config: SegmentConfig,
         validator: Option<Arc<dyn ValidationExecutor>>,
@@ -337,6 +353,7 @@ impl ErigonFlightBridge {
     {
         let max_concurrent = config.max_concurrent_segments;
         let should_validate = validate && validator.is_some();
+        let metrics = self.metrics.clone();
 
         // Split range into segments
         let segments = split_into_segments(start, end, config.segment_size);
@@ -353,6 +370,7 @@ impl ErigonFlightBridge {
                 } else {
                     None
                 };
+                let metrics = metrics.clone();
 
                 async move {
                     // Get a client from the pool for this segment
@@ -416,7 +434,13 @@ impl ErigonFlightBridge {
                     );
 
                     let worker = SegmentWorker::new_for_logs(
-                        worker_id, seg_start, seg_end, client, config, validator,
+                        worker_id,
+                        seg_start,
+                        seg_end,
+                        client,
+                        config,
+                        validator,
+                        metrics.clone(),
                     );
 
                     // Convert the stream to handle FlightError
@@ -495,7 +519,7 @@ impl ErigonFlightBridge {
         // Handle transactions and logs separately since they use segment workers
         if stream_type == StreamType::Transactions {
             let pool = self.blockdata_pool.clone();
-            let stream = Self::process_transactions_with_segments(
+            let stream = self.process_transactions_with_segments(
                 pool,
                 self.segment_config.clone(),
                 self.validator.clone(),
@@ -508,7 +532,7 @@ impl ErigonFlightBridge {
 
         if stream_type == StreamType::Logs {
             let pool = self.blockdata_pool.clone();
-            let stream = Self::process_logs_with_segments(
+            let stream = self.process_logs_with_segments(
                 pool,
                 self.segment_config.clone(),
                 self.validator.clone(),
