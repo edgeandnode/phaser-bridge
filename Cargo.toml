@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/phaser-query",
     "crates/phaser-bridge",
+    "crates/phaser-metrics",
     "crates/bridges/evm/erigon-bridge",
     "crates/bridges/evm/jsonrpc-bridge",
     "crates/schemas/evm/common",
@@ -21,6 +22,7 @@ members = [
 erigon-bridge = { path = "crates/bridges/evm/erigon-bridge" }
 jsonrpc-bridge = { path = "crates/bridges/evm/jsonrpc-bridge" }
 phaser-bridge = { path = "crates/phaser-bridge" }
+phaser-metrics = { path = "crates/phaser-metrics" }
 evm-common = { path = "crates/schemas/evm/common", features = ["views"] }
 validators-evm = { path = "crates/validators/evm" }
 core-executor = { git = "https://github.com/dwerner/core-executor", rev = "376f2c62abbaceafef639fa24ab82199a0ce8cfe" }

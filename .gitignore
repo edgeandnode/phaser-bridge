@@ -10,3 +10,5 @@ commit-changes.sh
 cargo-build.log
 heaptrack.*.zst
 context-snapshot.yaml
+check-quality.sh
+.claude/

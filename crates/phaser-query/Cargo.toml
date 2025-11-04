@@ -14,6 +14,7 @@ path = "src/bin/phaser-cli.rs"
 [dependencies]
 # Local dependencies
 phaser-bridge = { workspace = true }
+phaser-metrics = { path = "../phaser-metrics" }
 erigon-bridge = { workspace = true }
 evm-common = { workspace = true }
 core-executor = { workspace = true }
@@ -55,8 +56,6 @@ tokio-stream = "0.1"
 alloy-consensus.workspace = true
 alloy-rlp.workspace = true
 chrono = "0.4.42"
-prometheus = "0.13"
-lazy_static = "1.5"
 scopeguard = "1.2"
 
 [build-dependencies]

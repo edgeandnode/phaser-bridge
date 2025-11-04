@@ -6,6 +6,7 @@ use crate::sync::worker::{ProgressTracker, SyncWorker, SyncWorkerConfig};
 use crate::PhaserConfig;
 use anyhow::Result;
 use core_executor::ThreadPoolExecutor;
+use phaser_metrics::SegmentMetrics;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -295,6 +296,13 @@ impl SyncServer {
         const MIN_BACKOFF_SECS: u64 = 1;
         const MAX_BACKOFF_SECS: u64 = 10;
 
+        // Create metrics helper once
+        let sync_metrics = metrics::SyncMetrics::new(
+            "phaser_query",
+            job_config.chain_id,
+            job_config.bridge_name.clone(),
+        );
+
         for worker_id in 0..num_workers {
             let bridge_endpoint = job_config.bridge_endpoint.clone();
             let data_dir = data_dir.clone();
@@ -304,6 +312,7 @@ impl SyncServer {
             let validation_stage = config.validation_stage;
             let job_complete = job_complete.clone();
             let historical_boundary = job_config.historical_boundary;
+            let metrics = sync_metrics.clone();
 
             let handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
                 loop {
@@ -318,9 +327,7 @@ impl SyncServer {
                         let mut queue = segment_queue.lock().await;
 
                         // Update queue depth metric
-                        metrics::SYNC_QUEUE_DEPTH
-                            .with_label_values(&["pending"])
-                            .set(queue.len() as i64);
+                        metrics.sync_queue_depth("pending", queue.len() as i64);
 
                         queue.pop_front()
                     };
@@ -352,8 +359,14 @@ impl SyncServer {
                         "Starting segment processing"
                     );
 
+                    // Reset retry metric on first attempt
+                    if retry_count == 0 {
+                        metrics.segment_sync_retries(segment_num, 0);
+                    }
+
                     // Create and run worker for this segment
                     let config = SyncWorkerConfig {
+                        metrics: metrics.clone(),
                         bridge_endpoint: bridge_endpoint.clone(),
                         data_dir: data_dir.clone(),
                         from_block: segment_from,
@@ -374,18 +387,17 @@ impl SyncServer {
                             let duration = segment_start.elapsed();
 
                             // Metrics
-                            metrics::SEGMENT_ATTEMPTS
-                                .with_label_values(&["success"])
-                                .inc();
+                            metrics.segment_attempts("success");
+                            metrics.segment_duration("all", duration.as_secs_f64());
 
-                            metrics::SEGMENT_DURATION
-                                .with_label_values(&["all"])
-                                .observe(duration.as_secs_f64());
+                            // Record total duration for this segment (from first attempt to completion)
+                            metrics.segment_total_duration(segment_num, duration.as_secs() as i64);
 
-                            // Clear retry count metric for this segment
-                            metrics::SEGMENT_RETRY_COUNT
-                                .remove_label_values(&[&segment_num.to_string()])
-                                .ok();
+                            // Set final retry count for this sync run
+                            metrics.segment_sync_retries(segment_num, retry_count as i64);
+
+                            // Clear current retry count gauge (no longer needed)
+                            metrics.segment_retry_count_remove(segment_num);
 
                             info!(
                                 worker_id = worker_id,
@@ -401,18 +413,11 @@ impl SyncServer {
                             let data_type = sync_err.data_type.as_str();
 
                             // Metrics
-                            metrics::SYNC_ERRORS
-                                .with_label_values(&[error_category, data_type])
-                                .inc();
+                            metrics.sync_errors(error_category, data_type);
+                            metrics.segment_attempts("retry");
 
-                            metrics::SEGMENT_ATTEMPTS
-                                .with_label_values(&["retry"])
-                                .inc();
-
-                            // Update retry count metric
-                            metrics::SEGMENT_RETRY_COUNT
-                                .with_label_values(&[&segment_num.to_string()])
-                                .set((retry_count + 1) as i64);
+                            // Update retry count metric (gauge for current retry count)
+                            metrics.segment_retry_count(segment_num, (retry_count + 1) as i64);
 
                             // Calculate backoff: exponential up to 5 retries, then cap at 10s
                             let backoff_secs = if retry_count < MAX_RETRIES_WITHOUT_PROGRESS {

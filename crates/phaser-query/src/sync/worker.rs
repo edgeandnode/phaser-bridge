@@ -8,6 +8,7 @@ use evm_common::transaction::TransactionRecord;
 use futures::StreamExt;
 use phaser_bridge::client::FlightBridgeClient;
 use phaser_bridge::descriptors::{BlockchainDescriptor, StreamType, ValidationStage};
+use phaser_metrics::SegmentMetrics;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -63,6 +64,7 @@ pub struct ProgressUpdate {
 
 /// Configuration for creating a SyncWorker
 pub struct SyncWorkerConfig {
+    pub metrics: super::metrics::SyncMetrics,
     pub bridge_endpoint: String,
     pub data_dir: PathBuf,
     pub from_block: u64,
@@ -77,6 +79,7 @@ pub struct SyncWorkerConfig {
 /// A worker that syncs a specific block range from erigon-bridge
 pub struct SyncWorker {
     worker_id: u32,
+    metrics: super::metrics::SyncMetrics,
     bridge_endpoint: String,
     data_dir: PathBuf,
     from_block: u64,
@@ -134,6 +137,7 @@ impl SyncWorker {
 
         Self {
             worker_id,
+            metrics: config.metrics,
             bridge_endpoint: config.bridge_endpoint,
             data_dir: config.data_dir,
             from_block: config.from_block,
@@ -384,13 +388,10 @@ impl SyncWorker {
         to_block: u64,
     ) -> Result<(u64, u64), SyncError> {
         // Track phase
-        super::metrics::ACTIVE_WORKERS
-            .with_label_values(&["blocks"])
-            .inc();
-        let _phase_guard = scopeguard::guard((), |_| {
-            super::metrics::ACTIVE_WORKERS
-                .with_label_values(&["blocks"])
-                .dec();
+        self.metrics.active_workers_inc("blocks");
+        let metrics = self.metrics.clone();
+        let _phase_guard = scopeguard::guard(metrics, |m| {
+            m.active_workers_dec("blocks");
         });
 
         let mut writer = ParquetWriter::with_config_and_mode(
@@ -646,13 +647,10 @@ impl SyncWorker {
         to_block: u64,
     ) -> Result<(u64, u64), SyncError> {
         // Track phase
-        super::metrics::ACTIVE_WORKERS
-            .with_label_values(&["transactions"])
-            .inc();
-        let _phase_guard = scopeguard::guard((), |_| {
-            super::metrics::ACTIVE_WORKERS
-                .with_label_values(&["transactions"])
-                .dec();
+        self.metrics.active_workers_inc("transactions");
+        let metrics = self.metrics.clone();
+        let _phase_guard = scopeguard::guard(metrics, |m| {
+            m.active_workers_dec("transactions");
         });
 
         let mut writer = ParquetWriter::with_config_and_mode(
@@ -1055,13 +1053,10 @@ impl SyncWorker {
         to_block: u64,
     ) -> Result<(u64, u64), SyncError> {
         // Track phase
-        super::metrics::ACTIVE_WORKERS
-            .with_label_values(&["logs"])
-            .inc();
-        let _phase_guard = scopeguard::guard((), |_| {
-            super::metrics::ACTIVE_WORKERS
-                .with_label_values(&["logs"])
-                .dec();
+        self.metrics.active_workers_inc("logs");
+        let metrics = self.metrics.clone();
+        let _phase_guard = scopeguard::guard(metrics, |m| {
+            m.active_workers_dec("logs");
         });
 
         let mut writer = ParquetWriter::with_config_and_mode(

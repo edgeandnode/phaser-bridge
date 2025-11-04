@@ -1,6 +1,6 @@
 mod data_scanner;
 mod error;
-mod metrics;
+pub mod metrics;
 mod service;
 mod worker;
 
