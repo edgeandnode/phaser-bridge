@@ -35,7 +35,7 @@ async-trait = { workspace = true }
 futures = "0.3"
 tokio-stream = "0.1"
 tower = "0.5"
-hyper = { version = "0.14", features = ["server", "tcp", "http1"] }
+axum = { workspace = true }
 hyper-util = "0.1"
 http = "1.0"
 

@@ -147,28 +147,34 @@ async fn main() -> Result<()> {
     // Start Prometheus metrics server
     let metrics_port = args.metrics_port;
     tokio::spawn(async move {
-        use std::convert::Infallible;
+        use axum::{response::IntoResponse, routing::get, Router};
 
-        let make_svc = hyper::service::make_service_fn(|_conn| async {
-            Ok::<_, Infallible>(hyper::service::service_fn(|_req| async {
-                let metrics = metrics::gather_metrics()
-                    .unwrap_or_else(|e| format!("Error gathering metrics: {}", e));
-                let mut response = hyper::Response::new(hyper::Body::from(metrics));
-                response.headers_mut().insert(
-                    hyper::header::CONTENT_TYPE,
-                    hyper::header::HeaderValue::from_static("text/plain; version=0.0.4"),
-                );
-                Ok::<_, Infallible>(response)
-            }))
-        });
+        async fn metrics_handler() -> impl IntoResponse {
+            match metrics::gather_metrics() {
+                Ok(metrics) => (
+                    axum::http::StatusCode::OK,
+                    [("content-type", "text/plain; version=0.0.4")],
+                    metrics,
+                ),
+                Err(e) => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    [("content-type", "text/plain")],
+                    format!("Error gathering metrics: {}", e),
+                ),
+            }
+        }
 
-        let addr = ([0, 0, 0, 0], metrics_port).into();
+        let app = Router::new().route("/metrics", get(metrics_handler));
+
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", metrics_port))
+            .await
+            .unwrap();
         info!(
-            "Starting Prometheus metrics server on http://0.0.0.0:{}",
-            metrics_port
+            "Prometheus metrics server listening on {}",
+            listener.local_addr().unwrap()
         );
 
-        if let Err(e) = hyper::Server::bind(&addr).serve(make_svc).await {
+        if let Err(e) = axum::serve(listener, app).await {
             error!("Metrics server error: {}", e);
         }
     });
