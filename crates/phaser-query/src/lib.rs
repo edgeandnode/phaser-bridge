@@ -206,6 +206,8 @@ pub struct PhaserConfig {
     pub sql_port: u16,
     #[serde(default = "default_sync_admin_port")]
     pub sync_admin_port: u16, // Port for sync admin gRPC (9090)
+    #[serde(default = "default_metrics_port")]
+    pub metrics_port: u16, // Port for Prometheus metrics HTTP server (9091)
     #[serde(default = "default_sync_parallelism")]
     pub sync_parallelism: u32, // Number of parallel workers for historical sync (4)
     #[serde(default)]
@@ -232,6 +234,10 @@ fn default_rpc_port() -> u16 {
 
 fn default_sync_admin_port() -> u16 {
     9090
+}
+
+fn default_metrics_port() -> u16 {
+    9092
 }
 
 fn default_sync_parallelism() -> u32 {

@@ -39,6 +39,10 @@ struct Args {
     #[clap(long)]
     disable_sync_admin: bool,
 
+    /// Prometheus metrics port (overrides config, default: 9092)
+    #[clap(long)]
+    metrics_port: Option<u16>,
+
     /// Bridge name to use for streaming (must be defined in config)
     #[clap(long)]
     bridge_name: Option<String>,
@@ -72,6 +76,10 @@ async fn main() -> Result<()> {
     if let Some(data_root) = args.data_root {
         info!("Overriding data root: {:?}", data_root);
         config.data_root = data_root;
+    }
+    if let Some(metrics_port) = args.metrics_port {
+        info!("Overriding metrics port: {}", metrics_port);
+        config.metrics_port = metrics_port;
     }
 
     info!("RocksDB path: {:?}", config.rocksdb_path);
@@ -237,6 +245,49 @@ async fn main() -> Result<()> {
         let handle = tokio::spawn(async move {
             if let Err(e) = start_rpc_server(catalog, port).await {
                 error!("RPC server error: {}", e);
+            }
+        });
+        handles.push(handle);
+    }
+
+    // Start Prometheus metrics server if enabled (default: enabled if metrics_port > 0)
+    if config.metrics_port > 0 {
+        info!(
+            "Starting Prometheus metrics server on port {}",
+            config.metrics_port
+        );
+
+        let metrics_port = config.metrics_port;
+        let handle = tokio::spawn(async move {
+            use axum::{response::IntoResponse, routing::get, Router};
+
+            async fn metrics_handler() -> impl IntoResponse {
+                match phaser_query::sync::metrics::gather_metrics() {
+                    Ok(metrics) => (
+                        axum::http::StatusCode::OK,
+                        [("content-type", "text/plain; version=0.0.4")],
+                        metrics,
+                    ),
+                    Err(e) => (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        [("content-type", "text/plain")],
+                        format!("Error gathering metrics: {}", e),
+                    ),
+                }
+            }
+
+            let app = Router::new().route("/metrics", get(metrics_handler));
+
+            let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", metrics_port))
+                .await
+                .unwrap();
+            info!(
+                "Prometheus metrics server listening on {}",
+                listener.local_addr().unwrap()
+            );
+
+            if let Err(e) = axum::serve(listener, app).await {
+                error!("Metrics server error: {}", e);
             }
         });
         handles.push(handle);
