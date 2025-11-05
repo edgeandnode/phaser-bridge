@@ -14,22 +14,26 @@ pub struct BlockDataClient {
     endpoint: String,
 }
 
+// Configure message size limits (128MB to handle large transaction batches)
+const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
+
 impl BlockDataClient {
     /// Connect to Erigon's BlockDataBackend service
     pub async fn connect(endpoint: String) -> Result<Self, ErigonBridgeError> {
         info!("Connecting to Erigon BlockDataBackend at {}", endpoint);
 
         // Parse endpoint to determine if it's IPC or TCP
+        // TODO: these branches are likely similar enough to simplify
         let channel = if endpoint.starts_with('/') || endpoint.starts_with("./") {
             // Unix socket (IPC)
             info!("Using IPC connection to Erigon BlockDataBackend");
 
             // We need to use a dummy URI for IPC
-            let uri = "http://[::]:50051".to_string();
+            let uri = "http://[::]".to_string();
             let path = endpoint.clone();
 
+            // Intentionally do NOT apply a timeout per request.
             Channel::builder(uri.parse()?)
-                .timeout(Duration::from_secs(300)) // 5 minute timeout for long-running operations
                 .http2_keep_alive_interval(Duration::from_secs(10)) // Send keepalive ping every 10s
                 .keep_alive_timeout(Duration::from_secs(20)) // Wait 20s for keepalive response
                 .keep_alive_while_idle(true) // Send pings even when no active requests
@@ -53,8 +57,8 @@ impl BlockDataClient {
                 endpoint.clone()
             };
 
+            // Intentionally do NOT apply a timeout per request.
             Channel::builder(uri.parse()?)
-                .timeout(Duration::from_secs(300)) // 5 minute timeout for long-running operations
                 .http2_keep_alive_interval(Duration::from_secs(10)) // Send keepalive ping every 10s
                 .keep_alive_timeout(Duration::from_secs(20)) // Wait 20s for keepalive response
                 .keep_alive_while_idle(true) // Send pings even when no active requests
@@ -62,9 +66,6 @@ impl BlockDataClient {
                 .connect()
                 .await?
         };
-
-        // Configure message size limits (128MB to handle large transaction batches)
-        const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
 
         let client = BlockDataBackendClient::new(channel)
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
