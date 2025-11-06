@@ -6,6 +6,7 @@ use crate::sync::worker::{ProgressTracker, SyncWorker, SyncWorkerConfig};
 use crate::PhaserConfig;
 use anyhow::Result;
 use core_executor::ThreadPoolExecutor;
+use phaser_bridge::FlightBridgeClient;
 use phaser_metrics::SegmentMetrics;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -414,6 +415,34 @@ impl SyncServer {
 
                             // Metrics
                             metrics.sync_errors(error_category, data_type);
+
+                            // Check if error is retryable
+                            use crate::sync::error::ErrorCategory;
+                            let is_retryable = matches!(
+                                sync_err.category,
+                                ErrorCategory::Connection
+                                    | ErrorCategory::Timeout
+                                    | ErrorCategory::Cancelled
+                            );
+
+                            if !is_retryable {
+                                // Non-retryable error - fail immediately
+                                metrics.segment_attempts("failure");
+                                error!(
+                                    worker_id = worker_id,
+                                    segment_num = segment_num,
+                                    error_type = error_category,
+                                    data_type = data_type,
+                                    from_block = sync_err.from_block,
+                                    to_block = sync_err.to_block,
+                                    error = %sync_err,
+                                    "Segment failed with non-retryable error, not retrying"
+                                );
+                                // Don't re-queue, move to next segment
+                                continue;
+                            }
+
+                            // Retryable error - proceed with retry logic
                             metrics.segment_attempts("retry");
 
                             // Update retry count metric (gauge for current retry count)
@@ -459,7 +488,7 @@ impl SyncServer {
                             // Sleep for backoff period BEFORE re-queuing
                             tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
 
-                            // Always re-queue (never abandon)
+                            // Re-queue for retry
                             let mut work_with_retry = work.clone();
                             work_with_retry.retry_count = Some(retry_count + 1);
                             work_with_retry.last_attempt = std::time::Instant::now();
@@ -579,6 +608,28 @@ impl SyncService for SyncServer {
                     req.bridge_name, req.chain_id
                 ))
             })?;
+
+        // Validate that to_block doesn't exceed chain tip (only for historical syncs without live streaming)
+        if historical_boundary.is_none() {
+            // Connect to bridge to check chain tip
+            let mut client = FlightBridgeClient::connect(bridge.endpoint.clone())
+                .await
+                .map_err(|e| Status::unavailable(format!("Failed to connect to bridge: {}", e)))?;
+
+            let bridge_info = client
+                .get_info()
+                .await
+                .map_err(|e| Status::internal(format!("Failed to get bridge info: {}", e)))?;
+
+            if bridge_info.current_block > 0 && to_block > bridge_info.current_block {
+                return Err(Status::invalid_argument(format!(
+                    "Requested to_block ({}) exceeds chain tip ({}). \
+                    Historical sync cannot request blocks that don't exist yet. \
+                    Current chain tip is at block {}.",
+                    to_block, bridge_info.current_block, bridge_info.current_block
+                )));
+            }
+        }
 
         // Generate job ID
         let job_id = Uuid::new_v4().to_string();
