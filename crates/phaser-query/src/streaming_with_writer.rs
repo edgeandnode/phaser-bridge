@@ -99,8 +99,9 @@ impl StreamingServiceWithWriter {
     /// Spawn a stream processor task for any stream type
     fn spawn_stream_processor(
         stream_type: StreamType,
-        mut stream: impl StreamExt<Item = Result<RecordBatch, arrow_flight::error::FlightError>>
-            + Send
+        mut stream: impl StreamExt<
+                Item = Result<(RecordBatch, Option<(u64, u64)>), arrow_flight::error::FlightError>,
+            > + Send
             + Unpin
             + 'static,
         sender: mpsc::Sender<RecordBatch>,
@@ -114,7 +115,9 @@ impl StreamingServiceWithWriter {
         tokio::spawn(async move {
             while let Some(batch_result) = stream.next().await {
                 match batch_result {
-                    Ok(batch) => {
+                    Ok((batch, _responsibility_range)) => {
+                        // TODO: Could track responsibility ranges for live streaming too
+                        // For now, just process the batch as before
                         // Special logging for blocks to show block number
                         let _block_number = if matches!(stream_type, StreamType::Blocks) {
                             let block_num = batch
@@ -224,39 +227,39 @@ impl StreamingServiceWithWriter {
                 continue;
             }
 
-            // Subscribe to blocks
+            // Subscribe to blocks with metadata
             let blocks_descriptor = BlockchainDescriptor::live(StreamType::Blocks);
             info!("Subscribing to blocks from bridge");
-            let blocks_stream = bridge.subscribe(&blocks_descriptor).await?;
+            let blocks_stream = bridge.subscribe_with_metadata(&blocks_descriptor).await?;
             Self::spawn_stream_processor(
                 StreamType::Blocks,
-                blocks_stream,
+                Box::pin(blocks_stream),
                 blocks_tx.clone(),
                 self.live_state.clone(),
                 self.chain_id,
                 self.bridge_name.clone(),
             );
 
-            // Subscribe to transactions
+            // Subscribe to transactions with metadata
             let txs_descriptor = BlockchainDescriptor::live(StreamType::Transactions);
             info!("Subscribing to transactions from bridge");
-            let txs_stream = bridge.subscribe(&txs_descriptor).await?;
+            let txs_stream = bridge.subscribe_with_metadata(&txs_descriptor).await?;
             Self::spawn_stream_processor(
                 StreamType::Transactions,
-                txs_stream,
+                Box::pin(txs_stream),
                 txs_tx.clone(),
                 self.live_state.clone(),
                 self.chain_id,
                 self.bridge_name.clone(),
             );
 
-            // Subscribe to logs
+            // Subscribe to logs with metadata
             let logs_descriptor = BlockchainDescriptor::live(StreamType::Logs);
             info!("Subscribing to logs from bridge");
-            let logs_stream = bridge.subscribe(&logs_descriptor).await?;
+            let logs_stream = bridge.subscribe_with_metadata(&logs_descriptor).await?;
             Self::spawn_stream_processor(
                 StreamType::Logs,
-                logs_stream,
+                Box::pin(logs_stream),
                 logs_tx.clone(),
                 self.live_state.clone(),
                 self.chain_id,
@@ -349,16 +352,16 @@ impl StreamingServiceWithWriter {
                 continue;
             }
 
-            // Subscribe to trie stream
+            // Subscribe to trie stream with metadata
             let trie_descriptor = BlockchainDescriptor::live(StreamType::Trie);
             info!("Subscribing to trie data from bridge");
 
-            match bridge.subscribe(&trie_descriptor).await {
+            match bridge.subscribe_with_metadata(&trie_descriptor).await {
                 Ok(trie_stream) => {
                     info!("Successfully subscribed to trie stream");
                     Self::spawn_stream_processor(
                         StreamType::Trie,
-                        trie_stream,
+                        Box::pin(trie_stream),
                         trie_tx.clone(),
                         self.live_state.clone(),
                         self.chain_id,
