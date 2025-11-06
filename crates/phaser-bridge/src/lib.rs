@@ -25,6 +25,73 @@ pub struct ResponsibilityRange {
     pub end_block: u64,
 }
 
+/// Metadata attached to each batch via FlightData.app_metadata
+///
+/// This struct is encoded/decoded from FlightData.app_metadata and can be extended
+/// over time with new fields. When adding fields:
+/// - Use Option<T> for truly optional metadata
+/// - Add required fields carefully (breaks compatibility)
+/// - Document the field's purpose and when it was added
+/// - Update BatchMetadata::decode() to handle the new field
+///
+/// Current usage:
+/// - Bridge encodes this into FlightData.app_metadata via BatchMetadata::encode()
+/// - Client decodes from FlightData.app_metadata via BatchMetadata::decode()
+/// - Returned as part of subscribe_with_metadata() stream items
+///
+/// Historical context:
+/// - v1: Added responsibility_range (required) for gap detection
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchMetadata {
+    /// Block range this batch is responsible for (which blocks were checked)
+    ///
+    /// This range indicates what blocks the bridge processed, even if the batch
+    /// contains 0 rows. Critical for distinguishing between "unchecked blocks"
+    /// and "checked but empty blocks" in gap detection.
+    ///
+    /// When a bridge processes blocks X to Y, all resulting batches will carry
+    /// the same responsibility range (X, Y), even if split across multiple
+    /// FlightData messages due to size limits.
+    pub responsibility_range: ResponsibilityRange,
+    // Future fields can be added here:
+    // /// Compression ratio achieved for this batch (added v2)
+    // pub compression_ratio: Option<f32>,
+    //
+    // /// If batch was split, index of this piece (added v2)
+    // pub split_index: Option<u32>,
+}
+
+impl BatchMetadata {
+    /// Create new metadata with responsibility range
+    pub fn new(start_block: u64, end_block: u64) -> Self {
+        Self {
+            responsibility_range: ResponsibilityRange {
+                start_block,
+                end_block,
+            },
+        }
+    }
+
+    /// Encode metadata to bytes for FlightData.app_metadata
+    pub fn encode(&self) -> Result<Vec<u8>, bincode::Error> {
+        bincode::serialize(self)
+    }
+
+    /// Decode metadata from FlightData.app_metadata bytes
+    ///
+    /// Returns an error if metadata is missing, empty, or invalid.
+    /// This enforces that all batches from subscribe_with_metadata() must
+    /// include proper metadata.
+    pub fn decode(metadata: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        if metadata.is_empty() {
+            return Err("FlightData.app_metadata is empty - bridge must send BatchMetadata".into());
+        }
+
+        bincode::deserialize(metadata)
+            .map_err(|e| format!("Failed to decode BatchMetadata from app_metadata: {}", e).into())
+    }
+}
+
 /// Wrapper for RecordBatch with responsibility range metadata
 ///
 /// The responsibility range indicates which blocks this batch was responsible for processing,
@@ -52,24 +119,26 @@ impl BatchWithRange {
         }
     }
 
-    /// Encode the block range as bytes for app_metadata using bincode
-    pub fn encode_range_metadata(&self) -> Result<Vec<u8>, bincode::Error> {
-        let range = ResponsibilityRange {
-            start_block: self.start_block,
-            end_block: self.end_block,
-        };
-        bincode::serialize(&range)
+    /// Encode as BatchMetadata for app_metadata
+    pub fn encode_metadata(&self) -> Result<Vec<u8>, bincode::Error> {
+        let metadata = BatchMetadata::new(self.start_block, self.end_block);
+        metadata.encode()
     }
 
-    /// Decode block range from app_metadata bytes using bincode
-    ///
-    /// Returns None if metadata is invalid or empty
-    pub fn decode_range_metadata(metadata: &[u8]) -> Option<(u64, u64)> {
-        if metadata.is_empty() {
-            return None;
-        }
+    /// Legacy method - use BatchMetadata::encode() instead
+    #[deprecated(note = "Use encode_metadata() or BatchMetadata::encode() directly")]
+    pub fn encode_range_metadata(&self) -> Result<Vec<u8>, bincode::Error> {
+        self.encode_metadata()
+    }
 
-        let range: ResponsibilityRange = bincode::deserialize(metadata).ok()?;
-        Some((range.start_block, range.end_block))
+    /// Legacy method - use BatchMetadata::decode() instead
+    #[deprecated(note = "Use BatchMetadata::decode() directly")]
+    pub fn decode_range_metadata(metadata: &[u8]) -> Option<(u64, u64)> {
+        BatchMetadata::decode(metadata).ok().map(|m| {
+            (
+                m.responsibility_range.start_block,
+                m.responsibility_range.end_block,
+            )
+        })
     }
 }

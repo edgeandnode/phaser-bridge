@@ -100,7 +100,10 @@ impl StreamingServiceWithWriter {
     fn spawn_stream_processor(
         stream_type: StreamType,
         mut stream: impl StreamExt<
-                Item = Result<(RecordBatch, Option<(u64, u64)>), arrow_flight::error::FlightError>,
+                Item = Result<
+                    (RecordBatch, phaser_bridge::BatchMetadata),
+                    arrow_flight::error::FlightError,
+                >,
             > + Send
             + Unpin
             + 'static,
@@ -115,8 +118,8 @@ impl StreamingServiceWithWriter {
         tokio::spawn(async move {
             while let Some(batch_result) = stream.next().await {
                 match batch_result {
-                    Ok((batch, _responsibility_range)) => {
-                        // TODO: Could track responsibility ranges for live streaming too
+                    Ok((batch, _metadata)) => {
+                        // TODO: Track responsibility ranges from metadata for live streaming
                         // For now, just process the batch as before
                         // Special logging for blocks to show block number
                         let _block_number = if matches!(stream_type, StreamType::Blocks) {

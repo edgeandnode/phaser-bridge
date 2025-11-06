@@ -150,22 +150,25 @@ impl FlightBridgeClient {
         Ok(batches)
     }
 
-    /// Subscribe with access to app_metadata (responsibility ranges)
-    /// Returns a stream of (RecordBatch, Option<(u64, u64)>) where the tuple is (start_block, end_block)
+    /// Subscribe with access to batch metadata from FlightData.app_metadata
+    ///
+    /// Returns a stream of (RecordBatch, BatchMetadata) tuples.
     ///
     /// This method accesses raw FlightData messages to preserve app_metadata that contains
-    /// responsibility range information (which blocks were processed, even if they had 0 rows).
+    /// batch metadata including responsibility range information (which blocks were processed,
+    /// even if the batch contains 0 rows).
+    ///
+    /// All batches are required to have metadata - if metadata is missing or invalid,
+    /// an error is returned.
     pub async fn subscribe_with_metadata(
         &mut self,
         descriptor: &BlockchainDescriptor,
     ) -> Result<
         impl futures::Stream<
-            Item = Result<(RecordBatch, Option<(u64, u64)>), arrow_flight::error::FlightError>,
+            Item = Result<(RecordBatch, crate::BatchMetadata), arrow_flight::error::FlightError>,
         >,
         anyhow::Error,
     > {
-        use crate::BatchWithRange;
-
         let ticket = descriptor.to_ticket();
 
         info!(
@@ -212,12 +215,11 @@ impl FlightBridgeClient {
                     continue;
                 }
 
-                // Extract app_metadata (responsibility range) before decoding
-                let responsibility_range = if !flight_data.app_metadata.is_empty() {
-                    BatchWithRange::decode_range_metadata(&flight_data.app_metadata)
-                } else {
-                    None
-                };
+                // Extract and decode app_metadata (required)
+                let metadata = crate::BatchMetadata::decode(&flight_data.app_metadata)
+                    .map_err(|e| arrow_flight::error::FlightError::DecodeError(
+                        format!("Failed to decode batch metadata: {}", e)
+                    ))?;
 
                 // Decode the RecordBatch from FlightData using the schema
                 if !flight_data.data_body.is_empty() {
@@ -228,7 +230,7 @@ impl FlightBridgeClient {
                             &dictionaries_by_id
                         )?;
 
-                        yield (batch, responsibility_range);
+                        yield (batch, metadata);
                     }
                 }
             }

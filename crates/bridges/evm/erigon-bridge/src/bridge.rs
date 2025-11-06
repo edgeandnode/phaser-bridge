@@ -916,11 +916,11 @@ impl FlightBridge for ErigonFlightBridge {
             while let Some(batch_result) = batch_stream.next().await {
                 match batch_result {
                     Ok(batch_with_range) => {
-                        // Encode the responsibility range metadata
-                        let metadata = match batch_with_range.encode_range_metadata() {
+                        // Encode the batch metadata (responsibility range)
+                        let metadata = match batch_with_range.encode_metadata() {
                             Ok(m) => m,
                             Err(e) => {
-                                error!("Failed to encode range metadata: {}", e);
+                                error!("Failed to encode batch metadata: {}", e);
                                 yield Err(Status::internal(format!("Metadata encoding error: {}", e)));
                                 continue;
                             }

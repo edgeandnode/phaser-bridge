@@ -534,7 +534,7 @@ impl SyncWorker {
         let mut max_responsibility_end: Option<u64> = None;
 
         while let Some(batch_result) = stream.next().await {
-            let (batch, responsibility_range) = match batch_result {
+            let (batch, metadata) = match batch_result {
                 Ok(data) => data,
                 Err(e) => {
                     // Preserve the full gRPC/Flight error chain from bridge/erigon
@@ -549,15 +549,14 @@ impl SyncWorker {
             };
 
             // Track the maximum responsibility end from batch metadata
-            if let Some((_, resp_end)) = responsibility_range {
-                max_responsibility_end = Some(
-                    max_responsibility_end
-                        .map(|current| current.max(resp_end))
-                        .unwrap_or(resp_end),
-                );
-                // Update writer's responsibility range from bridge metadata
-                writer.update_responsibility_end(resp_end);
-            }
+            let resp_end = metadata.responsibility_range.end_block;
+            max_responsibility_end = Some(
+                max_responsibility_end
+                    .map(|current| current.max(resp_end))
+                    .unwrap_or(resp_end),
+            );
+            // Update writer's responsibility range from bridge metadata
+            writer.update_responsibility_end(resp_end);
 
             debug!(
                 "Worker {} received block batch with {} rows",
@@ -852,7 +851,7 @@ impl SyncWorker {
         let mut max_responsibility_end: Option<u64> = None;
 
         while let Some(batch_result) = stream.next().await {
-            let (batch, responsibility_range) = match batch_result {
+            let (batch, metadata) = match batch_result {
                 Ok(data) => data,
                 Err(e) => {
                     // Log the full error details from the bridge before wrapping
@@ -872,17 +871,16 @@ impl SyncWorker {
             };
 
             // Track the maximum responsibility end from batch metadata
-            if let Some((_, resp_end)) = responsibility_range {
-                max_responsibility_end = Some(
-                    max_responsibility_end
-                        .map(|current| current.max(resp_end))
-                        .unwrap_or(resp_end),
-                );
-                // Update writer's responsibility range from bridge metadata
-                writer.update_responsibility_end(resp_end);
-                if let Some(ref mut proof_w) = proof_writer {
-                    proof_w.update_responsibility_end(resp_end);
-                }
+            let resp_end = metadata.responsibility_range.end_block;
+            max_responsibility_end = Some(
+                max_responsibility_end
+                    .map(|current| current.max(resp_end))
+                    .unwrap_or(resp_end),
+            );
+            // Update writer's responsibility range from bridge metadata
+            writer.update_responsibility_end(resp_end);
+            if let Some(ref mut proof_w) = proof_writer {
+                proof_w.update_responsibility_end(resp_end);
             }
 
             debug!(
@@ -1243,7 +1241,7 @@ impl SyncWorker {
         let mut max_responsibility_end: Option<u64> = None;
 
         while let Some(batch_result) = stream.next().await {
-            let (batch, responsibility_range) = match batch_result {
+            let (batch, metadata) = match batch_result {
                 Ok(data) => data,
                 Err(e) => {
                     // Preserve the full gRPC/Flight error chain from bridge/erigon
@@ -1258,15 +1256,14 @@ impl SyncWorker {
             };
 
             // Track the maximum responsibility end from batch metadata
-            if let Some((_, resp_end)) = responsibility_range {
-                max_responsibility_end = Some(
-                    max_responsibility_end
-                        .map(|current| current.max(resp_end))
-                        .unwrap_or(resp_end),
-                );
-                // Update writer's responsibility range from bridge metadata
-                writer.update_responsibility_end(resp_end);
-            }
+            let resp_end = metadata.responsibility_range.end_block;
+            max_responsibility_end = Some(
+                max_responsibility_end
+                    .map(|current| current.max(resp_end))
+                    .unwrap_or(resp_end),
+            );
+            // Update writer's responsibility range from bridge metadata
+            writer.update_responsibility_end(resp_end);
 
             debug!(
                 "Worker {} received log batch with {} rows",
