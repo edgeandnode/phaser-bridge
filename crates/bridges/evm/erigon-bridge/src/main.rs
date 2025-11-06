@@ -197,9 +197,9 @@ async fn main() -> Result<()> {
     // Create the Flight server
     let flight_server = FlightBridgeServer::new(bridge);
 
-    // Configure global maximum message size (128MB)
+    // Configure global maximum message size (256MB)
     // Per-stream limits are negotiated via StreamPreferences
-    const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
+    const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
 
     // Configure compression based on CLI flag
     let mut flight_service = flight_server

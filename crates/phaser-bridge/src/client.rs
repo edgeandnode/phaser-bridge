@@ -1,9 +1,6 @@
 use arrow::datatypes::Schema;
 use arrow_array::RecordBatch;
-use arrow_flight::{
-    decode::FlightRecordBatchStream, flight_service_client::FlightServiceClient, FlightClient,
-    FlightInfo,
-};
+use arrow_flight::{flight_service_client::FlightServiceClient, FlightClient, FlightInfo};
 use futures::stream::StreamExt;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
@@ -79,9 +76,9 @@ impl FlightBridgeClient {
             Channel::from_shared(uri)?.connect().await?
         };
 
-        // Configure message size limits (128MB global max for large batches)
+        // Configure message size limits (256MB global max for large batches)
         // This allows the client to receive large messages from the bridge
-        const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
+        const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
 
         // Client accepts compression if server sends it
         // Compression is controlled by the bridge's --compression flag
@@ -153,41 +150,25 @@ impl FlightBridgeClient {
         Ok(batches)
     }
 
-    /// Subscribe to real-time blockchain data
-    pub async fn subscribe(
-        &mut self,
-        descriptor: &BlockchainDescriptor,
-    ) -> Result<FlightRecordBatchStream, anyhow::Error> {
-        let ticket = descriptor.to_ticket();
-
-        info!(
-            "Subscribing to real-time data from bridge ({})",
-            descriptor.stream_type.to_string()
-        );
-        let stream = self.client.do_get(ticket).await?;
-
-        // Return the stream for the caller to consume
-        Ok(stream)
-    }
-
-    /// Subscribe with access to app_metadata (responsibility ranges)
-    /// Returns a stream of (RecordBatch, Option<(u64, u64)>) where the tuple is (start_block, end_block)
+    /// Subscribe with access to batch metadata from FlightData.app_metadata
+    ///
+    /// Returns a stream of (RecordBatch, BatchMetadata) tuples.
     ///
     /// This method accesses raw FlightData messages to preserve app_metadata that contains
-    /// responsibility range information (which blocks were processed, even if they had 0 rows).
+    /// batch metadata including responsibility range information (which blocks were processed,
+    /// even if the batch contains 0 rows).
+    ///
+    /// All batches are required to have metadata - if metadata is missing or invalid,
+    /// an error is returned.
     pub async fn subscribe_with_metadata(
         &mut self,
         descriptor: &BlockchainDescriptor,
     ) -> Result<
         impl futures::Stream<
-            Item = Result<(RecordBatch, Option<(u64, u64)>), arrow_flight::error::FlightError>,
+            Item = Result<(RecordBatch, crate::BatchMetadata), arrow_flight::error::FlightError>,
         >,
         anyhow::Error,
     > {
-        use crate::BatchWithRange;
-        use arrow_ipc::reader::StreamReader;
-        use std::io::Cursor;
-
         let ticket = descriptor.to_ticket();
 
         info!(
@@ -196,50 +177,60 @@ impl FlightBridgeClient {
         );
 
         // Access the inner FlightServiceClient to get raw FlightData stream
-        // We need mutable access to the client
         let mut inner_client = self.client.inner().clone();
         let response = inner_client.do_get(ticket).await?;
-        let mut flight_data_stream = response.into_inner();
+        let flight_data_stream = response.into_inner();
 
-        // Manually decode FlightData to preserve app_metadata
+        // We need to decode FlightData messages while preserving app_metadata
+        // FlightRecordBatchStream would handle decoding correctly, but we'd lose app_metadata
+        // So we'll manually process FlightData using arrow_flight::utils for proper decoding
         let stream = async_stream::try_stream! {
-            let mut schema_received = false;
-            let mut schema_bytes = Vec::new();
+            use arrow_ipc::{root_as_message, convert::fb_to_schema};
+            use std::sync::Arc;
+
+            let mut flight_data_stream = flight_data_stream;
+
+            let mut schema: Option<arrow::datatypes::SchemaRef> = None;
+            let dictionaries_by_id = std::collections::HashMap::new();
 
             while let Some(flight_data_result) = flight_data_stream.next().await {
-                let flight_data = flight_data_result.map_err(|e| {
-                    arrow_flight::error::FlightError::Tonic(Box::new(e))
-                })?;
+                let flight_data = flight_data_result
+                    .map_err(|e| arrow_flight::error::FlightError::Tonic(Box::new(e)))?;
 
-                // First message contains the schema
-                if !schema_received {
-                    schema_bytes.extend_from_slice(&flight_data.data_header);
-                    schema_bytes.extend_from_slice(&flight_data.data_body);
-                    schema_received = true;
+                // First message should be the schema
+                if schema.is_none() {
+                    // Decode schema from FlightData header (based on flight_data_to_batches implementation)
+                    let message = root_as_message(&flight_data.data_header[..])
+                        .map_err(|err| arrow_flight::error::FlightError::DecodeError(
+                            format!("Cannot get root as message: {:?}", err)
+                        ))?;
+
+                    let ipc_schema = message
+                        .header_as_schema()
+                        .ok_or_else(|| arrow_flight::error::FlightError::DecodeError(
+                            "First message should be schema".to_string()
+                        ))?;
+
+                    schema = Some(Arc::new(fb_to_schema(ipc_schema)));
                     continue;
                 }
 
-                // Extract app_metadata (responsibility range)
-                let responsibility_range = if !flight_data.app_metadata.is_empty() {
-                    BatchWithRange::decode_range_metadata(&flight_data.app_metadata)
-                } else {
-                    None
-                };
+                // Extract and decode app_metadata (required)
+                let metadata = crate::BatchMetadata::decode(&flight_data.app_metadata)
+                    .map_err(|e| arrow_flight::error::FlightError::DecodeError(
+                        format!("Failed to decode batch metadata: {}", e)
+                    ))?;
 
-                // Decode the RecordBatch from IPC data
+                // Decode the RecordBatch from FlightData using the schema
                 if !flight_data.data_body.is_empty() {
-                    // Combine header and body into a single buffer for IPC decoding
-                    let mut ipc_data = Vec::new();
-                    ipc_data.extend_from_slice(&flight_data.data_header);
-                    ipc_data.extend_from_slice(&flight_data.data_body);
+                    if let Some(ref schema_ref) = schema {
+                        let batch = arrow_flight::utils::flight_data_to_arrow_batch(
+                            &flight_data,
+                            schema_ref.clone(),
+                            &dictionaries_by_id
+                        )?;
 
-                    // Decode using Arrow IPC
-                    let cursor = Cursor::new(ipc_data);
-                    let reader = StreamReader::try_new(cursor, None)?;
-
-                    for batch_result in reader {
-                        let batch = batch_result?;
-                        yield (batch, responsibility_range);
+                        yield (batch, metadata);
                     }
                 }
             }

@@ -25,6 +25,7 @@ use crate::segment_worker::{split_into_segments, SegmentConfig, SegmentWorker};
 use crate::streaming_service::StreamingService;
 use crate::trie_client::TrieClient;
 use crate::trie_converter;
+use phaser_metrics::SegmentMetrics;
 use std::sync::Arc;
 use tonic::Status as TonicStatus;
 
@@ -122,15 +123,21 @@ impl ErigonFlightBridge {
         })
     }
 
-    pub fn bridge_info(&self) -> BridgeInfo {
+    pub async fn bridge_info(&self) -> BridgeInfo {
+        // Query current block from Erigon
+        let current_block = {
+            let mut client = self.client.lock().await;
+            client.get_latest_block().await.unwrap_or(0)
+        };
+
         BridgeInfo {
             name: "erigon-bridge".to_string(),
             node_type: "erigon".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             chain_id: self.chain_id,
             capabilities: vec!["streaming".to_string()],
-            current_block: 0, // Would need to query this from Erigon
-            oldest_block: 0,  // Would need to query this from Erigon
+            current_block,
+            oldest_block: 0, // Could query this from Erigon if needed
         }
     }
 
@@ -545,6 +552,7 @@ impl ErigonFlightBridge {
 
         let blockdata_pool = self.blockdata_pool.clone();
         let batch_size = self.segment_config.validation_batch_size;
+        let metrics = self.metrics.clone();
 
         let stream = async_stream::stream! {
             match stream_type {
@@ -621,8 +629,14 @@ impl ErigonFlightBridge {
                             }
                             Err(e) => {
                                 error!("Failed to receive block batch: {}", e);
+
+                                // Convert tonic::Status to ErigonBridgeError for proper categorization
+                                let bridge_err = ErigonBridgeError::from(e);
+                                let error_type = crate::segment_worker::SegmentWorker::categorize_error(&bridge_err);
+                                metrics.error(&error_type, "blocks");
+
                                 yield Err(arrow_flight::error::FlightError::ExternalError(
-                                    Box::new(std::io::Error::other(e.to_string()))
+                                    Box::new(std::io::Error::other(bridge_err.to_string()))
                                 ));
                                 break;
                             }
@@ -674,7 +688,7 @@ impl ErigonFlightBridge {
 #[async_trait]
 impl FlightBridge for ErigonFlightBridge {
     async fn get_info(&self) -> Result<BridgeInfo, Status> {
-        Ok(self.bridge_info())
+        Ok(self.bridge_info().await)
     }
 
     async fn get_capabilities(&self) -> Result<BridgeCapabilities, Status> {
@@ -698,7 +712,7 @@ impl FlightBridge for ErigonFlightBridge {
         // Simple handshake - return bridge info
         let response = HandshakeResponse {
             protocol_version: 1,
-            payload: serde_json::to_vec(&self.bridge_info())
+            payload: serde_json::to_vec(&self.bridge_info().await)
                 .map_err(|e| Status::internal(format!("Failed to serialize bridge info: {}", e)))?
                 .into(),
         };
@@ -882,6 +896,8 @@ impl FlightBridge for ErigonFlightBridge {
         };
 
         let schema = Self::get_schema_for_type(stream_type);
+        let metrics_for_stream = self.metrics.clone();
+        let stream_type_for_metrics = stream_type;
 
         // Compression is handled at the gRPC transport level via tonic
         // (configured in main.rs with accept_compressed/send_compressed)
@@ -900,11 +916,11 @@ impl FlightBridge for ErigonFlightBridge {
             while let Some(batch_result) = batch_stream.next().await {
                 match batch_result {
                     Ok(batch_with_range) => {
-                        // Encode the responsibility range metadata
-                        let metadata = match batch_with_range.encode_range_metadata() {
+                        // Encode the batch metadata (responsibility range)
+                        let metadata = match batch_with_range.encode_metadata() {
                             Ok(m) => m,
                             Err(e) => {
-                                error!("Failed to encode range metadata: {}", e);
+                                error!("Failed to encode batch metadata: {}", e);
                                 yield Err(Status::internal(format!("Metadata encoding error: {}", e)));
                                 continue;
                             }
@@ -936,6 +952,30 @@ impl FlightBridge for ErigonFlightBridge {
                     }
                     Err(e) => {
                         error!("Error in batch stream: {}", e);
+
+                        // Categorize error from string (since FlightError wraps the original error as string)
+                        let err_str = e.to_string().to_lowercase();
+                        let error_type = if err_str.contains("timeout") || err_str.contains("timed out") {
+                            "timeout"
+                        } else if err_str.contains("header not found") || err_str.contains("block not found") || err_str.contains("not found") {
+                            "not_found"
+                        } else if err_str.contains("connection") || err_str.contains("connect") {
+                            "connection"
+                        } else if err_str.contains("unavailable") {
+                            "unavailable"
+                        } else {
+                            "unknown"
+                        };
+
+                        let data_type = match stream_type_for_metrics {
+                            StreamType::Blocks => "blocks",
+                            StreamType::Transactions => "transactions",
+                            StreamType::Logs => "logs",
+                            StreamType::Trie => "trie",
+                        };
+
+                        metrics_for_stream.error(error_type, data_type);
+
                         yield Err(Status::internal(format!("Stream error: {}", e)));
                     }
                 }

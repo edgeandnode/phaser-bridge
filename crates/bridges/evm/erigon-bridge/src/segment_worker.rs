@@ -185,6 +185,11 @@ impl SegmentWorker {
                 Err(e) => {
                     error!("Worker {} segment {}: Failed to fetch headers for blocks {}-{}: {}",
                         worker_id, segment_id, current_block, chunk_end, e);
+
+                    // Track error type for monitoring
+                    let error_type = Self::categorize_error(&e);
+                    self.metrics.error(&error_type, "blocks");
+
                     self.metrics.active_workers_dec("blocks");
                     self.metrics.segment_attempt(false);
                     yield Err(e);
@@ -241,10 +246,13 @@ impl SegmentWorker {
                 worker_id, segment_id, start_block, end_block
             );
 
+            let request_start = Instant::now();
             let mut tx_stream = client.stream_transactions(start_block, end_block, self.config.validation_batch_size as u32).await.map_err(|e| {
                 error!("Worker {} segment {}: Failed to create transaction stream: {}", worker_id, segment_id, e);
                 e
             })?;
+            let duration_ms = request_start.elapsed().as_millis() as f64;
+            self.metrics.grpc_request_duration_transactions(segment_id, "stream_transactions", duration_ms);
             let mut all_transactions = Vec::new();
 
             let mut batch_count = 0u64;
@@ -335,6 +343,10 @@ impl SegmentWorker {
             .await {
                 Ok(batch) => batch,
                 Err(e) => {
+                    // Track error type for monitoring
+                    let error_type = Self::categorize_error(&e);
+                    self.metrics.error(&error_type, "transactions");
+
                     // Clean up metrics before error return
                     self.metrics.active_workers_dec("transactions");
                     self.metrics.segment_attempt(false);
@@ -346,6 +358,10 @@ impl SegmentWorker {
             // Yield this batch immediately - no buffering!
             // Wrap with responsibility range metadata
             yielded_batches += 1;
+            info!(
+                "BRIDGE YIELD: Worker {} segment {}: Yielding transaction batch {}, blocks {}-{}",
+                worker_id, segment_id, yielded_batches, start_block, end_block
+            );
             yield Ok(BatchWithRange::new(arrow_batch, start_block, end_block));
             }
 
@@ -365,6 +381,7 @@ impl SegmentWorker {
                 segment_id,
                 total_blocks
             );
+            self.metrics.error("empty_stream", "transactions");
             self.metrics.active_workers_dec("transactions");
             self.metrics
                 .set_worker_stage(worker_id, segment_id, WorkerStage::Idle);
@@ -441,6 +458,11 @@ impl SegmentWorker {
                 Err(e) => {
                     error!("Worker {} segment {}: Failed to fetch headers for blocks {}-{}: {}",
                         worker_id, segment_id, current_block, chunk_end, e);
+
+                    // Track error type for monitoring
+                    let error_type = Self::categorize_error(&e);
+                    self.metrics.error(&error_type, "logs");
+
                     self.metrics.active_workers_dec("logs");
                     yield Err(e);
                     return;
@@ -461,9 +483,6 @@ impl SegmentWorker {
             let mut sorted_chunk: Vec<_> = chunk_headers.into_iter().collect();
             sorted_chunk.sort_by_key(|(block_num, _)| *block_num);
 
-            // Batch blocks into sub-ranges for receipt fetching
-            // Instead of 1 request per block, do 1 request per 10-20 blocks
-            // This reduces gRPC overhead while maintaining good parallelism
             const RECEIPT_BATCH_SIZE: usize = 10;
 
             let receipt_futures: Vec<_> = sorted_chunk
@@ -504,6 +523,10 @@ impl SegmentWorker {
                         current_batch.extend(batch_data);
                     }
                     Err(e) => {
+                        // Track error type for monitoring
+                        let error_type = Self::categorize_error(&e);
+                        self.metrics.error(&error_type, "logs");
+
                         self.metrics.active_workers_dec("logs");
                         yield Err(e);
                         return;
@@ -530,6 +553,10 @@ impl SegmentWorker {
                 .await {
                     Ok(b) => b,
                     Err(e) => {
+                        // Track error type for monitoring
+                        let error_type = Self::categorize_error(&e);
+                        self.metrics.error(&error_type, "logs");
+
                         self.metrics.active_workers_dec("logs");
                         yield Err(e);
                         return;
@@ -567,6 +594,7 @@ impl SegmentWorker {
                 segment_id,
                 total_blocks
             );
+            self.metrics.error("empty_stream", "logs");
             self.metrics.active_workers_dec("logs");
             yield Err(ErigonBridgeError::StreamProtocol(StreamError::ZeroBatchesConsumed {
                 start: self.segment_start,
@@ -603,6 +631,15 @@ impl SegmentWorker {
         batch_size: u32,
         metrics: &BridgeMetrics,
     ) -> Result<HashMap<u64, (Header, i64)>, ErigonBridgeError> {
+        info!(
+            "ERIGON REQUEST: Requesting blocks {}-{} from Erigon (expecting {} blocks)",
+            segment_start,
+            segment_end,
+            segment_end - segment_start + 1
+        );
+
+        let segment_id = segment_start / 500_000;
+        let request_start = Instant::now();
         let mut block_stream = client
             .stream_blocks(segment_start, segment_end, batch_size)
             .await
@@ -613,6 +650,8 @@ impl SegmentWorker {
                 );
                 e
             })?;
+        let duration_ms = request_start.elapsed().as_millis() as f64;
+        metrics.grpc_request_duration_blocks(segment_id, "stream_blocks", duration_ms);
 
         // Track active gRPC stream
         metrics.grpc_stream_inc("blocks");
@@ -668,13 +707,28 @@ impl SegmentWorker {
                 segment_start, segment_end, batch_count
             );
         } else {
-            debug!(
-                "Blocks {}-{}: Header stream completed, fetched {} headers from {} batches",
-                segment_start,
-                segment_end,
-                headers.len(),
-                batch_count
-            );
+            // Calculate actual range received
+            let block_numbers: Vec<u64> = headers.keys().copied().collect();
+            let min_received = block_numbers.iter().min().copied().unwrap_or(0);
+            let max_received = block_numbers.iter().max().copied().unwrap_or(0);
+            let expected_count = segment_end - segment_start + 1;
+            let missing_count = expected_count - headers.len() as u64;
+
+            if missing_count > 0 {
+                warn!(
+                    "ERIGON RESPONSE: Blocks {}-{}: Received {} headers (expected {}), actual range {}-{}, MISSING {} blocks",
+                    segment_start, segment_end, headers.len(), expected_count, min_received, max_received, missing_count
+                );
+            } else {
+                info!(
+                    "ERIGON RESPONSE: Blocks {}-{}: Received {} headers (complete), range {}-{}",
+                    segment_start,
+                    segment_end,
+                    headers.len(),
+                    min_received,
+                    max_received
+                );
+            }
         }
 
         Ok(headers)
@@ -755,6 +809,7 @@ impl SegmentWorker {
         metrics: &BridgeMetrics,
     ) -> Result<Vec<(u64, Vec<crate::proto::custom::ReceiptData>, Header)>, ErigonBridgeError> {
         let call_start = std::time::Instant::now();
+        let segment_id = from_block / 500_000;
 
         // Spawn a monitoring task that warns if the call takes too long
         const SLOW_CALL_WARNING_THRESHOLD_SECS: u64 = 300; // 5 minutes
@@ -773,6 +828,7 @@ impl SegmentWorker {
             })
         };
 
+        let request_start = Instant::now();
         let mut receipt_stream = client
             .execute_blocks(from_block, to_block, 100)
             .await
@@ -788,6 +844,8 @@ impl SegmentWorker {
                 );
                 e
             })?;
+        let duration_ms = request_start.elapsed().as_millis() as f64;
+        metrics.grpc_request_duration_logs(segment_id, "execute_blocks", duration_ms);
 
         // Cancel the monitor task since the call succeeded
         monitor_handle.abort();
@@ -963,6 +1021,40 @@ impl SegmentWorker {
 
         // Convert directly without intermediate ReceiptBatch struct
         BlockDataConverter::receipts_to_logs_arrow(all_receipts, &timestamps)
+    }
+
+    /// Categorize error for metrics tracking
+    pub(crate) fn categorize_error(error: &ErigonBridgeError) -> String {
+        let err_str = error.to_string();
+        let err_lower = err_str.to_lowercase();
+
+        // Check for known error patterns first
+        if err_lower.contains("timeout") || err_lower.contains("timed out") {
+            return "timeout".to_string();
+        } else if err_lower.contains("header not found") || err_lower.contains("block not found") {
+            return "not_found".to_string();
+        } else if err_lower.contains("connection") || err_lower.contains("connect") {
+            return "connection".to_string();
+        } else if err_lower.contains("unavailable") {
+            return "unavailable".to_string();
+        } else if err_lower.contains("rlp") || err_lower.contains("decoding") {
+            return "decode_error".to_string();
+        } else if err_lower.contains("validation") {
+            return "validation".to_string();
+        }
+
+        // For unknown errors, include the actual error message (truncated to avoid extremely long labels)
+        // Take the first part up to first colon, or first 80 chars
+        let pattern = err_str
+            .split(':')
+            .next()
+            .unwrap_or(&err_str)
+            .trim()
+            .chars()
+            .take(80)
+            .collect::<String>();
+
+        format!("unknown:{}", pattern)
     }
 }
 

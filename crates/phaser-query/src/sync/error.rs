@@ -176,6 +176,9 @@ impl SyncError {
             ErrorCategory::Connection
         } else if err_lower.contains("timeout") || err_lower.contains("timed out") {
             ErrorCategory::Timeout
+        } else if err_lower.contains("header not found") || err_lower.contains("block not found") {
+            // Block doesn't exist - likely beyond chain tip, not a transient error for historical sync
+            ErrorCategory::NoData
         } else if err_lower.contains("validation") || err_lower.contains("invalid") {
             ErrorCategory::Validation
         } else if err_lower.contains("io error") || err_lower.contains("file") {
@@ -215,6 +218,9 @@ impl SyncError {
             ErrorCategory::Connection
         } else if err_lower.contains("timeout") || err_lower.contains("timed out") {
             ErrorCategory::Timeout
+        } else if err_lower.contains("header not found") || err_lower.contains("block not found") {
+            // Block doesn't exist - likely beyond chain tip, not a transient error for historical sync
+            ErrorCategory::NoData
         } else if err_lower.contains("validation") || err_lower.contains("invalid") {
             ErrorCategory::Validation
         } else if err_lower.contains("io error") || err_lower.contains("file") {
@@ -254,6 +260,9 @@ impl SyncError {
             ErrorCategory::Connection
         } else if err_lower.contains("timeout") || err_lower.contains("timed out") {
             ErrorCategory::Timeout
+        } else if err_lower.contains("header not found") || err_lower.contains("block not found") {
+            // Block doesn't exist - likely beyond chain tip, not a transient error for historical sync
+            ErrorCategory::NoData
         } else if err_lower.contains("validation") || err_lower.contains("invalid") {
             ErrorCategory::Validation
         } else if err_lower.contains("io error") || err_lower.contains("file") {

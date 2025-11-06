@@ -25,10 +25,7 @@ fn is_transient_error(err: &SyncError) -> bool {
         ErrorCategory::Connection | ErrorCategory::Timeout | ErrorCategory::Cancelled
     ) ||
     // Also check message for specific transient patterns
-    err.message.contains("txn 0 already rollback")
-        || err.message.contains("Timeout expired")
-        || err.message.contains("Failed to receive")
-        || err.message.contains("stream")
+    err.message.contains("Timeout expired")
 }
 
 /// Worker progress tracking
@@ -515,25 +512,30 @@ impl SyncWorker {
         let descriptor = BlockchainDescriptor::historical(StreamType::Blocks, from_block, to_block)
             .with_preferences(preferences);
 
-        // Subscribe to the block stream (returns Arrow RecordBatches)
-        let mut stream = client.subscribe(&descriptor).await.map_err(|e| {
-            SyncError::from_anyhow_with_context(
-                DataType::Blocks,
-                from_block,
-                to_block,
-                "Failed to subscribe to block stream",
-                e,
-            )
-        })?;
+        // Subscribe to the block stream with metadata (returns RecordBatch + responsibility range)
+        let stream = client
+            .subscribe_with_metadata(&descriptor)
+            .await
+            .map_err(|e| {
+                SyncError::from_anyhow_with_context(
+                    DataType::Blocks,
+                    from_block,
+                    to_block,
+                    "Failed to subscribe to block stream",
+                    e,
+                )
+            })?;
+        let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
         let mut bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
+        let mut max_responsibility_end: Option<u64> = None;
 
         while let Some(batch_result) = stream.next().await {
-            let batch = match batch_result {
-                Ok(batch) => batch,
+            let (batch, metadata) = match batch_result {
+                Ok(data) => data,
                 Err(e) => {
                     // Preserve the full gRPC/Flight error chain from bridge/erigon
                     return Err(SyncError::from_error_with_context(
@@ -545,6 +547,16 @@ impl SyncWorker {
                     ));
                 }
             };
+
+            // Track the maximum responsibility end from batch metadata
+            let resp_end = metadata.responsibility_range.end_block;
+            max_responsibility_end = Some(
+                max_responsibility_end
+                    .map(|current| current.max(resp_end))
+                    .unwrap_or(resp_end),
+            );
+            // Update writer's responsibility range from bridge metadata
+            writer.update_responsibility_end(resp_end);
 
             debug!(
                 "Worker {} received block batch with {} rows",
@@ -825,20 +837,22 @@ impl SyncWorker {
             self.validation_stage
         );
 
-        // Subscribe to the transaction stream (returns Arrow RecordBatches)
-        let mut stream = client
-            .subscribe(&descriptor)
+        // Subscribe to the transaction stream with metadata (returns RecordBatch + responsibility range)
+        let stream = client
+            .subscribe_with_metadata(&descriptor)
             .await
             .context("Failed to subscribe to transaction stream")?;
+        let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
         let mut bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
+        let mut max_responsibility_end: Option<u64> = None;
 
         while let Some(batch_result) = stream.next().await {
-            let batch = match batch_result {
-                Ok(batch) => batch,
+            let (batch, metadata) = match batch_result {
+                Ok(data) => data,
                 Err(e) => {
                     // Log the full error details from the bridge before wrapping
                     error!(
@@ -855,6 +869,19 @@ impl SyncWorker {
                     ));
                 }
             };
+
+            // Track the maximum responsibility end from batch metadata
+            let resp_end = metadata.responsibility_range.end_block;
+            max_responsibility_end = Some(
+                max_responsibility_end
+                    .map(|current| current.max(resp_end))
+                    .unwrap_or(resp_end),
+            );
+            // Update writer's responsibility range from bridge metadata
+            writer.update_responsibility_end(resp_end);
+            if let Some(ref mut proof_w) = proof_writer {
+                proof_w.update_responsibility_end(resp_end);
+            }
 
             debug!(
                 "Worker {} received transaction batch with {} rows",
@@ -875,6 +902,17 @@ impl SyncWorker {
                     if first_block_seen.is_none() {
                         first_block_seen = Some(first);
                     }
+
+                    // Log what we received from bridge
+                    info!(
+                        "PHASER RECEIVED: Worker {} transactions batch {}, blocks {}-{} ({} rows)",
+                        self.worker_id,
+                        batches_processed + 1,
+                        first,
+                        last,
+                        batch.num_rows()
+                    );
+
                     last_block_seen = Some(last);
                 }
             }
@@ -1181,25 +1219,30 @@ impl SyncWorker {
             .with_validation(self.validation_stage)
             .with_preferences(preferences);
 
-        // Subscribe to the log stream (returns Arrow RecordBatches)
-        let mut stream = client.subscribe(&descriptor).await.map_err(|e| {
-            SyncError::from_anyhow_with_context(
-                DataType::Logs,
-                from_block,
-                to_block,
-                "Failed to subscribe to log stream",
-                e,
-            )
-        })?;
+        // Subscribe to the log stream with metadata (returns RecordBatch + responsibility range)
+        let stream = client
+            .subscribe_with_metadata(&descriptor)
+            .await
+            .map_err(|e| {
+                SyncError::from_anyhow_with_context(
+                    DataType::Logs,
+                    from_block,
+                    to_block,
+                    "Failed to subscribe to log stream",
+                    e,
+                )
+            })?;
+        let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
         let mut bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
+        let mut max_responsibility_end: Option<u64> = None;
 
         while let Some(batch_result) = stream.next().await {
-            let batch = match batch_result {
-                Ok(batch) => batch,
+            let (batch, metadata) = match batch_result {
+                Ok(data) => data,
                 Err(e) => {
                     // Preserve the full gRPC/Flight error chain from bridge/erigon
                     return Err(SyncError::from_error_with_context(
@@ -1211,6 +1254,16 @@ impl SyncWorker {
                     ));
                 }
             };
+
+            // Track the maximum responsibility end from batch metadata
+            let resp_end = metadata.responsibility_range.end_block;
+            max_responsibility_end = Some(
+                max_responsibility_end
+                    .map(|current| current.max(resp_end))
+                    .unwrap_or(resp_end),
+            );
+            // Update writer's responsibility range from bridge metadata
+            writer.update_responsibility_end(resp_end);
 
             debug!(
                 "Worker {} received log batch with {} rows",

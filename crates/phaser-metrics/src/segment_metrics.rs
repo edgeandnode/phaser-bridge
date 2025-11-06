@@ -102,6 +102,9 @@ pub trait SegmentMetrics {
 pub struct BridgeMetrics {
     pub base: Arc<SegmentWorkerMetrics>,
     grpc_streams_active: IntGaugeVec,
+    grpc_request_duration_blocks: HistogramVec,
+    grpc_request_duration_transactions: HistogramVec,
+    grpc_request_duration_logs: HistogramVec,
 }
 
 impl SegmentMetrics for BridgeMetrics {
@@ -351,6 +354,49 @@ impl BridgeMetrics {
                 &["chain_id", "bridge_name", "stream_type"]
             )
             .unwrap(),
+            grpc_request_duration_blocks: register_histogram_vec!(
+                format!(
+                    "{}_grpc_request_duration_blocks_milliseconds",
+                    service_name_str
+                ),
+                "Duration of individual block fetch requests in milliseconds",
+                &["chain_id", "bridge_name", "segment_num", "method"],
+                // 1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s, 1m, 2m, 5m
+                vec![
+                    1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
+                    10000.0, 30000.0, 60000.0, 120000.0, 300000.0
+                ]
+            )
+            .unwrap(),
+            grpc_request_duration_transactions: register_histogram_vec!(
+                format!(
+                    "{}_grpc_request_duration_transactions_milliseconds",
+                    service_name_str
+                ),
+                "Duration of individual transaction fetch requests in milliseconds",
+                &["chain_id", "bridge_name", "segment_num", "method"],
+                // 1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s, 1m, 2m, 5m, 10m
+                vec![
+                    1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
+                    10000.0, 30000.0, 60000.0, 120000.0, 300000.0, 600000.0
+                ]
+            )
+            .unwrap(),
+            grpc_request_duration_logs: register_histogram_vec!(
+                format!(
+                    "{}_grpc_request_duration_logs_milliseconds",
+                    service_name_str
+                ),
+                "Duration of individual log fetch requests in milliseconds",
+                &["chain_id", "bridge_name", "segment_num", "method"],
+                // 1ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s, 30s, 1m, 2m, 5m, 10m, 20m, 30m, 1h
+                vec![
+                    1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
+                    10000.0, 30000.0, 60000.0, 120000.0, 300000.0, 600000.0, 1200000.0, 1800000.0,
+                    3600000.0
+                ]
+            )
+            .unwrap(),
         }
     }
 
@@ -366,6 +412,52 @@ impl BridgeMetrics {
         self.grpc_streams_active
             .with_label_values(&[&self.base.chain_id, &self.base.bridge_name, stream_type])
             .dec();
+    }
+
+    /// Record gRPC request duration for blocks in milliseconds
+    pub fn grpc_request_duration_blocks(
+        &self,
+        segment_num: u64,
+        method: &str,
+        duration_millis: f64,
+    ) {
+        self.grpc_request_duration_blocks
+            .with_label_values(&[
+                &self.base.chain_id,
+                &self.base.bridge_name,
+                &segment_num.to_string(),
+                method,
+            ])
+            .observe(duration_millis);
+    }
+
+    /// Record gRPC request duration for transactions in milliseconds
+    pub fn grpc_request_duration_transactions(
+        &self,
+        segment_num: u64,
+        method: &str,
+        duration_millis: f64,
+    ) {
+        self.grpc_request_duration_transactions
+            .with_label_values(&[
+                &self.base.chain_id,
+                &self.base.bridge_name,
+                &segment_num.to_string(),
+                method,
+            ])
+            .observe(duration_millis);
+    }
+
+    /// Record gRPC request duration for logs in milliseconds
+    pub fn grpc_request_duration_logs(&self, segment_num: u64, method: &str, duration_millis: f64) {
+        self.grpc_request_duration_logs
+            .with_label_values(&[
+                &self.base.chain_id,
+                &self.base.bridge_name,
+                &segment_num.to_string(),
+                method,
+            ])
+            .observe(duration_millis);
     }
 }
 
