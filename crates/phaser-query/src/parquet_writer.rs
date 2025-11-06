@@ -34,10 +34,9 @@ struct CurrentFile {
     writer: ArrowWriter<File>,
     temp_path: PathBuf,
     row_count: usize,
-    start_block: u64,          // Actual first block with data
-    end_block: u64,            // Actual last block with data
-    bytes_written: u64,        // Track actual bytes written to disk
-    responsibility_start: u64, // First block this file is responsible for (may not have data)
+    start_block: u64,   // Actual first block with data
+    end_block: u64,     // Actual last block with data
+    bytes_written: u64, // Track actual bytes written to disk
 }
 
 impl ParquetWriter {
@@ -116,6 +115,22 @@ impl ParquetWriter {
             self.responsibility_range = Some((responsibility_start, responsibility_start));
         } else {
             self.responsibility_range = Some((responsibility_start, responsibility_end));
+        }
+    }
+
+    /// Update the responsibility end from bridge batch metadata
+    /// This allows the writer to claim responsibility for blocks beyond where data was found
+    pub fn update_responsibility_end(&mut self, new_end: u64) {
+        if let Some((start, current_end)) = self.responsibility_range {
+            if new_end > current_end {
+                self.responsibility_range = Some((start, new_end));
+                debug!(
+                    "Updated responsibility_end from {} to {} for {}",
+                    current_end, new_end, self.data_type
+                );
+            }
+        } else {
+            warn!("update_responsibility_end called but no responsibility_range set");
         }
     }
 
@@ -235,17 +250,6 @@ impl ParquetWriter {
 
         let writer = ArrowWriter::try_new(file, schema, Some(props))?;
 
-        // Determine responsibility_start based on whether this is the first file in the segment
-        let responsibility_start = if self.sequence_number == 0 {
-            // First file in segment - responsible from responsibility range start
-            self.responsibility_range
-                .map(|(start, _)| start)
-                .unwrap_or(block_num)
-        } else {
-            // Subsequent file - responsible from where data starts
-            block_num
-        };
-
         self.current_file = Some(CurrentFile {
             writer,
             temp_path,
@@ -253,7 +257,6 @@ impl ParquetWriter {
             start_block: block_num,
             end_block: block_num,
             bytes_written: 0,
-            responsibility_start,
         });
 
         Ok(())
@@ -401,26 +404,19 @@ impl ParquetWriter {
             // Update Phaser metadata in the file footer
             if let Some((segment_start, segment_end)) = self.segment_range {
                 // Get responsibility range (defaults to segment range if not specified)
-                let (_resp_start, resp_end) = self
+                let (resp_start, resp_end) = self
                     .responsibility_range
                     .unwrap_or((segment_start, segment_end));
 
-                // For responsibility_end: use resp_end if we're at the end of the responsibility range
-                // Check if current.end_block is at or beyond resp_end-1 (within last block of range)
-                let responsibility_end =
-                    if current.end_block >= resp_end || current.end_block == resp_end - 1 {
-                        resp_end
-                    } else {
-                        current.end_block
-                    };
-
+                // Always use the full responsibility range from bridge metadata
+                // The bridge tells us which blocks were checked, even if they had no data
                 let phaser_meta = PhaserMetadata::new(
                     segment_start,
                     segment_end,
-                    current.responsibility_start, // responsibility_start (first block this file is responsible for)
-                    responsibility_end, // responsibility_end (last block this file is responsible for)
+                    resp_start,          // responsibility_start from bridge
+                    resp_end, // responsibility_end from bridge (may be > current.end_block)
                     current.start_block, // data_start (actual first block with data)
-                    current.end_block,  // data_end (actual last block with data)
+                    current.end_block, // data_end (actual last block with data)
                     self.data_type.clone(),
                 )
                 .with_is_live(self.is_live);
