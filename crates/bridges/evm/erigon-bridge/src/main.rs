@@ -83,12 +83,17 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    // Initialize tracing with metrics layer
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    tracing_subscriber::registry()
+        .with(
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("erigon_bridge=info")),
         )
+        .with(tracing_subscriber::fmt::layer())
+        .with(metrics::MetricsLayer::new("erigon-bridge"))
         .init();
 
     let args = Args::parse();
