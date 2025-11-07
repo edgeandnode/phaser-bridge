@@ -50,14 +50,21 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    // Initialize logging with metrics layer
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("phaser_query=info".parse()?)
                 .add_directive("phaser_bridge=info".parse()?)
                 .add_directive("erigon_bridge=info".parse()?),
         )
+        .with(tracing_subscriber::fmt::layer())
+        .with(phaser_query::sync::metrics::MetricsLayer::new(
+            "phaser-query",
+        ))
         .init();
 
     let args = Args::parse();
