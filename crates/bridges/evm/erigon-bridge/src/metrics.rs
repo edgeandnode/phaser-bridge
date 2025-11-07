@@ -1,5 +1,7 @@
 //! Prometheus metrics for erigon-bridge
 //!
-//! Re-exports BridgeMetrics from phaser-metrics crate
+//! Re-exports BridgeMetrics and MetricsLayer from phaser-metrics crate
 
-pub use phaser_metrics::{gather_metrics, BridgeMetrics, SegmentMetrics, WorkerStage};
+pub use phaser_metrics::{
+    gather_metrics, BridgeMetrics, MetricsLayer, SegmentMetrics, WorkerStage,
+};
