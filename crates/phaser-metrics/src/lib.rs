@@ -3,10 +3,17 @@
 //! Provides composable metrics using a trait-based pattern. Base metrics are defined
 //! in SegmentWorkerMetrics, and specialized metrics (BridgeMetrics, QueryMetrics) add
 //! service-specific metrics while inheriting common functionality via the SegmentMetrics trait.
+//!
+//! ## Log Metrics
+//!
+//! The `MetricsLayer` provides automatic tracking of log events as Prometheus metrics.
+//! By default, it tracks ERROR, WARN, and INFO levels, skipping high-volume DEBUG and TRACE.
 
 mod segment_metrics;
+mod tracing_layer;
 
 pub use segment_metrics::{BridgeMetrics, SegmentMetrics, SegmentWorkerMetrics, WorkerStage};
+pub use tracing_layer::{MetricsLayer, MetricsLayerConfig};
 
 use prometheus::{register_int_gauge_vec, IntGaugeVec};
 use std::sync::Arc;

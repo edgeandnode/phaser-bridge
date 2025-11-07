@@ -4231,8 +4231,11 @@ dependencies = [
 name = "phaser-metrics"
 version = "0.1.0"
 dependencies = [
+ "once_cell",
  "phaser-bridge",
  "prometheus",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
