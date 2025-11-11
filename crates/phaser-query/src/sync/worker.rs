@@ -48,6 +48,7 @@ pub struct WorkerProgress {
 pub type ProgressTracker = Arc<RwLock<HashMap<u32, WorkerProgress>>>;
 
 /// Progress update data for tracking worker state
+#[allow(dead_code)]
 pub struct ProgressUpdate {
     pub phase: String,
     pub blocks_done: bool,
@@ -187,11 +188,13 @@ impl SyncWorker {
     }
 
     /// Update the current stage
+    #[allow(dead_code)]
     async fn update_stage(&self, stage: &str) {
         let mut progress = self.current_progress.write().await;
         progress.current_phase = stage.to_string();
     }
 
+    #[allow(dead_code)]
     async fn update_progress(&self, update: ProgressUpdate) {
         if let Some(tracker) = &self.progress_tracker {
             let mut tracker_lock = tracker.write().await;
@@ -367,7 +370,9 @@ impl SyncWorker {
             self.worker_id, self.from_block, self.to_block
         );
 
-        let _permit = self.logs_semaphore.clone()
+        let _permit = self
+            .logs_semaphore
+            .clone()
             .acquire_owned()
             .await
             .map_err(|e| {
@@ -382,7 +387,8 @@ impl SyncWorker {
 
         info!(
             "Worker {} acquired permit, starting log sync for {} ranges",
-            self.worker_id, missing_logs.len()
+            self.worker_id,
+            missing_logs.len()
         );
 
         // Connect to bridge
@@ -522,7 +528,7 @@ impl SyncWorker {
                 }
                 Err(e) => return Err(e),
             }
-        };
+        }
 
         Ok(())
     }
@@ -561,7 +567,7 @@ impl SyncWorker {
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
-        let mut bytes_written = 0u64;
+        let mut _bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
         let mut max_responsibility_end: Option<u64> = None;
@@ -835,7 +841,7 @@ impl SyncWorker {
                 }
                 Err(e) => return Err(e),
             }
-        };
+        }
 
         Ok(())
     }
@@ -878,7 +884,7 @@ impl SyncWorker {
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
-        let mut bytes_written = 0u64;
+        let mut _bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
         let mut max_responsibility_end: Option<u64> = None;
@@ -1228,7 +1234,7 @@ impl SyncWorker {
                 }
                 Err(e) => return Err(e),
             }
-        };
+        }
 
         Ok(())
     }
@@ -1268,7 +1274,7 @@ impl SyncWorker {
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
-        let mut bytes_written = 0u64;
+        let mut _bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
         let mut max_responsibility_end: Option<u64> = None;
