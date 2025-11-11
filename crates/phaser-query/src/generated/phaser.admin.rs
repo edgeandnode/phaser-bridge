@@ -129,9 +129,6 @@ pub struct SyncStatusResponse {
     /// Detailed progress metrics
     #[prost(message, optional, tag = "13")]
     pub data_progress: ::core::option::Option<DataProgress>,
-    /// Download rate (bytes per second)
-    #[prost(double, tag = "14")]
-    pub download_rate_bytes_per_sec: f64,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ListSyncJobsRequest {
@@ -193,40 +190,23 @@ pub struct SyncProgressUpdate {
     /// Detailed progress metrics
     #[prost(message, optional, tag = "9")]
     pub data_progress: ::core::option::Option<DataProgress>,
-    /// Download rate (bytes per second)
-    #[prost(double, tag = "10")]
-    pub download_rate_bytes_per_sec: f64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WorkerProgress {
     /// Worker ID
     #[prost(uint32, tag = "1")]
     pub worker_id: u32,
-    /// Current stage: "blocks", "transactions", "logs"
-    #[prost(string, tag = "2")]
-    pub stage: ::prost::alloc::string::String,
     /// Block range for this worker
-    #[prost(uint64, tag = "3")]
+    #[prost(uint64, tag = "2")]
     pub from_block: u64,
-    #[prost(uint64, tag = "4")]
+    #[prost(uint64, tag = "3")]
     pub to_block: u64,
-    /// Current progress
-    #[prost(uint64, tag = "5")]
-    pub current_block: u64,
-    #[prost(uint64, tag = "6")]
-    pub blocks_processed: u64,
-    /// Rate (blocks per second)
-    #[prost(double, tag = "7")]
-    pub rate: f64,
-    /// Bytes written
-    #[prost(uint64, tag = "8")]
-    pub bytes_written: u64,
-    /// Number of parquet files created
-    #[prost(uint32, tag = "9")]
-    pub files_created: u32,
     /// When this worker started (Unix timestamp in seconds)
-    #[prost(int64, tag = "10")]
+    #[prost(int64, tag = "4")]
     pub started_at: i64,
+    /// Worker status: "running", "completed", "failed"
+    #[prost(string, tag = "5")]
+    pub status: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AnalyzeGapsRequest {

@@ -111,6 +111,17 @@ impl ErigonFlightBridge {
         // Initialize metrics
         let metrics = BridgeMetrics::new("erigon_bridge", chain_id, "erigon");
 
+        // Create global semaphore for ExecuteBlocks calls and add it to config
+        let mut final_segment_config = segment_config.unwrap_or_default();
+        let execute_blocks_semaphore = Arc::new(tokio::sync::Semaphore::new(
+            final_segment_config.global_max_execute_blocks,
+        ));
+        final_segment_config.execute_blocks_semaphore = Some(execute_blocks_semaphore);
+        info!(
+            "Created global ExecuteBlocks semaphore with {} permits",
+            final_segment_config.global_max_execute_blocks
+        );
+
         Ok(Self {
             client: Arc::new(tokio::sync::Mutex::new(client)),
             blockdata_pool: Arc::new(blockdata_pool),
@@ -118,7 +129,7 @@ impl ErigonFlightBridge {
             chain_id,
             streaming_service,
             validator,
-            segment_config: segment_config.unwrap_or_default(),
+            segment_config: final_segment_config,
             metrics,
         })
     }
@@ -225,8 +236,9 @@ impl ErigonFlightBridge {
         start: u64,
         end: u64,
         validate: bool,
-    ) -> impl Stream<Item = Result<phaser_bridge::BatchWithRange, arrow_flight::error::FlightError>> + Send
-    {
+    ) -> impl Stream<Item = Result<phaser_bridge::BatchWithRange, arrow_flight::error::FlightError>>
+           + Send
+           + 'static {
         let max_concurrent = config.max_concurrent_segments;
         let should_validate = validate && validator.is_some();
         let metrics = self.metrics.clone();
@@ -356,8 +368,9 @@ impl ErigonFlightBridge {
         start: u64,
         end: u64,
         validate: bool,
-    ) -> impl Stream<Item = Result<phaser_bridge::BatchWithRange, arrow_flight::error::FlightError>> + Send
-    {
+    ) -> impl Stream<Item = Result<phaser_bridge::BatchWithRange, arrow_flight::error::FlightError>>
+           + Send
+           + 'static {
         let max_concurrent = config.max_concurrent_segments;
         let should_validate = validate && validator.is_some();
         let metrics = self.metrics.clone();

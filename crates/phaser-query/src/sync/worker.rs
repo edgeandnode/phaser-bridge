@@ -48,6 +48,7 @@ pub struct WorkerProgress {
 pub type ProgressTracker = Arc<RwLock<HashMap<u32, WorkerProgress>>>;
 
 /// Progress update data for tracking worker state
+#[allow(dead_code)]
 pub struct ProgressUpdate {
     pub phase: String,
     pub blocks_done: bool,
@@ -71,6 +72,7 @@ pub struct SyncWorkerConfig {
     pub batch_size: u32,
     pub parquet_config: Option<ParquetConfig>,
     pub validation_stage: ValidationStage,
+    pub logs_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 /// A worker that syncs a specific block range from erigon-bridge
@@ -89,6 +91,7 @@ pub struct SyncWorker {
     validation_stage: ValidationStage,
     segment_work: crate::sync::data_scanner::SegmentWork, // Pre-computed missing ranges
     current_progress: Arc<RwLock<WorkerProgress>>,        // Real-time progress state
+    logs_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl SyncWorker {
@@ -147,6 +150,7 @@ impl SyncWorker {
             validation_stage: config.validation_stage,
             segment_work,
             current_progress,
+            logs_semaphore: config.logs_semaphore,
         }
     }
 
@@ -184,11 +188,13 @@ impl SyncWorker {
     }
 
     /// Update the current stage
+    #[allow(dead_code)]
     async fn update_stage(&self, stage: &str) {
         let mut progress = self.current_progress.write().await;
         progress.current_phase = stage.to_string();
     }
 
+    #[allow(dead_code)]
     async fn update_progress(&self, update: ProgressUpdate) {
         if let Some(tracker) = &self.progress_tracker {
             let mut tracker_lock = tracker.write().await;
@@ -230,10 +236,6 @@ impl SyncWorker {
         let missing_txs = self.segment_work.missing_transactions.clone();
         let missing_logs = self.segment_work.missing_logs.clone();
 
-        let blocks_complete = missing_blocks.is_empty();
-        let txs_complete = missing_txs.is_empty();
-        let logs_complete = missing_logs.is_empty();
-
         info!(
             "Worker {} segment work: blocks={} ranges, txs={} ranges, logs={} ranges",
             self.worker_id,
@@ -242,26 +244,63 @@ impl SyncWorker {
             missing_logs.len()
         );
 
-        // Initialize progress
-        self.update_progress(ProgressUpdate {
-            phase: "connecting".to_string(),
-            blocks_done: blocks_complete,
-            txs_done: txs_complete,
-            logs_done: logs_complete,
-            current_block: self.from_block,
-            blocks_processed: 0,
-            bytes_written: 0,
-            files_created: 0,
-        })
-        .await;
+        // Spawn all data types in parallel
+        let blocks_fut = self.sync_all_blocks(missing_blocks);
+        let txs_fut = self.sync_all_transactions(missing_txs);
+        let logs_fut = self.sync_all_logs(missing_logs);
 
-        // Connect to bridge via Arrow Flight
+        // Wait for all to complete and collect results
+        let (blocks_res, txs_res, logs_res) = tokio::join!(blocks_fut, txs_fut, logs_fut);
+
+        // Collect all errors
+        let mut errors = Vec::new();
+        if let Err(e) = blocks_res {
+            errors.push((DataType::Blocks, e));
+        }
+        if let Err(e) = txs_res {
+            errors.push((DataType::Transactions, e));
+        }
+        if let Err(e) = logs_res {
+            errors.push((DataType::Logs, e));
+        }
+
+        // If any failed, return MultipleDataTypeErrors
+        if !errors.is_empty() {
+            let multi_err = crate::sync::error::MultipleDataTypeErrors {
+                from_block: self.from_block,
+                to_block: self.to_block,
+                errors,
+            };
+
+            error!(
+                "Worker {} failed with {} data type error(s): {}",
+                self.worker_id,
+                multi_err.errors.len(),
+                multi_err
+            );
+
+            return Err(multi_err.into());
+        }
+
+        info!("Worker {} completed sync successfully", self.worker_id);
+        Ok(())
+    }
+
+    /// Sync all blocks ranges
+    async fn sync_all_blocks(
+        &self,
+        missing_blocks: Vec<crate::sync::data_scanner::BlockRange>,
+    ) -> Result<(), SyncError> {
+        if missing_blocks.is_empty() {
+            return Ok(());
+        }
+
+        // Connect to bridge
         let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
             .await
             .map_err(|e| {
-                // Don't know exact data type yet, use Unknown with block range
                 SyncError::from_anyhow_with_context(
-                    DataType::Unknown,
+                    DataType::Blocks,
                     self.from_block,
                     self.to_block,
                     "Failed to connect to bridge",
@@ -269,121 +308,121 @@ impl SyncWorker {
                 )
             })?;
 
-        info!("Worker {} connected to bridge", self.worker_id);
-
-        let mut total_batches = 0u64;
-        let mut total_bytes = 0u64;
-        let mut files_created = 0u32;
-
-        // Sync missing blocks ranges
-        if !blocks_complete {
-            self.update_stage("blocks").await;
-            self.update_progress(ProgressUpdate {
-                phase: "blocks".to_string(),
-                blocks_done: false,
-                txs_done: txs_complete,
-                logs_done: logs_complete,
-                current_block: self.from_block,
-                blocks_processed: total_batches,
-                bytes_written: total_bytes,
-                files_created,
-            })
-            .await;
-
-            for range in &missing_blocks {
-                info!(
-                    "Worker {} syncing blocks {}-{}",
-                    self.worker_id, range.start, range.end
-                );
-                let (batches, bytes) = self
-                    .sync_blocks_range(&mut client, range.start, range.end)
-                    .await?;
-                total_batches += batches;
-                total_bytes += bytes;
-                files_created += 1;
-            }
+        for range in &missing_blocks {
+            info!(
+                "Worker {} syncing blocks {}-{}",
+                self.worker_id, range.start, range.end
+            );
+            self.sync_blocks_range(&mut client, range.start, range.end)
+                .await?;
         }
 
-        // Sync missing transaction ranges
-        if !txs_complete {
-            self.update_stage("transactions").await;
-            self.update_progress(ProgressUpdate {
-                phase: "transactions".to_string(),
-                blocks_done: true,
-                txs_done: false,
-                logs_done: logs_complete,
-                current_block: self.to_block,
-                blocks_processed: total_batches,
-                bytes_written: total_bytes,
-                files_created,
-            })
-            .await;
+        Ok(())
+    }
 
-            for range in &missing_txs {
-                info!(
-                    "Worker {} syncing transactions {}-{}",
-                    self.worker_id, range.start, range.end
-                );
-                let (batches, bytes) = self
-                    .sync_transactions_range(&mut client, range.start, range.end)
-                    .await?;
-                total_batches += batches;
-                total_bytes += bytes;
-                files_created += 1;
-            }
+    /// Sync all transactions ranges
+    async fn sync_all_transactions(
+        &self,
+        missing_txs: Vec<crate::sync::data_scanner::BlockRange>,
+    ) -> Result<(), SyncError> {
+        if missing_txs.is_empty() {
+            return Ok(());
         }
 
-        // Sync missing log ranges
-        if !logs_complete {
-            self.update_stage("logs").await;
-            self.update_progress(ProgressUpdate {
-                phase: "logs".to_string(),
-                blocks_done: true,
-                txs_done: true,
-                logs_done: false,
-                current_block: self.to_block,
-                blocks_processed: total_batches,
-                bytes_written: total_bytes,
-                files_created,
-            })
-            .await;
+        // Connect to bridge
+        let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
+            .await
+            .map_err(|e| {
+                SyncError::from_anyhow_with_context(
+                    DataType::Transactions,
+                    self.from_block,
+                    self.to_block,
+                    "Failed to connect to bridge",
+                    e,
+                )
+            })?;
 
-            for range in &missing_logs {
-                info!(
-                    "Worker {} syncing logs {}-{}",
-                    self.worker_id, range.start, range.end
-                );
-                let (batches, bytes) = self
-                    .sync_logs_range(&mut client, range.start, range.end)
-                    .await?;
-                total_batches += batches;
-                total_bytes += bytes;
-                files_created += 1;
-            }
+        for range in &missing_txs {
+            info!(
+                "Worker {} syncing transactions {}-{}",
+                self.worker_id, range.start, range.end
+            );
+            self.sync_transactions_range(&mut client, range.start, range.end)
+                .await?;
         }
 
-        self.update_progress(ProgressUpdate {
-            phase: "completed".to_string(),
-            blocks_done: true,
-            txs_done: true,
-            logs_done: true,
-            current_block: self.to_block,
-            blocks_processed: total_batches,
-            bytes_written: total_bytes,
-            files_created,
-        })
-        .await;
+        Ok(())
+    }
 
-        info!("Worker {} completed sync successfully", self.worker_id);
+    /// Sync all logs ranges
+    async fn sync_all_logs(
+        &self,
+        missing_logs: Vec<crate::sync::data_scanner::BlockRange>,
+    ) -> Result<(), SyncError> {
+        if missing_logs.is_empty() {
+            return Ok(());
+        }
+
+        // Acquire 1 permit for this entire segment
+        // This limits how many segments can be processing logs concurrently
+        info!(
+            "Worker {} acquiring log semaphore permit for segment (blocks {}-{})",
+            self.worker_id, self.from_block, self.to_block
+        );
+
+        let _permit = self
+            .logs_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| {
+                SyncError::from_anyhow_with_context(
+                    DataType::Logs,
+                    self.from_block,
+                    self.to_block,
+                    "Failed to acquire log semaphore permit for segment",
+                    anyhow::anyhow!("{}", e),
+                )
+            })?;
+
+        info!(
+            "Worker {} acquired permit, starting log sync for {} ranges",
+            self.worker_id,
+            missing_logs.len()
+        );
+
+        // Connect to bridge
+        let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
+            .await
+            .map_err(|e| {
+                SyncError::from_anyhow_with_context(
+                    DataType::Logs,
+                    self.from_block,
+                    self.to_block,
+                    "Failed to connect to bridge",
+                    e,
+                )
+            })?;
+
+        // Process all ranges sequentially while holding all permits
+        for range in &missing_logs {
+            info!(
+                "Worker {} syncing logs {}-{}",
+                self.worker_id, range.start, range.end
+            );
+            self.sync_logs_range(&mut client, range.start, range.end)
+                .await?;
+        }
+
         Ok(())
     }
 
     async fn sync_blocks_range(
-        &mut self,
+        &self,
         client: &mut FlightBridgeClient,
         from_block: u64,
         to_block: u64,
-    ) -> Result<(u64, u64), SyncError> {
+    ) -> Result<(), SyncError> {
         // Track phase
         self.metrics.active_workers_inc("blocks");
         let metrics = self.metrics.clone();
@@ -416,12 +455,12 @@ impl SyncWorker {
         let mut resume_from = from_block;
         let mut last_resume_from = resume_from;
 
-        let (batches_processed, bytes_written) = loop {
+        loop {
             match self
                 .try_sync_blocks_stream(client, resume_from, to_block, &mut writer, from_block)
                 .await
             {
-                Ok(result) => break result,
+                Ok(()) => break,
                 Err(e) if is_transient_error(&e) => {
                     // Get the last block we successfully wrote
                     let last_written = writer.last_written_block();
@@ -465,7 +504,7 @@ impl SyncWorker {
                             "Worker {} completed blocks {}-{} before stream error",
                             self.worker_id, from_block, to_block
                         );
-                        break (0, 0); // Already finalized
+                        break; // Already finalized
                     }
 
                     retry_count += 1;
@@ -489,19 +528,19 @@ impl SyncWorker {
                 }
                 Err(e) => return Err(e),
             }
-        };
+        }
 
-        Ok((batches_processed, bytes_written))
+        Ok(())
     }
 
     async fn try_sync_blocks_stream(
-        &mut self,
+        &self,
         client: &mut FlightBridgeClient,
         from_block: u64,
         to_block: u64,
         writer: &mut ParquetWriter,
         original_from: u64,
-    ) -> Result<(u64, u64), SyncError> {
+    ) -> Result<(), SyncError> {
         // Create historical query descriptor with large message preferences
         use phaser_bridge::descriptors::StreamPreferences;
         let preferences = StreamPreferences {
@@ -528,7 +567,6 @@ impl SyncWorker {
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
-        let mut bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
         let mut max_responsibility_end: Option<u64> = None;
@@ -592,8 +630,6 @@ impl SyncWorker {
                 )
             })?;
 
-            bytes_written += batch_bytes;
-
             // Update progress with actual disk bytes
             self.update_current_progress(batch_bytes).await;
 
@@ -649,15 +685,15 @@ impl SyncWorker {
             // Treat as success with no data
         }
 
-        Ok((batches_processed, bytes_written))
+        Ok(())
     }
 
     async fn sync_transactions_range(
-        &mut self,
+        &self,
         client: &mut FlightBridgeClient,
         from_block: u64,
         to_block: u64,
-    ) -> Result<(u64, u64), SyncError> {
+    ) -> Result<(), SyncError> {
         // Track phase
         self.metrics.active_workers_inc("transactions");
         let metrics = self.metrics.clone();
@@ -722,7 +758,7 @@ impl SyncWorker {
         let mut resume_from = from_block;
         let mut last_resume_from = resume_from;
 
-        let (batches_processed, bytes_written) = loop {
+        loop {
             match self
                 .try_sync_transactions_stream(
                     client,
@@ -734,7 +770,7 @@ impl SyncWorker {
                 )
                 .await
             {
-                Ok(result) => break result,
+                Ok(()) => break,
                 Err(e) if is_transient_error(&e) => {
                     // Get the last block we successfully wrote
                     let last_written = writer.last_written_block();
@@ -778,7 +814,7 @@ impl SyncWorker {
                             "Worker {} completed transactions {}-{} before stream error",
                             self.worker_id, from_block, to_block
                         );
-                        break (0, 0); // Already finalized
+                        break; // Already finalized
                     }
 
                     retry_count += 1;
@@ -802,20 +838,20 @@ impl SyncWorker {
                 }
                 Err(e) => return Err(e),
             }
-        };
+        }
 
-        Ok((batches_processed, bytes_written))
+        Ok(())
     }
 
     async fn try_sync_transactions_stream(
-        &mut self,
+        &self,
         client: &mut FlightBridgeClient,
         from_block: u64,
         to_block: u64,
         writer: &mut ParquetWriter,
         proof_writer: &mut Option<ParquetWriter>,
         _original_from: u64,
-    ) -> Result<(u64, u64), SyncError> {
+    ) -> Result<(), SyncError> {
         // Create historical query descriptor for transactions with configured validation stage
         use phaser_bridge::descriptors::StreamPreferences;
         let preferences = StreamPreferences {
@@ -845,7 +881,6 @@ impl SyncWorker {
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
-        let mut bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
         let mut max_responsibility_end: Option<u64> = None;
@@ -944,8 +979,6 @@ impl SyncWorker {
                 )
             })?;
 
-            bytes_written += batch_bytes;
-
             // Update progress with actual disk bytes
             self.update_current_progress(batch_bytes).await;
 
@@ -953,14 +986,13 @@ impl SyncWorker {
         }
 
         info!(
-            "Worker {} received {} batches for transactions {}-{} (first_block: {:?}, last_block: {:?}, bytes: {})",
+            "Worker {} received {} batches for transactions {}-{} (first_block: {:?}, last_block: {:?})",
             self.worker_id,
             batches_processed,
             from_block,
             to_block,
             first_block_seen,
-            last_block_seen,
-            bytes_written
+            last_block_seen
         );
 
         // Validate we got data within the expected range
@@ -1024,7 +1056,7 @@ impl SyncWorker {
             // Treat as success with no data
         }
 
-        Ok((batches_processed, bytes_written))
+        Ok(())
     }
 
     fn generate_proofs_for_batch(
@@ -1085,11 +1117,11 @@ impl SyncWorker {
     }
 
     async fn sync_logs_range(
-        &mut self,
+        &self,
         client: &mut FlightBridgeClient,
         from_block: u64,
         to_block: u64,
-    ) -> Result<(u64, u64), SyncError> {
+    ) -> Result<(), SyncError> {
         // Track phase
         self.metrics.active_workers_inc("logs");
         let metrics = self.metrics.clone();
@@ -1122,12 +1154,12 @@ impl SyncWorker {
         let mut resume_from = from_block;
         let mut last_resume_from = resume_from;
 
-        let (batches_processed, bytes_written) = loop {
+        loop {
             match self
                 .try_sync_logs_stream(client, resume_from, to_block, &mut writer, from_block)
                 .await
             {
-                Ok(result) => break result,
+                Ok(()) => break,
                 Err(e) if is_transient_error(&e) => {
                     // Get the last block we successfully wrote
                     let last_written = writer.last_written_block();
@@ -1171,7 +1203,7 @@ impl SyncWorker {
                             "Worker {} completed logs {}-{} before stream error",
                             self.worker_id, from_block, to_block
                         );
-                        break (0, 0); // Already finalized
+                        break; // Already finalized
                     }
 
                     retry_count += 1;
@@ -1195,19 +1227,19 @@ impl SyncWorker {
                 }
                 Err(e) => return Err(e),
             }
-        };
+        }
 
-        Ok((batches_processed, bytes_written))
+        Ok(())
     }
 
     async fn try_sync_logs_stream(
-        &mut self,
+        &self,
         client: &mut FlightBridgeClient,
         from_block: u64,
         to_block: u64,
         writer: &mut ParquetWriter,
         _original_from: u64,
-    ) -> Result<(u64, u64), SyncError> {
+    ) -> Result<(), SyncError> {
         // Create historical query descriptor for logs with configured validation stage
         use phaser_bridge::descriptors::StreamPreferences;
         let preferences = StreamPreferences {
@@ -1235,7 +1267,6 @@ impl SyncWorker {
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
-        let mut bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
         let mut max_responsibility_end: Option<u64> = None;
@@ -1297,8 +1328,6 @@ impl SyncWorker {
                 )
             })?;
 
-            bytes_written += batch_bytes;
-
             // Update progress with actual disk bytes
             self.update_current_progress(batch_bytes).await;
 
@@ -1355,6 +1384,6 @@ impl SyncWorker {
             // Treat as success with no data
         }
 
-        Ok((batches_processed, bytes_written))
+        Ok(())
     }
 }

@@ -141,9 +141,6 @@ message SyncStatusResponse {
 
   // Detailed progress metrics
   DataProgress data_progress = 13;
-
-  // Download rate (bytes per second)
-  double download_rate_bytes_per_sec = 14;
 }
 
 message ListSyncJobsRequest {
@@ -195,37 +192,21 @@ message SyncProgressUpdate {
 
   // Detailed progress metrics
   DataProgress data_progress = 9;
-
-  // Download rate (bytes per second)
-  double download_rate_bytes_per_sec = 10;
 }
 
 message WorkerProgress {
   // Worker ID
   uint32 worker_id = 1;
 
-  // Current stage: "blocks", "transactions", "logs"
-  string stage = 2;
-
   // Block range for this worker
-  uint64 from_block = 3;
-  uint64 to_block = 4;
-
-  // Current progress
-  uint64 current_block = 5;
-  uint64 blocks_processed = 6;
-
-  // Rate (blocks per second)
-  double rate = 7;
-
-  // Bytes written
-  uint64 bytes_written = 8;
-
-  // Number of parquet files created
-  uint32 files_created = 9;
+  uint64 from_block = 2;
+  uint64 to_block = 3;
 
   // When this worker started (Unix timestamp in seconds)
-  int64 started_at = 10;
+  int64 started_at = 4;
+
+  // Worker status: "running", "completed", "failed"
+  string status = 5;
 }
 
 message AnalyzeGapsRequest {
