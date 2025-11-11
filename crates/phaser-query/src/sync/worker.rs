@@ -567,7 +567,6 @@ impl SyncWorker {
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
-        let mut _bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
         let mut max_responsibility_end: Option<u64> = None;
@@ -630,8 +629,6 @@ impl SyncWorker {
                     e,
                 )
             })?;
-
-            bytes_written += batch_bytes;
 
             // Update progress with actual disk bytes
             self.update_current_progress(batch_bytes).await;
@@ -884,7 +881,6 @@ impl SyncWorker {
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
-        let mut _bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
         let mut max_responsibility_end: Option<u64> = None;
@@ -983,8 +979,6 @@ impl SyncWorker {
                 )
             })?;
 
-            bytes_written += batch_bytes;
-
             // Update progress with actual disk bytes
             self.update_current_progress(batch_bytes).await;
 
@@ -992,14 +986,13 @@ impl SyncWorker {
         }
 
         info!(
-            "Worker {} received {} batches for transactions {}-{} (first_block: {:?}, last_block: {:?}, bytes: {})",
+            "Worker {} received {} batches for transactions {}-{} (first_block: {:?}, last_block: {:?})",
             self.worker_id,
             batches_processed,
             from_block,
             to_block,
             first_block_seen,
-            last_block_seen,
-            bytes_written
+            last_block_seen
         );
 
         // Validate we got data within the expected range
@@ -1274,7 +1267,6 @@ impl SyncWorker {
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
-        let mut _bytes_written = 0u64;
         let mut first_block_seen: Option<u64> = None;
         let mut last_block_seen: Option<u64> = None;
         let mut max_responsibility_end: Option<u64> = None;
@@ -1335,8 +1327,6 @@ impl SyncWorker {
                     e.to_string()
                 )
             })?;
-
-            bytes_written += batch_bytes;
 
             // Update progress with actual disk bytes
             self.update_current_progress(batch_bytes).await;
