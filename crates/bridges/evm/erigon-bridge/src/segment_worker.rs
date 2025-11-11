@@ -59,7 +59,10 @@ impl std::fmt::Debug for SegmentConfig {
             .field("validation_batch_size", &self.validation_batch_size)
             .field("max_concurrent_executions", &self.max_concurrent_executions)
             .field("global_max_execute_blocks", &self.global_max_execute_blocks)
-            .field("execute_blocks_semaphore", &self.execute_blocks_semaphore.is_some())
+            .field(
+                "execute_blocks_semaphore",
+                &self.execute_blocks_semaphore.is_some(),
+            )
             .finish()
     }
 }
