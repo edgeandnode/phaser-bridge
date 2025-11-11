@@ -348,22 +348,6 @@ async fn main() -> Result<()> {
                 }
                 println!("Active workers: {}", job.active_workers);
 
-                if job.download_rate_bytes_per_sec > 0.0 {
-                    let rate = if job.download_rate_bytes_per_sec >= 1_000_000_000.0 {
-                        format!(
-                            "{:.2} GB/s",
-                            job.download_rate_bytes_per_sec / 1_000_000_000.0
-                        )
-                    } else if job.download_rate_bytes_per_sec >= 1_000_000.0 {
-                        format!("{:.1} MB/s", job.download_rate_bytes_per_sec / 1_000_000.0)
-                    } else if job.download_rate_bytes_per_sec >= 1_000.0 {
-                        format!("{:.1} KB/s", job.download_rate_bytes_per_sec / 1_000.0)
-                    } else {
-                        format!("{:.0} B/s", job.download_rate_bytes_per_sec)
-                    };
-                    println!("Download rate: {}", rate);
-                }
-
                 if !job.error.is_empty() {
                     println!("Error: {}", job.error);
                 }
@@ -607,23 +591,6 @@ async fn main() -> Result<()> {
                             }
                         }
                         println!("Active workers: {}", job.active_workers);
-
-                        // Display download rate
-                        if job.download_rate_bytes_per_sec > 0.0 {
-                            let rate = if job.download_rate_bytes_per_sec >= 1_000_000_000.0 {
-                                format!(
-                                    "{:.2} GB/s",
-                                    job.download_rate_bytes_per_sec / 1_000_000_000.0
-                                )
-                            } else if job.download_rate_bytes_per_sec >= 1_000_000.0 {
-                                format!("{:.1} MB/s", job.download_rate_bytes_per_sec / 1_000_000.0)
-                            } else if job.download_rate_bytes_per_sec >= 1_000.0 {
-                                format!("{:.1} KB/s", job.download_rate_bytes_per_sec / 1_000.0)
-                            } else {
-                                format!("{:.0} B/s", job.download_rate_bytes_per_sec)
-                            };
-                            println!("Download rate: {}", rate);
-                        }
 
                         if !job.error.is_empty() {
                             println!("Error: {}", job.error);

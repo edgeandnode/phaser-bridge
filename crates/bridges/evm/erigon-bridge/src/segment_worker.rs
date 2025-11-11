@@ -22,7 +22,7 @@ use tracing::{debug, error, info, warn};
 use validators_evm::ValidationExecutor;
 
 /// Configuration for segment-based processing and validation
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SegmentConfig {
     /// Size of each segment in blocks (default: 500_000, aligned with Erigon snapshots)
     pub segment_size: u64,
@@ -36,6 +36,32 @@ pub struct SegmentConfig {
     /// Validation batch size within a segment (default: 100 blocks)
     /// How many blocks to collect before executing validations and converting to Arrow
     pub validation_batch_size: usize,
+
+    /// Maximum number of concurrent ExecuteBlocks calls within a segment (default: num_cpus)
+    /// Controls parallelism for block execution when fetching logs/receipts
+    pub max_concurrent_executions: usize,
+
+    /// Global maximum number of concurrent ExecuteBlocks calls across ALL segments (default: 64)
+    /// This prevents overwhelming Erigon with too many concurrent gRPC streams
+    pub global_max_execute_blocks: usize,
+
+    /// Global semaphore for limiting ExecuteBlocks calls across all workers
+    /// Not included in Default implementation - must be set by bridge
+    pub execute_blocks_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+impl std::fmt::Debug for SegmentConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SegmentConfig")
+            .field("segment_size", &self.segment_size)
+            .field("max_concurrent_segments", &self.max_concurrent_segments)
+            .field("connection_pool_size", &self.connection_pool_size)
+            .field("validation_batch_size", &self.validation_batch_size)
+            .field("max_concurrent_executions", &self.max_concurrent_executions)
+            .field("global_max_execute_blocks", &self.global_max_execute_blocks)
+            .field("execute_blocks_semaphore", &self.execute_blocks_semaphore.is_some())
+            .finish()
+    }
 }
 
 impl Default for SegmentConfig {
@@ -45,6 +71,9 @@ impl Default for SegmentConfig {
             max_concurrent_segments: (num_cpus::get() / 4).max(1),
             connection_pool_size: 8,
             validation_batch_size: 100,
+            max_concurrent_executions: num_cpus::get(),
+            global_max_execute_blocks: 64,
+            execute_blocks_semaphore: None,
         }
     }
 }
@@ -417,7 +446,7 @@ impl SegmentWorker {
     ) -> impl futures::Stream<Item = Result<BatchWithRange, ErigonBridgeError>> + Send {
         async_stream::stream! {
         let worker_id = self.worker_id;
-        let segment_id = self.segment_start / 500_000; // Calculate segment ID
+        let segment_id = self.segment_start / 500_000;
         let total_blocks = self.segment_end - self.segment_start + 1;
         let phase_start = Instant::now();
         let mut yielded_batches = 0u64;
@@ -437,148 +466,148 @@ impl SegmentWorker {
             .set_worker_stage(worker_id, segment_id, WorkerStage::Logs);
         self.metrics.active_workers_inc("logs");
 
-        // Clone the client at the start (shares underlying HTTP/2 connection)
-        let mut client = self.blockdata_client.clone();
-
-        // Process blocks in chunks, fetching headers and executing blocks concurrently
+        // Split entire segment into work units upfront
+        let mut work_units = Vec::new();
         let mut current_block = self.segment_start;
 
         while current_block <= self.segment_end {
-            // Fetch a chunk of headers (batch_size blocks at a time)
-            let chunk_end = (current_block + self.config.validation_batch_size as u64 - 1).min(self.segment_end);
+            let chunk_end = (current_block + self.config.validation_batch_size as u64 - 1)
+                .min(self.segment_end);
+            work_units.push((current_block, chunk_end));
+            current_block = chunk_end + 1;
+        }
 
-            let chunk_headers = match Self::fetch_headers(current_block, chunk_end, &mut client, self.config.validation_batch_size as u32, &self.metrics).await {
-                Ok(h) => {
-                    if h.is_empty() {
-                        warn!("Process logs: Received EMPTY header response for blocks {}-{}",
-                            current_block, chunk_end);
-                    }
-                    h
-                },
-                Err(e) => {
-                    error!("Worker {} segment {}: Failed to fetch headers for blocks {}-{}: {}",
-                        worker_id, segment_id, current_block, chunk_end, e);
+        info!(
+            "Worker {} segment {}: Created {} work units for parallel execution",
+            worker_id, segment_id, work_units.len()
+        );
 
-                    // Track error type for monitoring
-                    let error_type = Self::categorize_error(&e);
-                    self.metrics.error(&error_type, "logs");
+        // Execute work units with bounded concurrency, yielding results in order
+        // Use buffered() to automatically handle concurrency and ordering
+        use futures::stream::{self, StreamExt};
 
-                    self.metrics.active_workers_dec("logs");
-                    yield Err(e);
-                    return;
+        let max_concurrent = self.config.max_concurrent_executions;
+
+        // Extract needed fields to avoid borrowing self in closure
+        let blockdata_client = self.blockdata_client.clone();
+        let metrics = self.metrics.clone();
+        let validation_batch_size = self.config.validation_batch_size;
+        let execute_blocks_semaphore = self.config.execute_blocks_semaphore.clone();
+
+        // Create a stream that processes work units in order with bounded concurrency
+        let mut work_stream = stream::iter(work_units.into_iter().enumerate())
+            .map(move |(work_idx, (start, end))| {
+                let mut client = blockdata_client.clone();
+                let metrics = metrics.clone();
+                let semaphore = execute_blocks_semaphore.clone();
+
+                async move {
+                    // Fetch headers
+                    let headers_result = Self::fetch_headers(
+                        start,
+                        end,
+                        &mut client,
+                        validation_batch_size as u32,
+                        &metrics,
+                    ).await;
+
+                    let headers = match headers_result {
+                        Ok(h) => {
+                            if h.is_empty() {
+                                warn!(
+                                    "Work unit {}: Received EMPTY header response for blocks {}-{}",
+                                    work_idx, start, end
+                                );
+                            }
+                            h
+                        }
+                        Err(e) => {
+                            error!(
+                                "Work unit {}: Failed to fetch headers for blocks {}-{}: {}",
+                                work_idx, start, end, e
+                            );
+                            return (work_idx, start, end, Err(e));
+                        }
+                    };
+
+                    // Sort headers by block number
+                    let mut sorted_headers: Vec<_> = headers.into_iter().collect();
+                    sorted_headers.sort_by_key(|(block_num, _)| *block_num);
+
+                    // Execute blocks for this range
+                    let result = Self::collect_receipts_for_range(
+                        start,
+                        end,
+                        sorted_headers,
+                        &mut client,
+                        &metrics,
+                        semaphore,
+                    ).await;
+
+                    (work_idx, start, end, result)
                 }
-            };
+            })
+            .buffered(max_concurrent);
 
-            debug!(
-                "Segment {}-{}: Fetched {} headers for chunk {}-{}, spawning {} concurrent ExecuteBlocks calls",
-                self.segment_start,
-                self.segment_end,
-                chunk_headers.len(),
-                current_block,
-                chunk_end,
-                chunk_headers.len()
-            );
-
-            // Sort headers by block number
-            let mut sorted_chunk: Vec<_> = chunk_headers.into_iter().collect();
-            sorted_chunk.sort_by_key(|(block_num, _)| *block_num);
-
-            const RECEIPT_BATCH_SIZE: usize = 10;
-
-            let receipt_futures: Vec<_> = sorted_chunk
-                .chunks(RECEIPT_BATCH_SIZE)
-                .map(|block_chunk| {
-                    let mut client_clone = client.clone();
-                    let block_chunk: Vec<_> = block_chunk.to_vec();
-                    let metrics = self.metrics.clone();
-                    async move {
-                        let first_block = block_chunk[0].0;
-                        let last_block = block_chunk[block_chunk.len() - 1].0;
-
-                        debug!(
-                            "Fetching receipts for {} blocks (range {}-{})",
-                            block_chunk.len(),
-                            first_block,
-                            last_block
-                        );
-
-                        Self::collect_receipts_for_range(first_block, last_block, block_chunk, &mut client_clone, &metrics).await
-                    }
-                })
-                .collect();
-
-            // Await all batched ExecuteBlocks calls together
-            let results = futures::future::join_all(receipt_futures).await;
-
-            // Collect successful results and flatten batched results
-            let mut current_batch = Vec::new();
-            for result in results {
-                match result {
-                    Ok(batch_data) => {
-                        // Each result is a Vec of (block_num, receipts, header)
+        // Process results as they arrive in order
+        while let Some((work_idx, range_start, range_end, work_result)) = work_stream.next().await {
+                match work_result {
+                    Ok(receipts_data) => {
                         // Count receipts for metrics
-                        for (_, receipts, _) in &batch_data {
+                        for (_, receipts, _) in &receipts_data {
                             total_receipts_processed += receipts.len() as u64;
                         }
-                        current_batch.extend(batch_data);
+
+                        if !receipts_data.is_empty() {
+
+                            debug!(
+                                "Segment {}-{}: Validating and converting work unit {} ({} blocks)",
+                                self.segment_start,
+                                self.segment_end,
+                                work_idx,
+                                receipts_data.len()
+                            );
+
+                            // Validate and convert
+                            let batches = match Self::validate_and_convert_receipts(
+                                self.segment_start,
+                                self.segment_end,
+                                self.config.clone(),
+                                self.validator.clone(),
+                                receipts_data,
+                            )
+                            .await {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    let error_type = Self::categorize_error(&e);
+                                    self.metrics.error(&error_type, "logs");
+                                    self.metrics.active_workers_dec("logs");
+                                    yield Err(e);
+                                    return;
+                                }
+                            };
+
+                            // Yield batches in order
+                            for batch in batches {
+                                yielded_batches += 1;
+                                yield Ok(BatchWithRange::new(batch, range_start, range_end));
+                            }
+                        }
+
+                        // Update progress
+                        let blocks_processed = range_end - self.segment_start + 1;
+                        let progress_pct = (blocks_processed as f64 / total_blocks as f64) * 100.0;
+                        self.metrics
+                            .set_worker_progress(worker_id, segment_id, "logs", progress_pct);
                     }
                     Err(e) => {
-                        // Track error type for monitoring
                         let error_type = Self::categorize_error(&e);
                         self.metrics.error(&error_type, "logs");
-
                         self.metrics.active_workers_dec("logs");
                         yield Err(e);
                         return;
                     }
                 }
-            }
-
-            // Validate and convert this batch
-            if !current_batch.is_empty() {
-                debug!(
-                    "Segment {}-{}: Validating and converting batch of {} blocks",
-                    self.segment_start,
-                    self.segment_end,
-                    current_batch.len()
-                );
-
-                let batches = match Self::validate_and_convert_receipts(
-                    self.segment_start,
-                    self.segment_end,
-                    self.config.clone(),
-                    self.validator.clone(),
-                    current_batch,
-                )
-                .await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        // Track error type for monitoring
-                        let error_type = Self::categorize_error(&e);
-                        self.metrics.error(&error_type, "logs");
-
-                        self.metrics.active_workers_dec("logs");
-                        yield Err(e);
-                        return;
-                    }
-                };
-
-                // Yield each batch immediately
-                // Wrap with responsibility range metadata
-                for batch in batches {
-                    yielded_batches += 1;
-                    yield Ok(BatchWithRange::new(batch, current_block, chunk_end));
-                }
-            }
-
-            // Update progress after processing chunk
-            let blocks_processed = chunk_end - self.segment_start + 1;
-            let progress_pct = (blocks_processed as f64 / total_blocks as f64) * 100.0;
-            self.metrics
-                .set_worker_progress(worker_id, segment_id, "logs", progress_pct);
-
-            // Move to next chunk
-            current_block = chunk_end + 1;
         }
 
         // Record total receipts processed
@@ -807,9 +836,32 @@ impl SegmentWorker {
         block_headers: Vec<(u64, (Header, i64))>,
         client: &mut BlockDataClient,
         metrics: &BridgeMetrics,
+        execute_blocks_semaphore: Option<Arc<tokio::sync::Semaphore>>,
     ) -> Result<Vec<(u64, Vec<crate::proto::custom::ReceiptData>, Header)>, ErigonBridgeError> {
         let call_start = std::time::Instant::now();
         let segment_id = from_block / 500_000;
+
+        // Acquire semaphore permit before making ExecuteBlocks call (if configured)
+        // This limits total concurrent ExecuteBlocks calls across ALL workers
+        let _permit = if let Some(sem) = execute_blocks_semaphore.as_ref() {
+            let permit = sem.acquire().await.map_err(|e| {
+                ErigonBridgeError::Internal(anyhow::anyhow!(
+                    "Failed to acquire ExecuteBlocks semaphore: {}",
+                    e
+                ))
+            })?;
+
+            debug!(
+                "Blocks {}-{}: Acquired ExecuteBlocks permit (available: {})",
+                from_block,
+                to_block,
+                sem.available_permits()
+            );
+
+            Some(permit)
+        } else {
+            None
+        };
 
         // Spawn a monitoring task that warns if the call takes too long
         const SLOW_CALL_WARNING_THRESHOLD_SECS: u64 = 300; // 5 minutes

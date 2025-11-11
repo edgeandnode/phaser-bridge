@@ -210,6 +210,8 @@ pub struct PhaserConfig {
     pub metrics_port: u16, // Port for Prometheus metrics HTTP server (9091)
     #[serde(default = "default_sync_parallelism")]
     pub sync_parallelism: u32, // Number of parallel workers for historical sync (4)
+    #[serde(default = "default_max_concurrent_log_segments")]
+    pub max_concurrent_log_segments: u32, // Max segments syncing logs concurrently (16)
     #[serde(default)]
     pub parquet: Option<ParquetConfig>,
     #[serde(default)]
@@ -242,6 +244,10 @@ fn default_metrics_port() -> u16 {
 
 fn default_sync_parallelism() -> u32 {
     4
+}
+
+fn default_max_concurrent_log_segments() -> u32 {
+    16
 }
 
 impl PhaserConfig {

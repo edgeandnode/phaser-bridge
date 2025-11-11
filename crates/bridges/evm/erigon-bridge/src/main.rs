@@ -72,6 +72,18 @@ struct Args {
     #[arg(long, env = "VALIDATION_BATCH_SIZE", default_value_t = 100)]
     validation_batch_size: usize,
 
+    /// Maximum number of concurrent ExecuteBlocks calls within a segment (default: num_cpus)
+    /// Controls how many block ranges can be executed in parallel when fetching logs/receipts.
+    /// Higher values utilize more CPU cores but increase memory usage and connection pressure.
+    #[arg(long, env = "MAX_CONCURRENT_EXECUTIONS")]
+    max_concurrent_executions: Option<usize>,
+
+    /// Global maximum number of concurrent ExecuteBlocks calls across ALL segments (default: 64)
+    /// This prevents overwhelming Erigon with too many concurrent gRPC streams.
+    /// Set based on your Erigon server capacity (e.g., 64-256 for production).
+    #[arg(long, env = "GLOBAL_MAX_EXECUTE_BLOCKS", default_value_t = 64)]
+    global_max_execute_blocks: usize,
+
     /// Prometheus metrics port (default: 9091)
     #[arg(long, env = "METRICS_PORT", default_value_t = 9091)]
     metrics_port: u16,
@@ -124,7 +136,7 @@ async fn main() -> Result<()> {
         info!("Validation enabled with executor: {:?}", config);
     }
 
-    // Build segment config
+    // Build segment config (semaphore will be added by bridge)
     let segment_config = SegmentConfig {
         segment_size: args.segment_size,
         max_concurrent_segments: args
@@ -132,6 +144,9 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| (num_cpus::get() / 4).max(1)),
         connection_pool_size: args.connection_pool_size,
         validation_batch_size: args.validation_batch_size,
+        max_concurrent_executions: args.max_concurrent_executions.unwrap_or_else(num_cpus::get),
+        global_max_execute_blocks: args.global_max_execute_blocks,
+        execute_blocks_semaphore: None, // Will be set by bridge
     };
 
     info!("Segment configuration:");
@@ -147,6 +162,14 @@ async fn main() -> Result<()> {
     info!(
         "  Validation batch size: {} blocks",
         segment_config.validation_batch_size
+    );
+    info!(
+        "  Max concurrent executions per segment: {}",
+        segment_config.max_concurrent_executions
+    );
+    info!(
+        "  Global max ExecuteBlocks: {}",
+        segment_config.global_max_execute_blocks
     );
 
     // Start Prometheus metrics server

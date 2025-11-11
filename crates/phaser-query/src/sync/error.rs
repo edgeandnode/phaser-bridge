@@ -87,6 +87,59 @@ pub struct SyncError {
     pub source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
+/// Error when multiple data types fail during parallel sync
+#[derive(Debug)]
+pub struct MultipleDataTypeErrors {
+    pub from_block: u64,
+    pub to_block: u64,
+    pub errors: Vec<(DataType, SyncError)>,
+}
+
+impl fmt::Display for MultipleDataTypeErrors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Multiple data types failed syncing blocks {}-{}: ",
+            self.from_block, self.to_block
+        )?;
+        for (i, (data_type, err)) in self.errors.iter().enumerate() {
+            if i > 0 {
+                write!(f, "; ")?;
+            }
+            write!(f, "{}: {}", data_type, err)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for MultipleDataTypeErrors {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // Return first error as source
+        self.errors.first().and_then(|(_, e)| e.source())
+    }
+}
+
+impl From<MultipleDataTypeErrors> for SyncError {
+    fn from(multi_err: MultipleDataTypeErrors) -> Self {
+        // Aggregate into a single SyncError with Unknown data type
+        let message = format!("{}", multi_err);
+        let category = multi_err
+            .errors
+            .first()
+            .map(|(_, e)| e.category)
+            .unwrap_or(ErrorCategory::Unknown);
+
+        SyncError {
+            data_type: DataType::Unknown,
+            category,
+            from_block: multi_err.from_block,
+            to_block: multi_err.to_block,
+            message,
+            source: Some(Box::new(multi_err)),
+        }
+    }
+}
+
 impl SyncError {
     pub fn new(
         data_type: DataType,

@@ -304,6 +304,15 @@ impl SyncServer {
             job_config.bridge_name.clone(),
         );
 
+        // Create logs semaphore to sequence log processing across workers
+        let logs_semaphore = Arc::new(tokio::sync::Semaphore::new(
+            config.max_logs_segments_sync as usize,
+        ));
+        info!(
+            "Created logs semaphore with capacity {} (max segments syncing logs concurrently)",
+            config.max_logs_segments_sync
+        );
+
         for worker_id in 0..num_workers {
             let bridge_endpoint = job_config.bridge_endpoint.clone();
             let data_dir = data_dir.clone();
@@ -314,6 +323,7 @@ impl SyncServer {
             let job_complete = job_complete.clone();
             let historical_boundary = job_config.historical_boundary;
             let metrics = sync_metrics.clone();
+            let logs_semaphore = logs_semaphore.clone();
 
             let handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
                 loop {
@@ -377,6 +387,7 @@ impl SyncServer {
                         batch_size: 1000,
                         parquet_config: parquet_config.clone(),
                         validation_stage,
+                        logs_semaphore: logs_semaphore.clone(),
                     };
 
                     let mut worker =
@@ -786,21 +797,6 @@ impl SyncService for SyncServer {
         let progress = job.progress_tracker.read().await;
         let active_workers = progress.len() as u32;
 
-        // Calculate download rate from active workers
-        let now = std::time::SystemTime::now();
-        let download_rate_bytes_per_sec = progress
-            .values()
-            .filter_map(|p| {
-                if let Ok(elapsed) = now.duration_since(p.started_at) {
-                    let secs = elapsed.as_secs_f64();
-                    if secs > 0.0 {
-                        return Some(p.bytes_written as f64 / secs);
-                    }
-                }
-                None
-            })
-            .sum();
-
         let total_blocks = job.to_block - job.from_block + 1;
 
         // Calculate detailed progress metrics
@@ -824,7 +820,6 @@ impl SyncService for SyncServer {
             to_block: job.to_block,
             gap_analysis: Some(gap_analysis_to_proto(&analysis, self.config.segment_size)),
             data_progress,
-            download_rate_bytes_per_sec,
         }))
     }
 
@@ -883,24 +878,9 @@ impl SyncService for SyncServer {
                 Err(_) => (0, job.from_block, None, None),
             };
 
-            // Count active workers and calculate download rate
+            // Count active workers
             let progress = job.progress_tracker.read().await;
             let active_workers = progress.len() as u32;
-
-            // Calculate download rate from active workers
-            let now = std::time::SystemTime::now();
-            let download_rate_bytes_per_sec = progress
-                .values()
-                .filter_map(|p| {
-                    if let Ok(elapsed) = now.duration_since(p.started_at) {
-                        let secs = elapsed.as_secs_f64();
-                        if secs > 0.0 {
-                            return Some(p.bytes_written as f64 / secs);
-                        }
-                    }
-                    None
-                })
-                .sum();
 
             job_list.push(SyncStatusResponse {
                 job_id: job.job_id.clone(),
@@ -916,7 +896,6 @@ impl SyncService for SyncServer {
                 to_block: job.to_block,
                 gap_analysis,
                 data_progress,
-                download_rate_bytes_per_sec,
             });
         }
 
@@ -925,33 +904,9 @@ impl SyncService for SyncServer {
 
     async fn cancel_sync(
         &self,
-        request: Request<CancelSyncRequest>,
+        _request: Request<CancelSyncRequest>,
     ) -> Result<Response<CancelSyncResponse>, Status> {
-        let req = request.into_inner();
-
-        let mut jobs = self.jobs.write().await;
-        let job = jobs
-            .get_mut(&req.job_id)
-            .ok_or_else(|| Status::not_found(format!("Job {} not found", req.job_id)))?;
-
-        // Check if job can be cancelled
-        if job.status == SyncStatus::Completed as i32
-            || job.status == SyncStatus::Failed as i32
-            || job.status == SyncStatus::Cancelled as i32
-        {
-            return Ok(Response::new(CancelSyncResponse {
-                success: false,
-                message: format!("Job {} cannot be cancelled (already finished)", req.job_id),
-            }));
-        }
-
-        // TODO: Actually cancel the running workers
-        job.status = SyncStatus::Cancelled as i32;
-
-        Ok(Response::new(CancelSyncResponse {
-            success: true,
-            message: format!("Job {} cancelled", req.job_id),
-        }))
+        todo!("unimplemented - cancel sync job")
     }
 
     async fn analyze_gaps(
@@ -1082,21 +1037,6 @@ impl SyncService for SyncServer {
                         // Read worker progress for UX visibility
                         let progress_lock = job.progress_tracker.read().await;
 
-                        // Calculate download rate from active workers
-                        let now = std::time::SystemTime::now();
-                        let download_rate_bytes_per_sec = progress_lock
-                            .values()
-                            .filter_map(|p| {
-                                if let Ok(elapsed) = now.duration_since(p.started_at) {
-                                    let secs = elapsed.as_secs_f64();
-                                    if secs > 0.0 {
-                                        return Some(p.bytes_written as f64 / secs);
-                                    }
-                                }
-                                None
-                            })
-                            .sum();
-
                         let workers: Vec<WorkerProgress> = progress_lock
                             .values()
                             .map(|p| {
@@ -1105,24 +1045,12 @@ impl SyncService for SyncServer {
                                     .unwrap_or_default()
                                     .as_secs() as i64;
 
-                                let elapsed = p.started_at.elapsed().unwrap_or_default().as_secs();
-                                let rate = if elapsed > 0 {
-                                    p.blocks_processed as f64 / elapsed as f64
-                                } else {
-                                    0.0
-                                };
-
                                 WorkerProgress {
                                     worker_id: p.worker_id,
-                                    stage: p.current_phase.clone(),
                                     from_block: p.from_block,
                                     to_block: p.to_block,
-                                    current_block: p.current_block,
-                                    blocks_processed: p.blocks_processed,
-                                    rate,
-                                    bytes_written: p.bytes_written,
-                                    files_created: p.files_created,
                                     started_at,
+                                    status: p.current_phase.clone(),
                                 }
                             })
                             .collect();
@@ -1140,7 +1068,6 @@ impl SyncService for SyncServer {
                             overall_rate: 0.0,
                             total_bytes_written: 0,
                             data_progress,
-                            download_rate_bytes_per_sec,
                         })
                     } else {
                         None
