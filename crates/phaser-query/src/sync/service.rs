@@ -304,13 +304,13 @@ impl SyncServer {
             job_config.bridge_name.clone(),
         );
 
-        // Create logs semaphore to sequence log processing across workers
+        // Create logs semaphore to limit concurrent log segment processing
         let logs_semaphore = Arc::new(tokio::sync::Semaphore::new(
-            config.max_logs_segments_sync as usize,
+            config.max_concurrent_log_segments as usize,
         ));
         info!(
             "Created logs semaphore with capacity {} (max segments syncing logs concurrently)",
-            config.max_logs_segments_sync
+            config.max_concurrent_log_segments
         );
 
         for worker_id in 0..num_workers {
