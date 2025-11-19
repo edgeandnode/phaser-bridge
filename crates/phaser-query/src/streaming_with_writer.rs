@@ -257,7 +257,7 @@ impl StreamingServiceWithWriter {
             );
 
             // Subscribe to logs with metadata
-            let logs_descriptor = BlockchainDescriptor::live(StreamType::Logs);
+            let logs_descriptor = BlockchainDescriptor::live(StreamType::Logs).with_traces(true);
             info!("Subscribing to logs from bridge");
             let logs_stream = bridge.subscribe_with_metadata(&logs_descriptor).await?;
             Self::spawn_stream_processor(

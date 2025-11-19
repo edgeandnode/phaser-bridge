@@ -496,6 +496,7 @@ impl ErigonFlightBridge {
         start: u64,
         end: u64,
         validate: bool,
+        enable_traces: bool,
     ) -> Result<
         Pin<
             Box<
@@ -552,9 +553,11 @@ impl ErigonFlightBridge {
 
         if stream_type == StreamType::Logs {
             let pool = self.blockdata_pool.clone();
+            let mut config = self.segment_config.clone();
+            config.enable_traces = enable_traces;
             let stream = self.process_logs_with_segments(
                 pool,
-                self.segment_config.clone(),
+                config,
                 self.validator.clone(),
                 start,
                 end,
@@ -883,6 +886,7 @@ impl FlightBridge for ErigonFlightBridge {
                         start,
                         end,
                         should_validate_ingestion,
+                        blockchain_desc.enable_traces,
                     )
                     .await?,
                 )

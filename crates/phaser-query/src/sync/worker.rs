@@ -1249,7 +1249,8 @@ impl SyncWorker {
         };
         let descriptor = BlockchainDescriptor::historical(StreamType::Logs, from_block, to_block)
             .with_validation(self.validation_stage)
-            .with_preferences(preferences);
+            .with_preferences(preferences)
+            .with_traces(true);
 
         // Subscribe to the log stream with metadata (returns RecordBatch + responsibility range)
         let stream = client
