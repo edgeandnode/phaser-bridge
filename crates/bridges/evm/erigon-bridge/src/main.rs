@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
         max_concurrent_executions: args.max_concurrent_executions.unwrap_or_else(num_cpus::get),
         global_max_execute_blocks: args.global_max_execute_blocks,
         execute_blocks_semaphore: None, // Will be set by bridge
-        enable_traces: false, // Will be set per-request from Flight descriptor
+        enable_traces: false,           // Will be set per-request from Flight descriptor
     };
 
     info!("Segment configuration:");
