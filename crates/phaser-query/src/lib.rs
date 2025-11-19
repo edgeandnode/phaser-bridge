@@ -253,15 +253,15 @@ fn default_max_concurrent_log_segments() -> u32 {
 impl PhaserConfig {
     pub fn bridge_data_dir(&self, chain_id: u64, bridge_name: &str) -> PathBuf {
         self.data_root
-            .join(format!("{}", chain_id))
+            .join(format!("{chain_id}"))
             .join(bridge_name)
     }
 
     pub fn from_yaml_file(path: &PathBuf) -> Result<Self> {
         let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read config file: {:?}", path))?;
+            .with_context(|| format!("Failed to read config file: {path:?}"))?;
         let config: PhaserConfig = serde_yaml::from_str(&content)
-            .with_context(|| format!("Failed to parse YAML config: {:?}", path))?;
+            .with_context(|| format!("Failed to parse YAML config: {path:?}"))?;
         Ok(config)
     }
 

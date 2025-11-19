@@ -805,8 +805,7 @@ impl SegmentWorker {
                         block_num, segment_start, segment_end, e
                     );
                     return Err(ErigonBridgeError::ValidationError(format!(
-                        "Block {} validation failed: {}",
-                        block_num, e
+                        "Block {block_num} validation failed: {e}"
                     )));
                 }
             }
@@ -1048,8 +1047,7 @@ impl SegmentWorker {
                     block_num, segment_start, segment_end, e
                 );
                 return Err(ErigonBridgeError::ValidationError(format!(
-                    "Block {} receipt validation failed: {}",
-                    block_num, e
+                    "Block {block_num} receipt validation failed: {e}"
                 )));
             }
         }
@@ -1116,7 +1114,7 @@ impl SegmentWorker {
             .take(80)
             .collect::<String>();
 
-        format!("unknown:{}", pattern)
+        format!("unknown:{pattern}")
     }
 }
 

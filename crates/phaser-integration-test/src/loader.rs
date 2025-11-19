@@ -158,7 +158,7 @@ impl DataLoader {
     }
 
     fn load_parquet(&self, prefix: &str, segment: u64) -> Result<Vec<RecordBatch>, anyhow::Error> {
-        let filename = format!("{}_{}.parquet", prefix, segment);
+        let filename = format!("{prefix}_{segment}.parquet");
         let path = self.data_dir.join(filename);
 
         let file = File::open(&path)?;

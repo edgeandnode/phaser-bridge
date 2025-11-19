@@ -112,7 +112,7 @@ impl StreamingServiceWithWriter {
         chain_id: u64,
         bridge_name: String,
     ) {
-        let stream_name = format!("{:?}", stream_type).to_lowercase();
+        let stream_name = format!("{stream_type:?}").to_lowercase();
         let mut first_block_received = false;
 
         tokio::spawn(async move {

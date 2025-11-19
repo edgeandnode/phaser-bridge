@@ -112,8 +112,7 @@ impl JsonRpcFlightBridge {
             serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first).map_err(
                 |e| {
                     Box::new(Status::invalid_argument(format!(
-                        "Invalid descriptor: {}",
-                        e
+                        "Invalid descriptor: {e}"
                     )))
                 },
             )
@@ -178,7 +177,7 @@ impl JsonRpcFlightBridge {
                         }
                         Err(e) => {
                             error!("Failed to fetch block #{}: {}", block_num, e);
-                            yield Err(Status::internal(format!("Failed to fetch block {}: {}", block_num, e)));
+                            yield Err(Status::internal(format!("Failed to fetch block {block_num}: {e}")));
                             continue;
                         }
                     };
@@ -192,7 +191,7 @@ impl JsonRpcFlightBridge {
                                 },
                                 Err(e) => {
                                     error!("Failed to convert block header #{}: {}", block_num, e);
-                                    yield Err(Status::internal(format!("Conversion error: {}", e)));
+                                    yield Err(Status::internal(format!("Conversion error: {e}")));
                                 }
                             }
                         }
@@ -216,14 +215,14 @@ impl JsonRpcFlightBridge {
                                                     },
                                                     Err(e) => {
                                                         error!("Transaction validation failed for block #{}: {}", block_num, e);
-                                                        yield Err(Status::internal(format!("Validation error for block {}: {}", block_num, e)));
+                                                        yield Err(Status::internal(format!("Validation error for block {block_num}: {e}")));
                                                         continue;
                                                     }
                                                 }
                                             },
                                             Err(e) => {
                                                 error!("Failed to extract transaction records for validation: {}", e);
-                                                yield Err(Status::internal(format!("Failed to extract records for validation: {}", e)));
+                                                yield Err(Status::internal(format!("Failed to extract records for validation: {e}")));
                                                 continue;
                                             }
                                         }
@@ -242,7 +241,7 @@ impl JsonRpcFlightBridge {
                                     },
                                     Err(e) => {
                                         error!("Failed to convert transactions for block #{}: {}", block_num, e);
-                                        yield Err(Status::internal(format!("Conversion error: {}", e)));
+                                        yield Err(Status::internal(format!("Conversion error: {e}")));
                                     }
                                 }
                             }
@@ -258,7 +257,7 @@ impl JsonRpcFlightBridge {
                                         Ok(batch) => record_batches.push(batch),
                                         Err(e) => {
                                             error!("Failed to convert logs for block #{}: {}", block_num, e);
-                                            yield Err(Status::internal(format!("Conversion error: {}", e)));
+                                            yield Err(Status::internal(format!("Conversion error: {e}")));
                                         }
                                     }
                                 }
@@ -267,7 +266,7 @@ impl JsonRpcFlightBridge {
                                 }
                                 Err(e) => {
                                     error!("Failed to fetch logs for block #{}: {}", block_num, e);
-                                    yield Err(Status::internal(format!("Failed to fetch logs: {}", e)));
+                                    yield Err(Status::internal(format!("Failed to fetch logs: {e}")));
                                 }
                             }
                         }
@@ -289,7 +288,7 @@ impl JsonRpcFlightBridge {
                         }
                         Err(e) => {
                             error!("Failed to concatenate batches: {}", e);
-                            yield Err(Status::internal(format!("Failed to concatenate batches: {}", e)));
+                            yield Err(Status::internal(format!("Failed to concatenate batches: {e}")));
                         }
                     }
                 }
@@ -332,7 +331,7 @@ impl FlightBridge for JsonRpcFlightBridge {
         let response = HandshakeResponse {
             protocol_version: 1,
             payload: serde_json::to_vec(&self.bridge_info())
-                .map_err(|e| Status::internal(format!("Failed to serialize bridge info: {}", e)))?
+                .map_err(|e| Status::internal(format!("Failed to serialize bridge info: {e}")))?
                 .into(),
         };
 
@@ -424,7 +423,7 @@ impl FlightBridge for JsonRpcFlightBridge {
             .and_then(|s| {
                 serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(&s)
                     .map_err(|e| {
-                        Status::invalid_argument(format!("Invalid descriptor in ticket: {}", e))
+                        Status::invalid_argument(format!("Invalid descriptor in ticket: {e}"))
                     })
             })?;
 
@@ -498,7 +497,7 @@ impl FlightBridge for JsonRpcFlightBridge {
         let flight_stream = encoder.map(|result| {
             result.map_err(|e| {
                 error!("Error encoding flight data: {}", e);
-                Status::internal(format!("Encoding error: {}", e))
+                Status::internal(format!("Encoding error: {e}"))
             })
         });
 
@@ -520,7 +519,7 @@ impl FlightBridge for JsonRpcFlightBridge {
             .next()
             .await
             .ok_or_else(|| Status::invalid_argument("Empty stream"))?
-            .map_err(|e| Status::internal(format!("Stream error: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Stream error: {e}")))?;
 
         let stream_type = if let Some(desc) = first.flight_descriptor {
             Self::parse_descriptor(&desc)
@@ -563,7 +562,7 @@ impl FlightBridge for JsonRpcFlightBridge {
         let flight_stream = encoder.map(|result| {
             result.map_err(|e| {
                 error!("Error encoding flight data: {}", e);
-                Status::internal(format!("Encoding error: {}", e))
+                Status::internal(format!("Encoding error: {e}"))
             })
         });
 
@@ -670,7 +669,7 @@ impl FlightService for JsonRpcFlightBridge {
         let schema_result = schema_as_ipc
             .try_into()
             .map_err(|e: arrow::error::ArrowError| {
-                Status::internal(format!("Failed to encode schema: {}", e))
+                Status::internal(format!("Failed to encode schema: {e}"))
             })?;
 
         Ok(Response::new(schema_result))

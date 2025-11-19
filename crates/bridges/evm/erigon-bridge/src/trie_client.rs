@@ -42,7 +42,7 @@ impl TrieClient {
             info!("Note: Custom Erigon must be running with TrieBackend service enabled");
 
             let uri = if !endpoint.starts_with("http://") {
-                format!("http://{}", endpoint)
+                format!("http://{endpoint}")
             } else {
                 endpoint.clone()
             };

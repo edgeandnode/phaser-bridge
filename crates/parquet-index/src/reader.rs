@@ -41,7 +41,7 @@ impl<FR: FileRegistry> PageReader<FR> {
         let path = Path::from_filesystem_path(
             file_path
                 .to_str()
-                .ok_or_else(|| ReaderError::InvalidPath(format!("{:?}", file_path)))?,
+                .ok_or_else(|| ReaderError::InvalidPath(format!("{file_path:?}")))?,
         )
         .map_err(|e| ReaderError::InvalidPath(e.to_string()))?;
         let fs = LocalFs {};

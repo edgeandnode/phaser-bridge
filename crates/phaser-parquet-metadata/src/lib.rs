@@ -231,8 +231,7 @@ mod tests {
         let initial_row_group_count = reader.metadata().num_row_groups();
         assert!(
             initial_row_group_count > 1,
-            "Expected multiple row groups, got {}",
-            initial_row_group_count
+            "Expected multiple row groups, got {initial_row_group_count}"
         );
 
         // Update metadata
@@ -335,8 +334,7 @@ mod tests {
             err_msg.contains("PAR1")
                 || err_msg.contains("magic")
                 || err_msg.contains("Corrupt footer"),
-            "Expected error about corrupted footer, got: {}",
-            err_msg
+            "Expected error about corrupted footer, got: {err_msg}"
         );
     }
 }

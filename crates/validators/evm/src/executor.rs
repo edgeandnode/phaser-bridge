@@ -41,8 +41,7 @@ impl FromStr for ExecutorType {
             "tokio" => Ok(ExecutorType::Tokio),
             "core" => Ok(ExecutorType::Core),
             _ => Err(format!(
-                "invalid executor type '{}', expected 'tokio' or 'core'",
-                s
+                "invalid executor type '{s}', expected 'tokio' or 'core'"
             )),
         }
     }

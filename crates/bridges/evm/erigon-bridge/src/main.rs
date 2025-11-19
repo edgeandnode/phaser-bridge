@@ -188,14 +188,14 @@ async fn main() -> Result<()> {
                 Err(e) => (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     [("content-type", "text/plain")],
-                    format!("Error gathering metrics: {}", e),
+                    format!("Error gathering metrics: {e}"),
                 ),
             }
         }
 
         let app = Router::new().route("/metrics", get(metrics_handler));
 
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", metrics_port))
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{metrics_port}"))
             .await
             .unwrap();
         info!(

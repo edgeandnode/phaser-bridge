@@ -978,8 +978,7 @@ impl DataScanner {
                         let block_start = start * segment_size;
                         let block_end = (end + 1) * segment_size - 1;
                         ranges.push(format!(
-                            "  segments {}-{} (blocks {}-{})",
-                            start, end, block_start, block_end
+                            "  segments {start}-{end} (blocks {block_start}-{block_end})"
                         ));
                     }
                     range_start = Some(seg);
@@ -991,8 +990,7 @@ impl DataScanner {
                 let block_start = start * segment_size;
                 let block_end = (end + 1) * segment_size - 1;
                 ranges.push(format!(
-                    "  segments {}-{} (blocks {}-{})",
-                    start, end, block_start, block_end
+                    "  segments {start}-{end} (blocks {block_start}-{block_end})"
                 ));
             }
 
@@ -1053,7 +1051,7 @@ impl DataScanner {
             let filename_str = filename.to_string_lossy();
 
             // Look for temp files for this segment: {type}_from_{X}_to_{segment_end}.parquet.tmp
-            if filename_str.ends_with(&format!("_to_{}.parquet.tmp", segment_end)) {
+            if filename_str.ends_with(&format!("_to_{segment_end}.parquet.tmp")) {
                 // Parse to get the start block
                 if let Some(range) = self.parse_filename(&path)? {
                     // Only clean if this starts at the segment boundary (failed historical sync)
@@ -1560,8 +1558,7 @@ mod tests {
             .unwrap();
         assert!(
             missing.is_empty(),
-            "Expected no missing segments, but got: {:?}",
-            missing
+            "Expected no missing segments, but got: {missing:?}"
         );
     }
 

@@ -19,7 +19,7 @@ impl ErigonClient {
             endpoint
         );
 
-        let channel = Channel::from_shared(format!("http://{}", endpoint))?
+        let channel = Channel::from_shared(format!("http://{endpoint}"))?
             .connect()
             .await
             .map_err(|e| {

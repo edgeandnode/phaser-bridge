@@ -167,8 +167,8 @@ async fn main() -> Result<()> {
                 };
 
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                println!("Job ID: {}", job_id);
-                println!("Status: {}", status_str);
+                println!("Job ID: {job_id}");
+                println!("Status: {status_str}");
                 println!("Chain: {} / Bridge: {}", job.chain_id, job.bridge_name);
                 println!("Blocks: {}-{}", job.from_block, job.to_block);
 
@@ -184,7 +184,7 @@ async fn main() -> Result<()> {
                         } else if bytes >= 1_000 {
                             format!("{:.1} KB", bytes as f64 / 1_000.0)
                         } else {
-                            format!("{} bytes", bytes)
+                            format!("{bytes} bytes")
                         }
                     };
 
@@ -322,13 +322,13 @@ async fn main() -> Result<()> {
 
                         println!("Incomplete Segments: {}", gap.missing_segments);
                         if missing_blocks_count > 0 {
-                            println!("  - {} segments missing blocks", missing_blocks_count);
+                            println!("  - {missing_blocks_count} segments missing blocks");
                         }
                         if missing_txs_count > 0 {
-                            println!("  - {} segments missing transactions", missing_txs_count);
+                            println!("  - {missing_txs_count} segments missing transactions");
                         }
                         if missing_logs_count > 0 {
-                            println!("  - {} segments missing logs", missing_logs_count);
+                            println!("  - {missing_logs_count} segments missing logs");
                         }
                     }
 
@@ -341,7 +341,7 @@ async fn main() -> Result<()> {
                     } else {
                         0.0
                     };
-                    println!("Progress: {:.1}%", percent);
+                    println!("Progress: {percent:.1}%");
                     if job.current_block > job.from_block {
                         println!("Highest completed: block {}", job.current_block);
                     }
@@ -362,7 +362,7 @@ async fn main() -> Result<()> {
                         "FAILED" => SyncStatus::Failed,
                         "CANCELLED" => SyncStatus::Cancelled,
                         _ => {
-                            println!("Invalid status filter: {}", status_str);
+                            println!("Invalid status filter: {status_str}");
                             println!(
                                 "Valid values: PENDING, RUNNING, COMPLETED, FAILED, CANCELLED"
                             );
@@ -395,7 +395,7 @@ async fn main() -> Result<()> {
 
                         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                         println!("Job ID: {}", job.job_id);
-                        println!("Status: {}", status_str);
+                        println!("Status: {status_str}");
                         println!("Chain: {} / Bridge: {}", job.chain_id, job.bridge_name);
                         println!("Blocks: {}-{}", job.from_block, job.to_block);
 
@@ -412,7 +412,7 @@ async fn main() -> Result<()> {
                                 } else if bytes >= 1_000 {
                                     format!("{:.1} KB", bytes as f64 / 1_000.0)
                                 } else {
-                                    format!("{} bytes", bytes)
+                                    format!("{bytes} bytes")
                                 }
                             };
 
@@ -560,18 +560,16 @@ async fn main() -> Result<()> {
                                 println!("Incomplete Segments: {}", gap.missing_segments);
                                 if missing_blocks_count > 0 {
                                     println!(
-                                        "  - {} segments missing blocks",
-                                        missing_blocks_count
+                                        "  - {missing_blocks_count} segments missing blocks"
                                     );
                                 }
                                 if missing_txs_count > 0 {
                                     println!(
-                                        "  - {} segments missing transactions",
-                                        missing_txs_count
+                                        "  - {missing_txs_count} segments missing transactions"
                                     );
                                 }
                                 if missing_logs_count > 0 {
-                                    println!("  - {} segments missing logs", missing_logs_count);
+                                    println!("  - {missing_logs_count} segments missing logs");
                                 }
                             }
 
@@ -585,7 +583,7 @@ async fn main() -> Result<()> {
                             } else {
                                 0.0
                             };
-                            println!("Progress: {:.1}%", percent);
+                            println!("Progress: {percent:.1}%");
                             if job.current_block > job.from_block {
                                 println!("Highest completed: block {}", job.current_block);
                             }

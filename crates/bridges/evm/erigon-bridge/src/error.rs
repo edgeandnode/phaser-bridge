@@ -73,10 +73,10 @@ impl From<ErigonBridgeError> for Status {
             ErigonBridgeError::ConversionError(msg) => Status::internal(msg),
             ErigonBridgeError::ValidationError(msg) => Status::failed_precondition(msg),
             ErigonBridgeError::ConnectionFailed(msg) => {
-                Status::unavailable(format!("Connection failed: {}", msg))
+                Status::unavailable(format!("Connection failed: {msg}"))
             }
             ErigonBridgeError::StreamProtocol(stream_err) => {
-                Status::aborted(format!("Stream protocol violation: {}", stream_err))
+                Status::aborted(format!("Stream protocol violation: {stream_err}"))
             }
         }
     }

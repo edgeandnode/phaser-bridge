@@ -105,9 +105,9 @@ pub fn gather_metrics() -> Result<String, String> {
 
     encoder
         .encode(&metric_families, &mut buffer)
-        .map_err(|e| format!("Failed to encode metrics: {}", e))?;
+        .map_err(|e| format!("Failed to encode metrics: {e}"))?;
 
-    String::from_utf8(buffer).map_err(|e| format!("Failed to convert metrics to UTF-8: {}", e))
+    String::from_utf8(buffer).map_err(|e| format!("Failed to convert metrics to UTF-8: {e}"))
 }
 
 #[cfg(test)]

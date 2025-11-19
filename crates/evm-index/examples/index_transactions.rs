@@ -190,9 +190,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx_by_to_count = storage.get_all(CF_TX_BY_TO).len();
 
     println!("\nIndex statistics:");
-    println!("  tx_by_hash entries: {}", tx_by_hash_count);
-    println!("  tx_by_from entries: {}", tx_by_from_count);
-    println!("  tx_by_to entries: {}", tx_by_to_count);
+    println!("  tx_by_hash entries: {tx_by_hash_count}");
+    println!("  tx_by_from entries: {tx_by_from_count}");
+    println!("  tx_by_to entries: {tx_by_to_count}");
 
     Ok(())
 }

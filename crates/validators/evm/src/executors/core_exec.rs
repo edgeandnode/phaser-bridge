@@ -41,8 +41,7 @@ impl CoreExecutor {
             }
             Err(e) => {
                 eprintln!(
-                    "CoreExecutor: NUMA detection failed ({}), using regular thread pool with {} workers",
-                    e, num_workers
+                    "CoreExecutor: NUMA detection failed ({e}), using regular thread pool with {num_workers} workers"
                 );
                 ThreadPoolExecutor::new(num_workers)
             }

@@ -178,7 +178,7 @@ impl SyncServer {
     }
 
     pub async fn start(self, port: u16) -> Result<()> {
-        let addr = format!("0.0.0.0:{}", port).parse()?;
+        let addr = format!("0.0.0.0:{port}").parse()?;
         info!("Starting sync admin gRPC server on {}", addr);
 
         tonic::transport::Server::builder()
@@ -625,12 +625,12 @@ impl SyncService for SyncServer {
             // Connect to bridge to check chain tip
             let mut client = FlightBridgeClient::connect(bridge.endpoint.clone())
                 .await
-                .map_err(|e| Status::unavailable(format!("Failed to connect to bridge: {}", e)))?;
+                .map_err(|e| Status::unavailable(format!("Failed to connect to bridge: {e}")))?;
 
             let bridge_info = client
                 .get_info()
                 .await
-                .map_err(|e| Status::internal(format!("Failed to get bridge info: {}", e)))?;
+                .map_err(|e| Status::internal(format!("Failed to get bridge info: {e}")))?;
 
             if bridge_info.current_block > 0 && to_block > bridge_info.current_block {
                 return Err(Status::invalid_argument(format!(
@@ -653,7 +653,7 @@ impl SyncService for SyncServer {
         let mut gap_analysis = scanner
             .analyze_sync_range(req.from_block, to_block, self.config.segment_size)
             .await
-            .map_err(|e| Status::internal(format!("Failed to analyze sync range: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to analyze sync range: {e}")))?;
 
         // Filter out segments >= live sync boundary to avoid cleaning active live streaming temp files
         let segments_to_clean: Vec<u64> = if let Some(boundary_block) = historical_boundary {
@@ -676,7 +676,7 @@ impl SyncService for SyncServer {
         // Clean only temp files that conflict with segments we're about to sync (excluding live sync segments)
         let cleaned_count = scanner
             .clean_conflicting_temp_files(&segments_to_clean, self.config.segment_size)
-            .map_err(|e| Status::internal(format!("Failed to clean temp files: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to clean temp files: {e}")))?;
 
         gap_analysis.cleaned_temp_files = cleaned_count;
 
@@ -776,7 +776,7 @@ impl SyncService for SyncServer {
         let analysis = scanner
             .analyze_sync_range(job.from_block, job.to_block, self.config.segment_size)
             .await
-            .map_err(|e| Status::internal(format!("Failed to analyze sync progress: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to analyze sync progress: {e}")))?;
 
         // Calculate actual progress from disk
         let complete_segments = analysis.complete_segments.len() as u64;
@@ -934,7 +934,7 @@ impl SyncService for SyncServer {
         let mut gap_analysis = scanner
             .analyze_sync_range(req.from_block, req.to_block, self.config.segment_size)
             .await
-            .map_err(|e| Status::internal(format!("Failed to analyze sync range: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to analyze sync range: {e}")))?;
 
         // Get historical boundary from LiveStreamingState to avoid cleaning live streaming temp files
         let id = crate::ChainBridgeId::new(req.chain_id, &req.bridge_name);
@@ -961,7 +961,7 @@ impl SyncService for SyncServer {
         // Clean only temp files that conflict with segments we're analyzing (excluding live sync segments)
         let cleaned_count = scanner
             .clean_conflicting_temp_files(&segments_to_clean, self.config.segment_size)
-            .map_err(|e| Status::internal(format!("Failed to clean temp files: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to clean temp files: {e}")))?;
 
         gap_analysis.cleaned_temp_files = cleaned_count;
 

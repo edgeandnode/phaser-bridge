@@ -513,7 +513,7 @@ impl SyncWorker {
                     .min(MAX_BACKOFF_SECS);
 
                     let progress_msg = if let Some(last) = last_written {
-                        format!("last written block: {}", last)
+                        format!("last written block: {last}")
                     } else {
                         "no data received yet".to_string()
                     };
@@ -645,8 +645,7 @@ impl SyncWorker {
                         from_block,
                         to_block,
                         format!(
-                            "Bridge returned blocks starting at {} but requested range started at {}",
-                            first, from_block
+                            "Bridge returned blocks starting at {first} but requested range started at {from_block}"
                         ),
                     ));
                 }
@@ -656,8 +655,7 @@ impl SyncWorker {
                         from_block,
                         to_block,
                         format!(
-                            "Bridge returned blocks ending at {} but requested range ended at {}",
-                            last, to_block
+                            "Bridge returned blocks ending at {last} but requested range ended at {to_block}"
                         ),
                     ));
                 }
@@ -823,7 +821,7 @@ impl SyncWorker {
                     .min(MAX_BACKOFF_SECS);
 
                     let progress_msg = if let Some(last) = last_written {
-                        format!("last written block: {}", last)
+                        format!("last written block: {last}")
                     } else {
                         "no data received yet".to_string()
                     };
@@ -1005,8 +1003,7 @@ impl SyncWorker {
                         from_block,
                         to_block,
                         format!(
-                            "Bridge returned transactions starting at block {} which is outside requested range {}-{}",
-                            first, from_block, to_block
+                            "Bridge returned transactions starting at block {first} which is outside requested range {from_block}-{to_block}"
                         ),
                     ));
                 }
@@ -1016,8 +1013,7 @@ impl SyncWorker {
                         from_block,
                         to_block,
                         format!(
-                            "Bridge returned transactions ending at block {} which is outside requested range {}-{}",
-                            last, from_block, to_block
+                            "Bridge returned transactions ending at block {last} which is outside requested range {from_block}-{to_block}"
                         ),
                     ));
                 }
@@ -1212,7 +1208,7 @@ impl SyncWorker {
                     .min(MAX_BACKOFF_SECS);
 
                     let progress_msg = if let Some(last) = last_written {
-                        format!("last written block: {}", last)
+                        format!("last written block: {last}")
                     } else {
                         "no data received yet".to_string()
                     };
@@ -1345,8 +1341,7 @@ impl SyncWorker {
                         from_block,
                         to_block,
                         format!(
-                            "Bridge returned logs starting at block {} which is outside requested range {}-{}",
-                            first, from_block, to_block
+                            "Bridge returned logs starting at block {first} which is outside requested range {from_block}-{to_block}"
                         ),
                     ));
                 }
@@ -1356,8 +1351,7 @@ impl SyncWorker {
                         from_block,
                         to_block,
                         format!(
-                            "Bridge returned logs ending at block {} which is outside requested range {}-{}",
-                            last, from_block, to_block
+                            "Bridge returned logs ending at block {last} which is outside requested range {from_block}-{to_block}"
                         ),
                     ));
                 }
