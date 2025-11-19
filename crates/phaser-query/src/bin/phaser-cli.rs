@@ -559,9 +559,7 @@ async fn main() -> Result<()> {
 
                                 println!("Incomplete Segments: {}", gap.missing_segments);
                                 if missing_blocks_count > 0 {
-                                    println!(
-                                        "  - {missing_blocks_count} segments missing blocks"
-                                    );
+                                    println!("  - {missing_blocks_count} segments missing blocks");
                                 }
                                 if missing_txs_count > 0 {
                                     println!(

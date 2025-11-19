@@ -89,9 +89,7 @@ fn main() -> Result<()> {
     );
     println!("You can query them by reopening the database and using:");
     println!("  storage.get({CF_TX_BY_HASH:?}, <32-byte-hash>)");
-    println!(
-        "  storage.prefix_iterator({CF_TX_BY_FROM:?}, <20-byte-address>)"
-    );
+    println!("  storage.prefix_iterator({CF_TX_BY_FROM:?}, <20-byte-address>)");
 
     Ok(())
 }

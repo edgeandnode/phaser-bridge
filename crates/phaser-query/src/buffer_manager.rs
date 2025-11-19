@@ -193,9 +193,7 @@ impl CfToParquetBuffer {
             .file_counter
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        let filename = format!(
-            "blocks_{timestamp}_{counter}_{min_key:08}_to_{max_key:08}.parquet"
-        );
+        let filename = format!("blocks_{timestamp}_{counter}_{min_key:08}_to_{max_key:08}.parquet");
 
         let file_path = self.target_dir.join(&filename);
         let temp_path = self.target_dir.join(format!(".{filename}.tmp"));

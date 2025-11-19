@@ -252,9 +252,7 @@ fn default_max_concurrent_log_segments() -> u32 {
 
 impl PhaserConfig {
     pub fn bridge_data_dir(&self, chain_id: u64, bridge_name: &str) -> PathBuf {
-        self.data_root
-            .join(format!("{chain_id}"))
-            .join(bridge_name)
+        self.data_root.join(format!("{chain_id}")).join(bridge_name)
     }
 
     pub fn from_yaml_file(path: &PathBuf) -> Result<Self> {
