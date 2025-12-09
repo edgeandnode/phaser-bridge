@@ -140,7 +140,7 @@ impl BenchmarkRunner {
         let std_dev = Duration::from_secs_f64(variance.sqrt());
 
         Ok(StageResult {
-            name: format!("full_pipeline_{}tx", target_tx_count),
+            name: format!("full_pipeline_{target_tx_count}tx"),
             iterations: timings.len(),
             mean,
             median,

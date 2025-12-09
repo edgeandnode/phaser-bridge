@@ -46,7 +46,7 @@ fn main() -> Result<()> {
 
     println!("Creating RocksDB storage with column families:");
     for cf in &column_families {
-        println!("  - {}", cf);
+        println!("  - {cf}");
     }
     println!();
 
@@ -88,11 +88,8 @@ fn main() -> Result<()> {
         rocksdb_path.display()
     );
     println!("You can query them by reopening the database and using:");
-    println!("  storage.get({:?}, <32-byte-hash>)", CF_TX_BY_HASH);
-    println!(
-        "  storage.prefix_iterator({:?}, <20-byte-address>)",
-        CF_TX_BY_FROM
-    );
+    println!("  storage.get({CF_TX_BY_HASH:?}, <32-byte-hash>)");
+    println!("  storage.prefix_iterator({CF_TX_BY_FROM:?}, <20-byte-address>)");
 
     Ok(())
 }

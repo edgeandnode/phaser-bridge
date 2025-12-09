@@ -88,7 +88,7 @@ impl BatchMetadata {
         }
 
         bincode::deserialize(metadata)
-            .map_err(|e| format!("Failed to decode BatchMetadata from app_metadata: {}", e).into())
+            .map_err(|e| format!("Failed to decode BatchMetadata from app_metadata: {e}").into())
     }
 }
 

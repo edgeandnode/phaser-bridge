@@ -130,7 +130,7 @@ fn show_metadata(file_path: PathBuf, verbose: bool) -> Result<()> {
                 println!();
             }
             Err(e) => {
-                println!("Error parsing phaser metadata: {}", e);
+                println!("Error parsing phaser metadata: {e}");
                 println!();
             }
         }
@@ -189,10 +189,7 @@ fn show_metadata(file_path: PathBuf, verbose: bool) -> Result<()> {
                         max_bytes[6],
                         max_bytes[7],
                     ]);
-                    println!(
-                        "  Block range (from statistics): {}-{}",
-                        min_block, max_block
-                    );
+                    println!("  Block range (from statistics): {min_block}-{max_block}");
                 }
             }
         }
@@ -293,10 +290,7 @@ fn set_metadata(
             anyhow::bail!("Cannot infer data_end from statistics");
         };
 
-        println!(
-            "Inferred data_start={}, data_end={} from statistics",
-            min_block, max_block
-        );
+        println!("Inferred data_start={min_block}, data_end={max_block} from statistics");
         (min_block, max_block)
     } else {
         anyhow::bail!("--infer is required (explicit data_start/data_end not yet supported)");
@@ -314,12 +308,9 @@ fn set_metadata(
     );
 
     println!("Setting phaser metadata on {}", file_path.display());
-    println!("  Segment: {}-{}", segment_start, segment_end);
-    println!(
-        "  Responsibility: {}-{}",
-        responsibility_start, responsibility_end
-    );
-    println!("  Data range: {}-{}", data_start, data_end);
+    println!("  Segment: {segment_start}-{segment_end}");
+    println!("  Responsibility: {responsibility_start}-{responsibility_end}");
+    println!("  Data range: {data_start}-{data_end}");
     println!("  Data type: {}", phaser_meta.data_type);
     println!();
 

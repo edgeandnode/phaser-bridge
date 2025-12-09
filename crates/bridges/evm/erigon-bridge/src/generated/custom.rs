@@ -312,6 +312,9 @@ pub struct BlockRangeRequest {
     /// Records per batch (default: 1000)
     #[prost(uint32, tag = "3")]
     pub batch_size: u32,
+    /// Enable callTracer traces during ExecuteBlocks (default: false, 2-5x slower)
+    #[prost(bool, tag = "4")]
+    pub enable_traces: bool,
 }
 /// A batch of RLP-encoded block headers
 #[allow(dead_code)]
@@ -407,7 +410,7 @@ pub struct ReceiptBatch {
     #[prost(bool, tag = "4")]
     pub is_last: bool,
 }
-/// RLP-encoded receipt data (receipts contain logs)
+/// RLP-encoded receipt data with optional trace data
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -426,6 +429,9 @@ pub struct ReceiptData {
     /// 32-byte transaction hash
     #[prost(bytes = "vec", tag = "5")]
     pub tx_hash: ::prost::alloc::vec::Vec<u8>,
+    /// JSON-encoded trace (callTracer format), empty if tracing disabled
+    #[prost(bytes = "vec", tag = "6")]
+    pub trace_data: ::prost::alloc::vec::Vec<u8>,
 }
 /// Generated client implementations.
 pub mod block_data_backend_client {

@@ -52,7 +52,7 @@ impl BlockDataClient {
             info!("Note: Custom Erigon must be running with BlockDataBackend service enabled");
 
             let uri = if !endpoint.starts_with("http://") {
-                format!("http://{}", endpoint)
+                format!("http://{endpoint}")
             } else {
                 endpoint.clone()
             };
@@ -88,6 +88,7 @@ impl BlockDataClient {
             from_block,
             to_block,
             batch_size: if batch_size > 0 { batch_size } else { 1000 },
+            enable_traces: false,
         };
 
         debug!(
@@ -110,6 +111,7 @@ impl BlockDataClient {
             from_block,
             to_block,
             batch_size: if batch_size > 0 { batch_size } else { 1000 },
+            enable_traces: false,
         };
 
         debug!(
@@ -128,16 +130,18 @@ impl BlockDataClient {
         from_block: u64,
         to_block: u64,
         batch_size: u32,
+        enable_traces: bool,
     ) -> Result<Streaming<ReceiptBatch>, ErigonBridgeError> {
         let request = BlockRangeRequest {
             from_block,
             to_block,
             batch_size: if batch_size > 0 { batch_size } else { 1000 },
+            enable_traces,
         };
 
         debug!(
-            "Starting receipt stream via block execution (blocks {}-{}, batch_size: {})",
-            from_block, to_block, batch_size
+            "Starting receipt stream via block execution (blocks {}-{}, batch_size: {}, traces: {})",
+            from_block, to_block, batch_size, enable_traces
         );
 
         let response = self.client.execute_blocks(request).await?;

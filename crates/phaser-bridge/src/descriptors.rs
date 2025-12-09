@@ -101,6 +101,9 @@ pub struct BlockchainDescriptor {
     /// Stream preferences for transfer settings
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferences: Option<StreamPreferences>,
+    /// Enable transaction traces (callTracer) for Logs stream (default: false, 2-5x slower)
+    #[serde(default)]
+    pub enable_traces: bool,
 }
 
 impl BlockchainDescriptor {
@@ -114,6 +117,7 @@ impl BlockchainDescriptor {
             include_reorgs: false,
             validation: ValidationStage::None,
             preferences: None,
+            enable_traces: false,
         }
     }
 
@@ -127,6 +131,7 @@ impl BlockchainDescriptor {
             include_reorgs: false,
             validation: ValidationStage::None,
             preferences: None,
+            enable_traces: false,
         }
     }
 
@@ -157,6 +162,12 @@ impl BlockchainDescriptor {
     /// Set stream preferences for this descriptor
     pub fn with_preferences(mut self, preferences: StreamPreferences) -> Self {
         self.preferences = Some(preferences);
+        self
+    }
+
+    /// Enable transaction traces (callTracer) for Logs stream
+    pub fn with_traces(mut self, enable: bool) -> Self {
+        self.enable_traces = enable;
         self
     }
 

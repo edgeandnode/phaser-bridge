@@ -106,7 +106,7 @@ impl fmt::Display for MultipleDataTypeErrors {
             if i > 0 {
                 write!(f, "; ")?;
             }
-            write!(f, "{}: {}", data_type, err)?;
+            write!(f, "{data_type}: {err}")?;
         }
         Ok(())
     }
@@ -122,7 +122,7 @@ impl std::error::Error for MultipleDataTypeErrors {
 impl From<MultipleDataTypeErrors> for SyncError {
     fn from(multi_err: MultipleDataTypeErrors) -> Self {
         // Aggregate into a single SyncError with Unknown data type
-        let message = format!("{}", multi_err);
+        let message = format!("{multi_err}");
         let category = multi_err
             .errors
             .first()
@@ -169,8 +169,7 @@ impl SyncError {
     /// Create a protocol error (bridge returned zero batches)
     pub fn protocol_error(data_type: DataType, from_block: u64, to_block: u64) -> Self {
         let msg = format!(
-            "Bridge returned zero batches for {} {}-{}. This indicates a protocol error.",
-            data_type, from_block, to_block
+            "Bridge returned zero batches for {data_type} {from_block}-{to_block}. This indicates a protocol error."
         );
         Self {
             data_type,
@@ -285,7 +284,7 @@ impl SyncError {
         };
 
         let context_str = context.into();
-        let message = format!("{}: {}", context_str, err_str);
+        let message = format!("{context_str}: {err_str}");
 
         Self {
             data_type,
@@ -327,7 +326,7 @@ impl SyncError {
         };
 
         let context_str = context.into();
-        let message = format!("{}: {}", context_str, err_str);
+        let message = format!("{context_str}: {err_str}");
 
         Self {
             data_type,

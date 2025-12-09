@@ -48,6 +48,9 @@ pub struct SegmentConfig {
     /// Global semaphore for limiting ExecuteBlocks calls across all workers
     /// Not included in Default implementation - must be set by bridge
     pub execute_blocks_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+
+    /// Enable transaction traces (callTracer) during log/receipt execution (default: false)
+    pub enable_traces: bool,
 }
 
 impl std::fmt::Debug for SegmentConfig {
@@ -63,6 +66,7 @@ impl std::fmt::Debug for SegmentConfig {
                 "execute_blocks_semaphore",
                 &self.execute_blocks_semaphore.is_some(),
             )
+            .field("enable_traces", &self.enable_traces)
             .finish()
     }
 }
@@ -77,6 +81,7 @@ impl Default for SegmentConfig {
             max_concurrent_executions: num_cpus::get(),
             global_max_execute_blocks: 64,
             execute_blocks_semaphore: None,
+            enable_traces: false,
         }
     }
 }
@@ -545,6 +550,7 @@ impl SegmentWorker {
                         &mut client,
                         &metrics,
                         semaphore,
+                        self.config.enable_traces,
                     ).await;
 
                     (work_idx, start, end, result)
@@ -799,8 +805,7 @@ impl SegmentWorker {
                         block_num, segment_start, segment_end, e
                     );
                     return Err(ErigonBridgeError::ValidationError(format!(
-                        "Block {} validation failed: {}",
-                        block_num, e
+                        "Block {block_num} validation failed: {e}"
                     )));
                 }
             }
@@ -840,6 +845,7 @@ impl SegmentWorker {
         client: &mut BlockDataClient,
         metrics: &BridgeMetrics,
         execute_blocks_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+        enable_traces: bool,
     ) -> Result<Vec<(u64, Vec<crate::proto::custom::ReceiptData>, Header)>, ErigonBridgeError> {
         let call_start = std::time::Instant::now();
         let segment_id = from_block / 500_000;
@@ -885,7 +891,7 @@ impl SegmentWorker {
 
         let request_start = Instant::now();
         let mut receipt_stream = client
-            .execute_blocks(from_block, to_block, 100)
+            .execute_blocks(from_block, to_block, 100, enable_traces)
             .await
             .map_err(|e| {
                 // Cancel the monitor task since the call failed
@@ -1041,8 +1047,7 @@ impl SegmentWorker {
                     block_num, segment_start, segment_end, e
                 );
                 return Err(ErigonBridgeError::ValidationError(format!(
-                    "Block {} receipt validation failed: {}",
-                    block_num, e
+                    "Block {block_num} receipt validation failed: {e}"
                 )));
             }
         }
@@ -1109,7 +1114,7 @@ impl SegmentWorker {
             .take(80)
             .collect::<String>();
 
-        format!("unknown:{}", pattern)
+        format!("unknown:{pattern}")
     }
 }
 

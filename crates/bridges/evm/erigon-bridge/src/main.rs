@@ -147,6 +147,7 @@ async fn main() -> Result<()> {
         max_concurrent_executions: args.max_concurrent_executions.unwrap_or_else(num_cpus::get),
         global_max_execute_blocks: args.global_max_execute_blocks,
         execute_blocks_semaphore: None, // Will be set by bridge
+        enable_traces: false,           // Will be set per-request from Flight descriptor
     };
 
     info!("Segment configuration:");
@@ -187,14 +188,14 @@ async fn main() -> Result<()> {
                 Err(e) => (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     [("content-type", "text/plain")],
-                    format!("Error gathering metrics: {}", e),
+                    format!("Error gathering metrics: {e}"),
                 ),
             }
         }
 
         let app = Router::new().route("/metrics", get(metrics_handler));
 
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", metrics_port))
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{metrics_port}"))
             .await
             .unwrap();
         info!(

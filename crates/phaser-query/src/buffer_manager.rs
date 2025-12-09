@@ -144,7 +144,7 @@ impl CfToParquetBuffer {
         };
 
         // Store file info for the range
-        let file_info_key = format!("file_{:016x}_{:016x}", min_key, max_key);
+        let file_info_key = format!("file_{min_key:016x}_{max_key:016x}");
         batch.put_cf(
             index_cf,
             file_info_key.as_bytes(),
@@ -193,13 +193,10 @@ impl CfToParquetBuffer {
             .file_counter
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        let filename = format!(
-            "blocks_{}_{}_{:08}_to_{:08}.parquet",
-            timestamp, counter, min_key, max_key
-        );
+        let filename = format!("blocks_{timestamp}_{counter}_{min_key:08}_to_{max_key:08}.parquet");
 
         let file_path = self.target_dir.join(&filename);
-        let temp_path = self.target_dir.join(format!(".{}.tmp", filename));
+        let temp_path = self.target_dir.join(format!(".{filename}.tmp"));
 
         // Write to temp file first
         let file = File::create(&temp_path)?;

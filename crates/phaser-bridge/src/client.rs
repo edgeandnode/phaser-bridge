@@ -71,7 +71,7 @@ impl FlightBridgeClient {
             let uri = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
                 endpoint.clone()
             } else {
-                format!("http://{}", endpoint)
+                format!("http://{endpoint}")
             };
             Channel::from_shared(uri)?.connect().await?
         };
@@ -202,7 +202,7 @@ impl FlightBridgeClient {
                     // Decode schema from FlightData header (based on flight_data_to_batches implementation)
                     let message = root_as_message(&flight_data.data_header[..])
                         .map_err(|err| arrow_flight::error::FlightError::DecodeError(
-                            format!("Cannot get root as message: {:?}", err)
+                            format!("Cannot get root as message: {err:?}")
                         ))?;
 
                     let ipc_schema = message
@@ -218,7 +218,7 @@ impl FlightBridgeClient {
                 // Extract and decode app_metadata (required)
                 let metadata = crate::BatchMetadata::decode(&flight_data.app_metadata)
                     .map_err(|e| arrow_flight::error::FlightError::DecodeError(
-                        format!("Failed to decode batch metadata: {}", e)
+                        format!("Failed to decode batch metadata: {e}")
                     ))?;
 
                 // Decode the RecordBatch from FlightData using the schema

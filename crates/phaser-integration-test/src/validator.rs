@@ -148,6 +148,6 @@ mod humantime_serde {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&format!("{:?}", duration))
+        serializer.serialize_str(&format!("{duration:?}"))
     }
 }

@@ -70,7 +70,7 @@ impl ErigonClient {
                 endpoint
             );
 
-            Channel::from_shared(format!("http://{}", endpoint))?
+            Channel::from_shared(format!("http://{endpoint}"))?
                 .connect()
                 .await
                 .map_err(|e| {

@@ -160,8 +160,7 @@ impl ErigonFlightBridge {
             serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first).map_err(
                 |e| {
                     Box::new(TonicStatus::invalid_argument(format!(
-                        "Invalid descriptor: {}",
-                        e
+                        "Invalid descriptor: {e}"
                     )))
                 },
             )
@@ -266,8 +265,7 @@ impl ErigonFlightBridge {
                         Ok(handle) => handle,
                         Err(e) => {
                             let err_msg = format!(
-                                "Failed to get client from pool for segment {}-{}: {}",
-                                seg_start, seg_end, e
+                                "Failed to get client from pool for segment {seg_start}-{seg_end}: {e}"
                             );
                             error!("{}", err_msg);
                             return futures::stream::once(async move {
@@ -306,8 +304,7 @@ impl ErigonFlightBridge {
                             return futures::stream::once(async move {
                                 Err(arrow_flight::error::FlightError::ExternalError(Box::new(
                                     std::io::Error::other(format!(
-                                        "Failed to access client: {}",
-                                        e
+                                        "Failed to access client: {e}"
                                     )),
                                 )))
                             })
@@ -344,8 +341,7 @@ impl ErigonFlightBridge {
                                 client_handle.mark_error();
                                 arrow_flight::error::FlightError::ExternalError(Box::new(
                                     std::io::Error::other(format!(
-                                        "Segment {}-{} failed: {}",
-                                        seg_start, seg_end, e
+                                        "Segment {seg_start}-{seg_end} failed: {e}"
                                     )),
                                 ))
                             })
@@ -398,8 +394,7 @@ impl ErigonFlightBridge {
                         Ok(handle) => handle,
                         Err(e) => {
                             let err_msg = format!(
-                                "Failed to get client from pool for segment {}-{}: {}",
-                                seg_start, seg_end, e
+                                "Failed to get client from pool for segment {seg_start}-{seg_end}: {e}"
                             );
                             error!("{}", err_msg);
                             return futures::stream::once(async move {
@@ -438,8 +433,7 @@ impl ErigonFlightBridge {
                             return futures::stream::once(async move {
                                 Err(arrow_flight::error::FlightError::ExternalError(Box::new(
                                     std::io::Error::other(format!(
-                                        "Failed to access client: {}",
-                                        e
+                                        "Failed to access client: {e}"
                                     )),
                                 )))
                             })
@@ -476,8 +470,7 @@ impl ErigonFlightBridge {
                                 client_handle.mark_error();
                                 arrow_flight::error::FlightError::ExternalError(Box::new(
                                     std::io::Error::other(format!(
-                                        "Segment {}-{} failed: {}",
-                                        seg_start, seg_end, e
+                                        "Segment {seg_start}-{seg_end} failed: {e}"
                                     )),
                                 ))
                             })
@@ -496,6 +489,7 @@ impl ErigonFlightBridge {
         start: u64,
         end: u64,
         validate: bool,
+        enable_traces: bool,
     ) -> Result<
         Pin<
             Box<
@@ -521,13 +515,12 @@ impl ErigonFlightBridge {
             client
                 .get_latest_block()
                 .await
-                .map_err(|e| Status::internal(format!("Failed to query chain head: {}", e)))?
+                .map_err(|e| Status::internal(format!("Failed to query chain head: {e}")))?
         };
 
         if end > chain_head {
             return Err(Status::invalid_argument(format!(
-                "Requested end block {} exceeds current chain head {}",
-                end, chain_head
+                "Requested end block {end} exceeds current chain head {chain_head}"
             )));
         }
 
@@ -552,9 +545,11 @@ impl ErigonFlightBridge {
 
         if stream_type == StreamType::Logs {
             let pool = self.blockdata_pool.clone();
+            let mut config = self.segment_config.clone();
+            config.enable_traces = enable_traces;
             let stream = self.process_logs_with_segments(
                 pool,
-                self.segment_config.clone(),
+                config,
                 self.validator.clone(),
                 start,
                 end,
@@ -576,7 +571,7 @@ impl ErigonFlightBridge {
                         Err(e) => {
                             error!("Failed to get client from pool for blocks stream: {}", e);
                             yield Err(arrow_flight::error::FlightError::ExternalError(
-                                Box::new(std::io::Error::other(format!("Pool error: {}", e)))
+                                Box::new(std::io::Error::other(format!("Pool error: {e}")))
                             ));
                             return;
                         }
@@ -599,7 +594,7 @@ impl ErigonFlightBridge {
                             error!("Failed to access client for blocks stream: {}", e);
                             client_handle.mark_error();
                             yield Err(arrow_flight::error::FlightError::ExternalError(
-                                Box::new(std::io::Error::other(format!("Client error: {}", e)))
+                                Box::new(std::io::Error::other(format!("Client error: {e}")))
                             ));
                             return;
                         }
@@ -726,7 +721,7 @@ impl FlightBridge for ErigonFlightBridge {
         let response = HandshakeResponse {
             protocol_version: 1,
             payload: serde_json::to_vec(&self.bridge_info().await)
-                .map_err(|e| Status::internal(format!("Failed to serialize bridge info: {}", e)))?
+                .map_err(|e| Status::internal(format!("Failed to serialize bridge info: {e}")))?
                 .into(),
         };
 
@@ -822,7 +817,7 @@ impl FlightBridge for ErigonFlightBridge {
             .and_then(|s| {
                 serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(&s)
                     .map_err(|e| {
-                        Status::invalid_argument(format!("Invalid descriptor in ticket: {}", e))
+                        Status::invalid_argument(format!("Invalid descriptor in ticket: {e}"))
                     })
             })?;
         let stream_type = blockchain_desc.stream_type;
@@ -845,7 +840,7 @@ impl FlightBridge for ErigonFlightBridge {
             let flight_stream = encoder.map(|result| {
                 result.map_err(|e| {
                     error!("Error encoding flight data: {}", e);
-                    Status::internal(format!("Encoding error: {}", e))
+                    Status::internal(format!("Encoding error: {e}"))
                 })
             });
 
@@ -883,6 +878,7 @@ impl FlightBridge for ErigonFlightBridge {
                         start,
                         end,
                         should_validate_ingestion,
+                        blockchain_desc.enable_traces,
                     )
                     .await?,
                 )
@@ -934,7 +930,7 @@ impl FlightBridge for ErigonFlightBridge {
                             Ok(m) => m,
                             Err(e) => {
                                 error!("Failed to encode batch metadata: {}", e);
-                                yield Err(Status::internal(format!("Metadata encoding error: {}", e)));
+                                yield Err(Status::internal(format!("Metadata encoding error: {e}")));
                                 continue;
                             }
                         };
@@ -959,7 +955,7 @@ impl FlightBridge for ErigonFlightBridge {
                             }
                             Err(e) => {
                                 error!("Error encoding batch to flight data: {}", e);
-                                yield Err(Status::internal(format!("Batch encoding error: {}", e)));
+                                yield Err(Status::internal(format!("Batch encoding error: {e}")));
                             }
                         }
                     }
@@ -989,7 +985,7 @@ impl FlightBridge for ErigonFlightBridge {
 
                         metrics_for_stream.error(error_type, data_type);
 
-                        yield Err(Status::internal(format!("Stream error: {}", e)));
+                        yield Err(Status::internal(format!("Stream error: {e}")));
                     }
                 }
             }
@@ -1011,7 +1007,7 @@ impl FlightBridge for ErigonFlightBridge {
             .next()
             .await
             .ok_or_else(|| Status::invalid_argument("Empty stream"))?
-            .map_err(|e| Status::internal(format!("Stream error: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Stream error: {e}")))?;
 
         let stream_type = if let Some(desc) = first.flight_descriptor {
             Self::parse_descriptor(&desc)
@@ -1034,7 +1030,7 @@ impl FlightBridge for ErigonFlightBridge {
             let flight_stream = encoder.map(|result| {
                 result.map_err(|e| {
                     error!("Error encoding flight data: {}", e);
-                    Status::internal(format!("Encoding error: {}", e))
+                    Status::internal(format!("Encoding error: {e}"))
                 })
             });
 
@@ -1067,7 +1063,7 @@ impl FlightBridge for ErigonFlightBridge {
         let flight_stream = encoder.map(|result| {
             result.map_err(|e| {
                 error!("Error encoding flight data: {}", e);
-                Status::internal(format!("Encoding error: {}", e))
+                Status::internal(format!("Encoding error: {e}"))
             })
         });
 
