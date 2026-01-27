@@ -7,9 +7,9 @@ edition = "2021"
 # Arrow and Flight dependencies
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
-arrow-array = "56.1"
-arrow-schema = "56.1"
-arrow-ipc = "56.1"
+arrow-array = { workspace = true }
+arrow-schema = "56"
+arrow-ipc = "56"
 
 # Async and gRPC
 tokio = { workspace = true }

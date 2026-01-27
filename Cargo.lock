@@ -6004,8 +6004,9 @@ checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
 
 [[package]]
 name = "typed-arrow"
-version = "0.4.1"
-source = "git+https://github.com/tonbo-io/typed-arrow?rev=30f2507147e8b48d51a26285bf8c84fdd58afa84#30f2507147e8b48d51a26285bf8c84fdd58afa84"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a90c028b772d380c29ae66cabce698a4f24fc9f02dd673250d32eaf9132a5bc9"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -6018,8 +6019,9 @@ dependencies = [
 
 [[package]]
 name = "typed-arrow-derive"
-version = "0.4.1"
-source = "git+https://github.com/tonbo-io/typed-arrow?rev=30f2507147e8b48d51a26285bf8c84fdd58afa84#30f2507147e8b48d51a26285bf8c84fdd58afa84"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65560c198e13adbbd185b7970ca7fcf9237546a5db39949e64f16e050b75825a"
 dependencies = [
  "proc-macro2",
  "quote",
