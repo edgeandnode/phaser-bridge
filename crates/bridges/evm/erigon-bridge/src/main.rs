@@ -23,7 +23,7 @@ use tracing_subscriber::EnvFilter;
 use validators_evm::ExecutorType;
 
 use bridge::ErigonFlightBridge;
-use phaser_bridge::FlightBridgeServer;
+use phaser_server::FlightBridgeServer;
 
 #[derive(Parser, Debug)]
 #[command(name = "erigon-bridge")]

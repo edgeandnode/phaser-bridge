@@ -6,8 +6,7 @@ use arrow::array as arrow_array;
 use evm_common::proof::{generate_transaction_proof, MerkleProofRecord};
 use evm_common::transaction::TransactionRecord;
 use futures::StreamExt;
-use phaser_bridge::client::FlightBridgeClient;
-use phaser_bridge::descriptors::{BlockchainDescriptor, StreamType, ValidationStage};
+use phaser_client::{FlightBridgeClient, GenericQuery, ValidationStage};
 use phaser_metrics::SegmentMetrics;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -88,7 +87,7 @@ pub struct SyncWorker {
     _batch_size: u32,
     parquet_config: Option<ParquetConfig>,
     progress_tracker: Option<ProgressTracker>,
-    validation_stage: ValidationStage,
+    _validation_stage: phaser_client::ValidationStage,
     segment_work: crate::sync::data_scanner::SegmentWork, // Pre-computed missing ranges
     current_progress: Arc<RwLock<WorkerProgress>>,        // Real-time progress state
     logs_semaphore: Arc<tokio::sync::Semaphore>,
@@ -147,7 +146,7 @@ impl SyncWorker {
             _batch_size: config.batch_size,
             parquet_config: config.parquet_config,
             progress_tracker: None,
-            validation_stage: config.validation_stage,
+            _validation_stage: config.validation_stage,
             segment_work,
             current_progress,
             logs_semaphore: config.logs_semaphore,
@@ -304,7 +303,7 @@ impl SyncWorker {
                     self.from_block,
                     self.to_block,
                     "Failed to connect to bridge",
-                    e,
+                    e.into(),
                 )
             })?;
 
@@ -338,7 +337,7 @@ impl SyncWorker {
                     self.from_block,
                     self.to_block,
                     "Failed to connect to bridge",
-                    e,
+                    e.into(),
                 )
             })?;
 
@@ -400,7 +399,7 @@ impl SyncWorker {
                     self.from_block,
                     self.to_block,
                     "Failed to connect to bridge",
-                    e,
+                    e.into(),
                 )
             })?;
 
@@ -541,29 +540,19 @@ impl SyncWorker {
         writer: &mut ParquetWriter,
         original_from: u64,
     ) -> Result<(), SyncError> {
-        // Create historical query descriptor with large message preferences
-        use phaser_bridge::descriptors::StreamPreferences;
-        let preferences = StreamPreferences {
-            max_message_bytes: 32 * 1024 * 1024, // 32MB for historical sync
-            compression: phaser_bridge::descriptors::Compression::None,
-            batch_size_hint: 100,
-        };
-        let descriptor = BlockchainDescriptor::historical(StreamType::Blocks, from_block, to_block)
-            .with_preferences(preferences);
+        // Create historical query using GenericQuery
+        let query = GenericQuery::historical("blocks", from_block, to_block);
 
         // Subscribe to the block stream with metadata (returns RecordBatch + responsibility range)
-        let stream = client
-            .subscribe_with_metadata(&descriptor)
-            .await
-            .map_err(|e| {
-                SyncError::from_anyhow_with_context(
-                    DataType::Blocks,
-                    from_block,
-                    to_block,
-                    "Failed to subscribe to block stream",
-                    e,
-                )
-            })?;
+        let stream = client.query_with_metadata(query).await.map_err(|e| {
+            SyncError::from_anyhow_with_context(
+                DataType::Blocks,
+                from_block,
+                to_block,
+                "Failed to subscribe to block stream",
+                e.into(),
+            )
+        })?;
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
@@ -850,30 +839,20 @@ impl SyncWorker {
         proof_writer: &mut Option<ParquetWriter>,
         _original_from: u64,
     ) -> Result<(), SyncError> {
-        // Create historical query descriptor for transactions with configured validation stage
-        use phaser_bridge::descriptors::StreamPreferences;
-        let preferences = StreamPreferences {
-            max_message_bytes: 32 * 1024 * 1024, // 32MB for historical sync
-            compression: phaser_bridge::descriptors::Compression::None,
-            batch_size_hint: 100,
-        };
-        let descriptor =
-            BlockchainDescriptor::historical(StreamType::Transactions, from_block, to_block)
-                .with_validation(self.validation_stage)
-                .with_preferences(preferences);
+        // Create historical query using GenericQuery
+        let query = GenericQuery::historical("transactions", from_block, to_block);
 
         info!(
-            "Worker {} requesting transactions for blocks {}-{} (segment {}, validation: {:?})",
+            "Worker {} requesting transactions for blocks {}-{} (segment {})",
             self.worker_id,
             from_block,
             to_block,
             from_block / 500000,
-            self.validation_stage
         );
 
         // Subscribe to the transaction stream with metadata (returns RecordBatch + responsibility range)
         let stream = client
-            .subscribe_with_metadata(&descriptor)
+            .query_with_metadata(query)
             .await
             .context("Failed to subscribe to transaction stream")?;
         let mut stream = Box::pin(stream);
@@ -1236,31 +1215,21 @@ impl SyncWorker {
         writer: &mut ParquetWriter,
         _original_from: u64,
     ) -> Result<(), SyncError> {
-        // Create historical query descriptor for logs with configured validation stage
-        use phaser_bridge::descriptors::StreamPreferences;
-        let preferences = StreamPreferences {
-            max_message_bytes: 32 * 1024 * 1024, // 32MB for historical sync
-            compression: phaser_bridge::descriptors::Compression::None,
-            batch_size_hint: 100,
-        };
-        let descriptor = BlockchainDescriptor::historical(StreamType::Logs, from_block, to_block)
-            .with_validation(self.validation_stage)
-            .with_preferences(preferences)
-            .with_traces(true);
+        // Create historical query using GenericQuery
+        // Note: enable_traces can be passed as a filter if needed
+        let query = GenericQuery::historical("logs", from_block, to_block)
+            .with_filter("enable_traces", serde_json::json!(true));
 
         // Subscribe to the log stream with metadata (returns RecordBatch + responsibility range)
-        let stream = client
-            .subscribe_with_metadata(&descriptor)
-            .await
-            .map_err(|e| {
-                SyncError::from_anyhow_with_context(
-                    DataType::Logs,
-                    from_block,
-                    to_block,
-                    "Failed to subscribe to log stream",
-                    e,
-                )
-            })?;
+        let stream = client.query_with_metadata(query).await.map_err(|e| {
+            SyncError::from_anyhow_with_context(
+                DataType::Logs,
+                from_block,
+                to_block,
+                "Failed to subscribe to log stream",
+                e.into(),
+            )
+        })?;
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;

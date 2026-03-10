@@ -6,7 +6,7 @@ use crate::sync::worker::{ProgressTracker, SyncWorker, SyncWorkerConfig};
 use crate::PhaserConfig;
 use anyhow::Result;
 use core_executor::ThreadPoolExecutor;
-use phaser_bridge::FlightBridgeClient;
+use phaser_client::FlightBridgeClient;
 use phaser_metrics::SegmentMetrics;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};

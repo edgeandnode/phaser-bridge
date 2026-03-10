@@ -1,3 +1,5 @@
+//! Arrow Flight server implementation for blockchain bridges
+
 use arrow_flight::{
     flight_service_server::{FlightService, FlightServiceServer},
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
@@ -105,15 +107,17 @@ impl<B: FlightBridge> FlightService for FlightBridgeServer<B> {
 
     async fn do_action(
         &self,
-        _request: Request<Action>,
+        request: Request<Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
-        Err(Status::unimplemented("do_action not implemented"))
+        self.bridge.do_action(request).await
     }
 
     async fn list_actions(
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<Self::ListActionsStream>, Status> {
-        Err(Status::unimplemented("list_actions not implemented"))
+        let actions = self.bridge.list_actions().await?;
+        let stream = futures::stream::iter(actions.into_iter().map(Ok));
+        Ok(Response::new(Box::pin(stream)))
     }
 }

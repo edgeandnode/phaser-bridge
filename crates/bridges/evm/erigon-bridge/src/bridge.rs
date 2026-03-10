@@ -5,9 +5,9 @@ use arrow_flight::{
 use arrow_ipc::writer::IpcWriteOptions;
 use async_trait::async_trait;
 use futures::{stream, Stream, StreamExt as FuturesStreamExt};
-use phaser_bridge::{
-    bridge::{BridgeCapabilities, FlightBridge},
-    descriptors::{BridgeInfo, StreamType},
+use phaser_server::{
+    BridgeCapabilities, BridgeInfo, DiscoveryCapabilities, FlightBridge, GenericQuery,
+    GenericQueryMode, StreamType, TableDescriptor,
 };
 use std::pin::Pin;
 use tonic::{Request, Response, Status, Streaming};
@@ -152,22 +152,28 @@ impl ErigonFlightBridge {
         }
     }
 
-    /// Parse a FlightDescriptor to extract the BlockchainDescriptor
-    fn parse_descriptor(
-        descriptor: &FlightDescriptor,
-    ) -> Result<phaser_bridge::descriptors::BlockchainDescriptor, Box<TonicStatus>> {
-        if let Some(first) = descriptor.path.first() {
-            serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first).map_err(
-                |e| {
-                    Box::new(TonicStatus::invalid_argument(format!(
-                        "Invalid descriptor: {e}"
-                    )))
-                },
-            )
-        } else {
-            Err(Box::new(TonicStatus::invalid_argument(
-                "Empty descriptor path",
-            )))
+    /// Parse a GenericQuery from a Flight Ticket
+    fn parse_ticket(ticket: &Ticket) -> Result<GenericQuery, TonicStatus> {
+        GenericQuery::from_ticket(ticket)
+            .map_err(|e| TonicStatus::invalid_argument(format!("Invalid query in ticket: {e}")))
+    }
+
+    /// Parse a GenericQuery from a FlightDescriptor
+    fn parse_descriptor(descriptor: &FlightDescriptor) -> Result<GenericQuery, TonicStatus> {
+        GenericQuery::from_flight_descriptor(descriptor)
+            .map_err(|e| TonicStatus::invalid_argument(format!("Invalid query in descriptor: {e}")))
+    }
+
+    /// Map table name to StreamType
+    fn table_to_stream_type(table: &str) -> Result<StreamType, TonicStatus> {
+        match table {
+            "blocks" => Ok(StreamType::Blocks),
+            "transactions" => Ok(StreamType::Transactions),
+            "logs" => Ok(StreamType::Logs),
+            "trie" => Ok(StreamType::Trie),
+            other => Err(TonicStatus::invalid_argument(format!(
+                "Unknown table: {other}. Available: blocks, transactions, logs, trie"
+            ))),
         }
     }
 
@@ -235,7 +241,7 @@ impl ErigonFlightBridge {
         start: u64,
         end: u64,
         validate: bool,
-    ) -> impl Stream<Item = Result<phaser_bridge::BatchWithRange, arrow_flight::error::FlightError>>
+    ) -> impl Stream<Item = Result<phaser_server::BatchWithRange, arrow_flight::error::FlightError>>
            + Send
            + 'static {
         let max_concurrent = config.max_concurrent_segments;
@@ -364,7 +370,7 @@ impl ErigonFlightBridge {
         start: u64,
         end: u64,
         validate: bool,
-    ) -> impl Stream<Item = Result<phaser_bridge::BatchWithRange, arrow_flight::error::FlightError>>
+    ) -> impl Stream<Item = Result<phaser_server::BatchWithRange, arrow_flight::error::FlightError>>
            + Send
            + 'static {
         let max_concurrent = config.max_concurrent_segments;
@@ -495,7 +501,7 @@ impl ErigonFlightBridge {
             Box<
                 dyn Stream<
                         Item = Result<
-                            phaser_bridge::BatchWithRange,
+                            phaser_server::BatchWithRange,
                             arrow_flight::error::FlightError,
                         >,
                     > + Send
@@ -623,7 +629,7 @@ impl ErigonFlightBridge {
                                     Ok(record_batch) => {
                                         debug!("Converted block batch {} with {} rows", batch_count, record_batch.num_rows());
                                         // Wrap batch with responsibility range
-                                        let wrapped = phaser_bridge::BatchWithRange::new(record_batch, start, end);
+                                        let wrapped = phaser_server::BatchWithRange::new(record_batch, start, end);
                                         yield Ok(wrapped);
                                     }
                                     Err(e) => {
@@ -710,6 +716,56 @@ impl FlightBridge for ErigonFlightBridge {
         })
     }
 
+    async fn get_discovery_capabilities(&self) -> Result<DiscoveryCapabilities, Status> {
+        // Query current state from Erigon
+        let (current_block, oldest_block) = {
+            let mut client = self.client.lock().await;
+            let current = client.get_latest_block().await.unwrap_or(0);
+            // Erigon always has data from genesis (could be pruned, but we report 0)
+            (current, 0u64)
+        };
+
+        // Define available tables
+        let mut tables = vec![
+            TableDescriptor::new("blocks", "_block_num")
+                .with_modes(vec!["historical", "live"])
+                .with_sorted_by(vec!["_block_num"]),
+            TableDescriptor::new("transactions", "_block_num")
+                .with_modes(vec!["historical", "live"])
+                .with_sorted_by(vec!["_block_num", "_tx_idx"]),
+            TableDescriptor::new("logs", "_block_num")
+                .with_modes(vec!["historical", "live"])
+                .with_sorted_by(vec!["_block_num", "_tx_idx", "_log_idx"]),
+        ];
+
+        // Only advertise trie if available
+        if self.trie_client.is_some() {
+            tables.push(
+                TableDescriptor::new("trie", "_block_num")
+                    .with_modes(vec!["live"])
+                    .with_sorted_by(vec!["_block_num"]),
+            );
+        }
+
+        // Add chain_id to metadata
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "chain_id".to_string(),
+            serde_json::Value::Number(self.chain_id.into()),
+        );
+
+        Ok(DiscoveryCapabilities {
+            name: "erigon-bridge".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol: "evm".to_string(),
+            position_label: "block_number".to_string(),
+            current_position: current_block,
+            oldest_position: oldest_block,
+            tables,
+            metadata,
+        })
+    }
+
     async fn handshake(
         &self,
         _request: Request<Streaming<HandshakeRequest>>,
@@ -757,9 +813,10 @@ impl FlightBridge for ErigonFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<FlightInfo>, Status> {
         let descriptor = request.into_inner();
-        let blockchain_desc = Self::parse_descriptor(&descriptor).map_err(|e| *e)?;
+        let query = Self::parse_descriptor(&descriptor)?;
+        let stream_type = Self::table_to_stream_type(&query.table)?;
 
-        let info = create_flight_info(blockchain_desc.stream_type)?;
+        let info = create_flight_info(stream_type)?;
 
         Ok(Response::new(info))
     }
@@ -769,8 +826,9 @@ impl FlightBridge for ErigonFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> Result<Response<SchemaResult>, Status> {
         let descriptor = request.into_inner();
-        let blockchain_desc = Self::parse_descriptor(&descriptor).map_err(|e| *e)?;
-        let schema = Self::get_schema_for_type(blockchain_desc.stream_type);
+        let query = Self::parse_descriptor(&descriptor)?;
+        let stream_type = Self::table_to_stream_type(&query.table)?;
+        let schema = Self::get_schema_for_type(stream_type);
 
         // Convert Arrow schema to IPC format for Flight
         // SchemaResult expects raw bytes - we need to encode the schema properly
@@ -810,23 +868,20 @@ impl FlightBridge for ErigonFlightBridge {
             String::from_utf8_lossy(&ticket.ticket)
         );
 
-        // Parse ticket to determine what data to stream
-        // The ticket contains a JSON-serialized BlockchainDescriptor
-        let blockchain_desc = String::from_utf8(ticket.ticket.to_vec())
-            .map_err(|_| Status::invalid_argument("Ticket is not valid UTF-8"))
-            .and_then(|s| {
-                serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(&s)
-                    .map_err(|e| {
-                        Status::invalid_argument(format!("Invalid descriptor in ticket: {e}"))
-                    })
-            })?;
-        let stream_type = blockchain_desc.stream_type;
-        let query_mode = blockchain_desc.query_mode.clone();
-        let preferences = blockchain_desc.get_preferences();
+        // Parse the GenericQuery from the ticket
+        let query = Self::parse_ticket(&ticket)?;
+        let stream_type = Self::table_to_stream_type(&query.table)?;
+
+        // Extract enable_traces from filters if present
+        let enable_traces = query
+            .filters
+            .get("enable_traces")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         info!(
-            "Processing do_get for {:?} with mode {:?}, preferences: max_msg={} bytes, compression={:?}, batch_hint={}",
-            stream_type, query_mode, preferences.max_message_bytes, preferences.compression, preferences.batch_size_hint
+            "Processing do_get for table '{}' ({:?}) with mode {:?}",
+            query.table, stream_type, query.mode
         );
 
         // Handle trie streaming separately
@@ -847,43 +902,39 @@ impl FlightBridge for ErigonFlightBridge {
             return Ok(Response::new(Box::pin(flight_stream)));
         }
 
-        // Handle based on query mode
-        use phaser_bridge::subscription::QueryMode;
-        use phaser_bridge::ValidationStage;
-
-        // Determine if we should do ingestion validation
-        let should_validate_ingestion = matches!(
-            blockchain_desc.validation,
-            ValidationStage::Ingestion | ValidationStage::Both
-        );
-
+        // Build the batch stream based on query mode
         let batch_stream: Pin<
             Box<
                 dyn Stream<
                         Item = Result<
-                            phaser_bridge::BatchWithRange,
+                            phaser_server::BatchWithRange,
                             arrow_flight::error::FlightError,
                         >,
                     > + Send,
             >,
-        > = match query_mode {
-            QueryMode::Historical { start, end } => {
-                info!(
-                    "Creating historical stream for blocks {}-{} (validation: {:?})",
-                    start, end, blockchain_desc.validation
-                );
+        > = match query.mode {
+            GenericQueryMode::Range { start, end } => {
+                info!("Creating historical stream for positions {}-{}", start, end);
                 Box::pin(
                     self.create_historical_stream(
                         stream_type,
                         start,
                         end,
-                        should_validate_ingestion,
-                        blockchain_desc.enable_traces,
+                        false, // No validation via generic query (can add filter later)
+                        enable_traces,
                     )
                     .await?,
                 )
             }
-            QueryMode::Live => {
+            GenericQueryMode::Snapshot { at } => {
+                // Snapshot is just a single-position range
+                info!("Creating snapshot at position {}", at);
+                Box::pin(
+                    self.create_historical_stream(stream_type, at, at, false, enable_traces)
+                        .await?,
+                )
+            }
+            GenericQueryMode::Live => {
                 info!("Creating live stream from current head");
                 let receiver = match stream_type {
                     StreamType::Blocks => self.streaming_service.subscribe_blocks(),
@@ -897,7 +948,7 @@ impl FlightBridge for ErigonFlightBridge {
                     while let Ok(batch) = rx.recv().await {
                         // For live mode, wrap batch with placeholder range
                         // TODO: Extract actual block numbers from batch data
-                        let wrapped = phaser_bridge::BatchWithRange::new(batch, 0, 0);
+                        let wrapped = phaser_server::BatchWithRange::new(batch, 0, 0);
                         yield Ok(wrapped);
                     }
                 })
@@ -1011,7 +1062,7 @@ impl FlightBridge for ErigonFlightBridge {
 
         let stream_type = if let Some(desc) = first.flight_descriptor {
             Self::parse_descriptor(&desc)
-                .map(|bd| bd.stream_type)
+                .and_then(|q| Self::table_to_stream_type(&q.table))
                 .unwrap_or(StreamType::Blocks)
         } else {
             StreamType::Blocks

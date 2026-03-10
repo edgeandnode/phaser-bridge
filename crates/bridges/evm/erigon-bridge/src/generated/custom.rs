@@ -2,7 +2,7 @@
 /// Request state root for a block
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetStateRootRequest {
     #[prost(oneof = "get_state_root_request::BlockId", tags = "1, 2, 3")]
     pub block_id: ::core::option::Option<get_state_root_request::BlockId>,
@@ -11,7 +11,7 @@ pub struct GetStateRootRequest {
 pub mod get_state_root_request {
     #[allow(dead_code)]
     #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum BlockId {
         #[prost(uint64, tag = "1")]
         BlockNumber(u64),
@@ -24,7 +24,7 @@ pub mod get_state_root_request {
 }
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetStateRootReply {
     /// 32-byte state root hash
     #[prost(bytes = "vec", tag = "1")]
@@ -40,7 +40,7 @@ pub struct GetStateRootReply {
 /// Stream commitment nodes for full trie reconstruction
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StreamCommitmentRequest {
     /// Target state root (empty for latest)
     #[prost(bytes = "vec", tag = "1")]
@@ -92,7 +92,7 @@ pub struct CommitmentNodeBatch {
 /// Individual commitment node from domain - minimal version
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommitmentNode {
     /// Trie path/key from CommitmentDomain (variable length)
     #[prost(bytes = "vec", tag = "1")]
@@ -110,7 +110,7 @@ pub struct CommitmentNode {
 /// Get specific nodes (for gap filling)
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetNodesByHashRequest {
     /// List of 32-byte node hashes
     #[prost(bytes = "vec", repeated, tag = "1")]
@@ -237,7 +237,7 @@ pub mod trie_backend_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/custom.TrieBackend/GetStateRoot",
             );
@@ -262,7 +262,7 @@ pub mod trie_backend_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/custom.TrieBackend/StreamCommitmentNodes",
             );
@@ -287,7 +287,7 @@ pub mod trie_backend_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/custom.TrieBackend/GetNodesByHash",
             );
@@ -301,7 +301,7 @@ pub mod trie_backend_client {
 /// Request to stream data for a block range
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BlockRangeRequest {
     /// Starting block number (inclusive)
     #[prost(uint64, tag = "1")]
@@ -338,7 +338,7 @@ pub struct BlockBatch {
 /// RLP-encoded block header data
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BlockData {
     #[prost(uint64, tag = "1")]
     pub block_number: u64,
@@ -371,7 +371,7 @@ pub struct TransactionBatch {
 /// RLP-encoded transaction data (no receipts - use ExecuteBlocks for receipts)
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TransactionData {
     #[prost(uint64, tag = "1")]
     pub block_number: u64,
@@ -413,7 +413,7 @@ pub struct ReceiptBatch {
 /// RLP-encoded receipt data with optional trace data
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReceiptData {
     #[prost(uint64, tag = "1")]
     pub block_number: u64,
@@ -542,7 +542,7 @@ pub mod block_data_backend_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/custom.BlockDataBackend/StreamBlocks",
             );
@@ -567,7 +567,7 @@ pub mod block_data_backend_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/custom.BlockDataBackend/StreamTransactions",
             );
@@ -595,7 +595,7 @@ pub mod block_data_backend_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/custom.BlockDataBackend/ExecuteBlocks",
             );

@@ -1,0 +1,22 @@
+[package]
+name = "phaser-types"
+version = "0.1.0"
+edition = "2021"
+description = "Shared protocol types for phaser (discovery, descriptors, subscription)"
+
+[dependencies]
+# Arrow (minimal - just for Ticket/FlightDescriptor types)
+arrow-flight = { workspace = true }
+arrow-array = { workspace = true }
+
+# Async
+futures = "0.3"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = "1.3"
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }

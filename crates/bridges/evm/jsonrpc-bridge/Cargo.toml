@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Bridge framework
-phaser-bridge = { workspace = true }
+phaser-server = { workspace = true }
 evm-common = { workspace = true }
 validators-evm = { workspace = true }
 
@@ -29,8 +29,8 @@ alloy-pubsub = { workspace = true }
 # Arrow and async
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
-arrow-array = "56.1"
-arrow-schema = "56.1"
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
 typed-arrow = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

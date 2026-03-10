@@ -1,18 +1,26 @@
-pub mod bridge;
-pub mod client;
+//! Shared protocol types for phaser
+//!
+//! This crate contains protocol types shared between phaser-client and phaser-server:
+//! - Discovery types (DiscoveryCapabilities, GenericQuery, TableDescriptor)
+//! - Descriptors (BlockchainDescriptor, StreamType)
+//! - Subscription types (QueryMode, SubscriptionOptions)
+//! - Batch metadata (BatchMetadata, ResponsibilityRange)
+
 pub mod descriptors;
-pub mod error;
-pub mod server;
+pub mod discovery;
 pub mod subscription;
 
 use arrow_array::RecordBatch;
 use serde::{Deserialize, Serialize};
 
-pub use bridge::{BridgeCapabilities, FlightBridge};
-pub use client::FlightBridgeClient;
-pub use descriptors::{BlockchainDescriptor, StreamType, ValidationStage};
-pub use error::StreamError;
-pub use server::FlightBridgeServer;
+pub use descriptors::{
+    BlockchainDescriptor, BridgeInfo, Compression, EndpointInfo, StreamPreferences, StreamType,
+    ValidationStage,
+};
+pub use discovery::{
+    DiscoveryCapabilities, FilterDescriptor, GenericQuery, GenericQueryMode, TableDescriptor,
+    ACTION_DESCRIBE,
+};
 pub use subscription::{
     BackpressureStrategy, BlockRange, ControlAction, DataAvailability, DataSource, FilterSpec,
     QueryMode, SubscriptionHandle, SubscriptionInfo, SubscriptionOptions,
@@ -82,7 +90,7 @@ impl BatchMetadata {
     /// Returns an error if metadata is missing, empty, or invalid.
     /// This enforces that all batches from subscribe_with_metadata() must
     /// include proper metadata.
-    pub fn decode(metadata: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn decode(metadata: &[u8]) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         if metadata.is_empty() {
             return Err("FlightData.app_metadata is empty - bridge must send BatchMetadata".into());
         }

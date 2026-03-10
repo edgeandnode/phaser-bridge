@@ -4,10 +4,7 @@ use anyhow::Result;
 use arrow::array::UInt64Array;
 use arrow::record_batch::RecordBatch;
 use futures::StreamExt;
-use phaser_bridge::{
-    descriptors::{BlockchainDescriptor, StreamType},
-    FlightBridgeClient,
-};
+use phaser_client::{FlightBridgeClient, GenericQuery, StreamType};
 use rocksdb::DB;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -101,7 +98,7 @@ impl StreamingServiceWithWriter {
         stream_type: StreamType,
         mut stream: impl StreamExt<
                 Item = Result<
-                    (RecordBatch, phaser_bridge::BatchMetadata),
+                    (RecordBatch, phaser_client::BatchMetadata),
                     arrow_flight::error::FlightError,
                 >,
             > + Send
@@ -231,9 +228,9 @@ impl StreamingServiceWithWriter {
             }
 
             // Subscribe to blocks with metadata
-            let blocks_descriptor = BlockchainDescriptor::live(StreamType::Blocks);
+            let blocks_query = GenericQuery::live("blocks");
             info!("Subscribing to blocks from bridge");
-            let blocks_stream = bridge.subscribe_with_metadata(&blocks_descriptor).await?;
+            let blocks_stream = bridge.query_with_metadata(blocks_query).await?;
             Self::spawn_stream_processor(
                 StreamType::Blocks,
                 Box::pin(blocks_stream),
@@ -244,9 +241,9 @@ impl StreamingServiceWithWriter {
             );
 
             // Subscribe to transactions with metadata
-            let txs_descriptor = BlockchainDescriptor::live(StreamType::Transactions);
+            let txs_query = GenericQuery::live("transactions");
             info!("Subscribing to transactions from bridge");
-            let txs_stream = bridge.subscribe_with_metadata(&txs_descriptor).await?;
+            let txs_stream = bridge.query_with_metadata(txs_query).await?;
             Self::spawn_stream_processor(
                 StreamType::Transactions,
                 Box::pin(txs_stream),
@@ -257,9 +254,10 @@ impl StreamingServiceWithWriter {
             );
 
             // Subscribe to logs with metadata
-            let logs_descriptor = BlockchainDescriptor::live(StreamType::Logs).with_traces(true);
+            let logs_query =
+                GenericQuery::live("logs").with_filter("enable_traces", serde_json::json!(true));
             info!("Subscribing to logs from bridge");
-            let logs_stream = bridge.subscribe_with_metadata(&logs_descriptor).await?;
+            let logs_stream = bridge.query_with_metadata(logs_query).await?;
             Self::spawn_stream_processor(
                 StreamType::Logs,
                 Box::pin(logs_stream),
@@ -283,16 +281,16 @@ impl StreamingServiceWithWriter {
         )?;
 
         for bridge in &mut self.bridges {
-            let descriptor =
-                BlockchainDescriptor::historical(StreamType::Blocks, start_block, end_block);
+            let query = GenericQuery::historical("blocks", start_block, end_block);
 
             info!(
                 "Fetching historical blocks {} to {}",
                 start_block, end_block
             );
-            let batches = bridge.stream_data(&descriptor).await?;
 
-            for batch in batches {
+            let mut stream = bridge.query(query).await?;
+            while let Some(batch_result) = stream.next().await {
+                let batch = batch_result?;
                 info!("Processing historical batch with {} rows", batch.num_rows());
                 writer.write_batch(batch).await?;
             }
@@ -356,10 +354,10 @@ impl StreamingServiceWithWriter {
             }
 
             // Subscribe to trie stream with metadata
-            let trie_descriptor = BlockchainDescriptor::live(StreamType::Trie);
+            let trie_query = GenericQuery::live("trie");
             info!("Subscribing to trie data from bridge");
 
-            match bridge.subscribe_with_metadata(&trie_descriptor).await {
+            match bridge.query_with_metadata(trie_query).await {
                 Ok(trie_stream) => {
                     info!("Successfully subscribed to trie stream");
                     Self::spawn_stream_processor(

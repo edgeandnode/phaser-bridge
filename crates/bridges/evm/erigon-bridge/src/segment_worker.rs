@@ -14,7 +14,7 @@ use alloy_primitives::Bytes;
 use alloy_rlp::Decodable;
 use arrow_array::RecordBatch;
 use futures::stream::StreamExt;
-use phaser_bridge::{BatchWithRange, StreamError};
+use phaser_server::{BatchWithRange, StreamError};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;

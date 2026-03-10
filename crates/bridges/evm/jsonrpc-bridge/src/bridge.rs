@@ -8,10 +8,9 @@ use arrow_flight::{
 };
 use async_trait::async_trait;
 use futures::{stream, Stream, StreamExt};
-use phaser_bridge::{
-    bridge::{BridgeCapabilities, FlightBridge},
-    descriptors::{BridgeInfo, StreamType},
-    subscription::QueryMode,
+use phaser_server::{
+    BridgeCapabilities, BridgeInfo, DiscoveryCapabilities, FlightBridge, GenericQuery,
+    GenericQueryMode, StreamType, TableDescriptor,
 };
 use std::pin::Pin;
 use std::sync::Arc;
@@ -104,15 +103,27 @@ impl JsonRpcFlightBridge {
         }
     }
 
-    /// Parse a FlightDescriptor to extract the BlockchainDescriptor
-    fn parse_descriptor(
-        descriptor: &FlightDescriptor,
-    ) -> std::result::Result<phaser_bridge::descriptors::BlockchainDescriptor, Box<Status>> {
-        if let Some(first) = descriptor.path.first() {
-            serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(first)
-                .map_err(|e| Box::new(Status::invalid_argument(format!("Invalid descriptor: {e}"))))
-        } else {
-            Err(Box::new(Status::invalid_argument("Empty descriptor path")))
+    /// Parse a GenericQuery from a Flight Ticket
+    fn parse_ticket(ticket: &Ticket) -> Result<GenericQuery, Status> {
+        GenericQuery::from_ticket(ticket)
+            .map_err(|e| Status::invalid_argument(format!("Invalid query in ticket: {e}")))
+    }
+
+    /// Parse a GenericQuery from a FlightDescriptor
+    fn parse_descriptor(descriptor: &FlightDescriptor) -> Result<GenericQuery, Status> {
+        GenericQuery::from_flight_descriptor(descriptor)
+            .map_err(|e| Status::invalid_argument(format!("Invalid query in descriptor: {e}")))
+    }
+
+    /// Map table name to StreamType
+    fn table_to_stream_type(table: &str) -> Result<StreamType, Status> {
+        match table {
+            "blocks" => Ok(StreamType::Blocks),
+            "transactions" => Ok(StreamType::Transactions),
+            "logs" => Ok(StreamType::Logs),
+            other => Err(Status::invalid_argument(format!(
+                "Unknown table: {other}. Available: blocks, transactions, logs"
+            ))),
         }
     }
 
@@ -313,6 +324,46 @@ impl FlightBridge for JsonRpcFlightBridge {
         })
     }
 
+    async fn get_discovery_capabilities(&self) -> Result<DiscoveryCapabilities, Status> {
+        // Query current block from node
+        let current_block = self.client.get_block_number().await.unwrap_or(0);
+
+        // Define available tables (JSON-RPC doesn't support trie)
+        let tables = vec![
+            TableDescriptor::new("blocks", "_block_num")
+                .with_modes(vec!["historical", "live"])
+                .with_sorted_by(vec!["_block_num"]),
+            TableDescriptor::new("transactions", "_block_num")
+                .with_modes(vec!["historical", "live"])
+                .with_sorted_by(vec!["_block_num", "_tx_idx"]),
+            TableDescriptor::new("logs", "_block_num")
+                .with_modes(vec!["historical", "live"])
+                .with_sorted_by(vec!["_block_num", "_tx_idx", "_log_idx"]),
+        ];
+
+        // Add chain_id to metadata
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "chain_id".to_string(),
+            serde_json::Value::Number(self.chain_id.into()),
+        );
+        metadata.insert(
+            "supports_subscriptions".to_string(),
+            serde_json::Value::Bool(self.client.supports_subscriptions()),
+        );
+
+        Ok(DiscoveryCapabilities {
+            name: "jsonrpc-bridge".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol: "evm".to_string(),
+            position_label: "block_number".to_string(),
+            current_position: current_block,
+            oldest_position: 0,
+            tables,
+            metadata,
+        })
+    }
+
     async fn handshake(
         &self,
         _request: Request<Streaming<HandshakeRequest>>,
@@ -363,9 +414,10 @@ impl FlightBridge for JsonRpcFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<FlightInfo>, Status> {
         let descriptor = request.into_inner();
-        let blockchain_desc = Self::parse_descriptor(&descriptor).map_err(|e| *e)?;
+        let query = Self::parse_descriptor(&descriptor)?;
+        let stream_type = Self::table_to_stream_type(&query.table)?;
 
-        let info = create_flight_info(blockchain_desc.stream_type).map_err(|e| *e)?;
+        let info = create_flight_info(stream_type).map_err(|e| *e)?;
 
         Ok(Response::new(info))
     }
@@ -375,8 +427,9 @@ impl FlightBridge for JsonRpcFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<SchemaResult>, Status> {
         let descriptor = request.into_inner();
-        let blockchain_desc = Self::parse_descriptor(&descriptor).map_err(|e| *e)?;
-        let schema = Self::get_schema_for_type(blockchain_desc.stream_type).map_err(|e| *e)?;
+        let query = Self::parse_descriptor(&descriptor)?;
+        let stream_type = Self::table_to_stream_type(&query.table)?;
+        let schema = Self::get_schema_for_type(stream_type).map_err(|e| *e)?;
 
         // Convert Arrow schema to IPC format for Flight
         let ipc_message = {
@@ -412,52 +465,39 @@ impl FlightBridge for JsonRpcFlightBridge {
     > {
         let ticket = request.into_inner();
 
-        // Parse ticket to determine what data to stream
-        let blockchain_desc = String::from_utf8(ticket.ticket.to_vec())
-            .map_err(|_| Status::invalid_argument("Ticket is not valid UTF-8"))
-            .and_then(|s| {
-                serde_json::from_str::<phaser_bridge::descriptors::BlockchainDescriptor>(&s)
-                    .map_err(|e| {
-                        Status::invalid_argument(format!("Invalid descriptor in ticket: {e}"))
-                    })
-            })?;
+        // Parse the GenericQuery from the ticket
+        let query = Self::parse_ticket(&ticket)?;
+        let stream_type = Self::table_to_stream_type(&query.table)?;
 
-        let stream_type = blockchain_desc.stream_type;
-        let query_mode = blockchain_desc.query_mode.clone();
         info!(
-            "Processing do_get for {:?} in {:?} mode",
-            stream_type, query_mode
+            "Processing do_get for table '{}' ({:?}) with mode {:?}",
+            query.table, stream_type, query.mode
         );
 
         // Get schema for the stream type
         let schema = Self::get_schema_for_type(stream_type).map_err(|e| *e)?;
 
-        // Determine if we should do conversion validation
-        // JSON-RPC doesn't give us raw RLP, so we can only do conversion validation
-        use phaser_bridge::ValidationStage;
-        let should_validate_conversion = matches!(
-            blockchain_desc.validation,
-            ValidationStage::Conversion | ValidationStage::Both
-        );
-
-        // Branch based on query mode
+        // Build the batch stream based on query mode
         let batch_stream: Pin<
             Box<dyn Stream<Item = Result<arrow::record_batch::RecordBatch, Status>> + Send>,
-        > = match query_mode {
-            QueryMode::Historical { start, end } => {
-                // Historical query - fetch specific block range
+        > = match query.mode {
+            GenericQueryMode::Range { start, end } => {
                 info!(
-                    "Creating historical stream for {:?} blocks {}-{} (validation: {:?})",
-                    stream_type, start, end, blockchain_desc.validation
+                    "Creating historical stream for {:?} positions {}-{}",
+                    stream_type, start, end
                 );
                 Box::pin(self.create_historical_stream(
                     stream_type,
                     start,
                     end,
-                    should_validate_conversion,
+                    false, // No validation via generic query
                 ))
             }
-            QueryMode::Live => {
+            GenericQueryMode::Snapshot { at } => {
+                info!("Creating snapshot at position {}", at);
+                Box::pin(self.create_historical_stream(stream_type, at, at, false))
+            }
+            GenericQueryMode::Live => {
                 // Live streaming - subscribe to broadcast channels
                 let receiver = match stream_type {
                     StreamType::Blocks => self.streaming_service.subscribe_blocks(),
@@ -518,7 +558,7 @@ impl FlightBridge for JsonRpcFlightBridge {
 
         let stream_type = if let Some(desc) = first.flight_descriptor {
             Self::parse_descriptor(&desc)
-                .map(|bd| bd.stream_type)
+                .and_then(|q| Self::table_to_stream_type(&q.table))
                 .unwrap_or(StreamType::Blocks) // Safe fallback for failed descriptor parsing
         } else {
             StreamType::Blocks
@@ -635,16 +675,18 @@ impl FlightService for JsonRpcFlightBridge {
 
     async fn do_action(
         &self,
-        _request: Request<Action>,
+        request: Request<Action>,
     ) -> std::result::Result<Response<Self::DoActionStream>, Status> {
-        Err(Status::unimplemented("do_action not supported"))
+        <Self as FlightBridge>::do_action(self, request).await
     }
 
     async fn list_actions(
         &self,
         _request: Request<Empty>,
     ) -> std::result::Result<Response<Self::ListActionsStream>, Status> {
-        Err(Status::unimplemented("list_actions not supported"))
+        let actions = <Self as FlightBridge>::list_actions(self).await?;
+        let stream = stream::iter(actions.into_iter().map(Ok));
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn get_schema(
@@ -652,8 +694,9 @@ impl FlightService for JsonRpcFlightBridge {
         request: Request<FlightDescriptor>,
     ) -> std::result::Result<Response<SchemaResult>, Status> {
         let descriptor = request.into_inner();
-        let stream_type = Self::parse_descriptor(&descriptor).map_err(|e| *e)?;
-        let schema = Self::get_schema_for_type(stream_type.stream_type).map_err(|e| *e)?;
+        let query = Self::parse_descriptor(&descriptor)?;
+        let stream_type = Self::table_to_stream_type(&query.table)?;
+        let schema = Self::get_schema_for_type(stream_type).map_err(|e| *e)?;
 
         // Convert Schema to IPC format
         let options = arrow::ipc::writer::IpcWriteOptions::default();
