@@ -12,3 +12,5 @@ heaptrack.*.zst
 context-snapshot.yaml
 check-quality.sh
 .claude/
+logs/
+env.sh

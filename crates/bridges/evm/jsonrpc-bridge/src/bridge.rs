@@ -1,5 +1,6 @@
 use crate::client::JsonRpcClient;
 use crate::converter::JsonRpcConverter;
+use crate::metrics::{BridgeMetrics, SegmentMetrics};
 use crate::streaming::StreamingService;
 use arrow_flight::{
     encode::FlightDataEncoderBuilder, flight_service_server::FlightService, Action, ActionType,
@@ -14,17 +15,120 @@ use phaser_server::{
 };
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use validators_evm::ValidationExecutor;
+
+/// Configuration for segment-based parallel fetching
+///
+/// ## Architecture: Segments and Batches
+///
+/// Data fetching is organized into two levels:
+/// - **Segments**: Large chunks of blocks (e.g., 10K-500K) processed as units
+/// - **Batches**: Smaller groups within a segment (e.g., 50-100 blocks) fetched together
+///
+/// ```text
+/// Total Range: blocks 0 to 100,000
+/// ├── Segment 0: blocks 0-9,999        (processed in parallel)
+/// │   ├── Batch 0: blocks 0-49         (fetched concurrently)
+/// │   ├── Batch 1: blocks 50-99
+/// │   └── ... (200 batches per segment)
+/// ├── Segment 1: blocks 10,000-19,999  (processed in parallel)
+/// └── ... (10 segments total)
+/// ```
+///
+/// ## Node-Specific Tuning
+///
+/// - **Generic JSON-RPC**: Default settings work well (10K segments, 50 block batches)
+/// - **Erigon via JSON-RPC**: Consider `segment_size: 500_000` to align with Erigon snapshots
+/// - **Rate-limited nodes**: Reduce `max_concurrent_requests` to avoid 429 errors
+///
+/// ## Logs vs Blocks/Transactions
+///
+/// Logs use range-based `eth_getLogs` calls (one call per batch range), while
+/// blocks/transactions still fetch per-block (with concurrent requests within batch).
+#[derive(Clone, Debug)]
+pub struct SegmentConfig {
+    /// Size of each segment in blocks
+    ///
+    /// Segments are the unit of parallel processing and progress tracking.
+    /// Default: 10,000 blocks per segment.
+    ///
+    /// Tuning:
+    /// - Larger segments = fewer segment boundaries, less overhead
+    /// - Smaller segments = more granular progress updates, better error isolation
+    /// - For Erigon, 500,000 matches the snapshot segment size
+    pub segment_size: u64,
+
+    /// Maximum segments to process in parallel
+    ///
+    /// Controls top-level concurrency. Each segment streams independently.
+    /// Default: 4 concurrent segments.
+    ///
+    /// Tuning:
+    /// - More segments = higher throughput but more memory/connections
+    /// - For memory-constrained environments, reduce to 1-2
+    pub max_concurrent_segments: usize,
+
+    /// Blocks per batch within a segment
+    ///
+    /// Controls granularity of fetching within a segment.
+    /// Default: 50 blocks per batch.
+    ///
+    /// For blocks/transactions: This many blocks are fetched concurrently.
+    /// For logs: A single `eth_getLogs` call covers this many blocks.
+    ///
+    /// Tuning:
+    /// - Larger batches = fewer RPC round-trips
+    /// - Smaller batches = better progress granularity
+    pub blocks_per_batch: usize,
+
+    /// Maximum concurrent RPC requests within a batch
+    ///
+    /// For blocks/transactions, this limits how many `eth_getBlockByNumber`
+    /// calls run simultaneously. For logs, this is ignored (single call per batch).
+    /// Default: 50 (same as blocks_per_batch for maximum parallelism).
+    ///
+    /// Tuning:
+    /// - Match to blocks_per_batch for full parallelism
+    /// - Reduce for rate-limited or overloaded nodes
+    pub max_concurrent_requests: usize,
+}
+
+impl Default for SegmentConfig {
+    fn default() -> Self {
+        Self {
+            segment_size: 10_000,
+            max_concurrent_segments: 4,
+            blocks_per_batch: 50,
+            max_concurrent_requests: 50,
+        }
+    }
+}
+
+/// Split a block range into segments
+pub fn split_into_segments(start: u64, end: u64, segment_size: u64) -> Vec<(u64, u64)> {
+    let mut segments = Vec::new();
+    let mut current = start;
+
+    while current <= end {
+        let segment_end = (current + segment_size - 1).min(end);
+        segments.push((current, segment_end));
+        current = segment_end + 1;
+    }
+
+    segments
+}
 
 /// A bridge that connects to any JSON-RPC compatible node
 pub struct JsonRpcFlightBridge {
     client: Arc<JsonRpcClient>,
     chain_id: u64,
     streaming_service: Arc<StreamingService>,
-    max_batch_size: usize,
+    segment_config: SegmentConfig,
     validator: Option<Arc<dyn ValidationExecutor>>,
+    metrics: Option<BridgeMetrics>,
 }
 
 impl JsonRpcFlightBridge {
@@ -68,13 +172,29 @@ impl JsonRpcFlightBridge {
             }
         });
 
+        // Initialize metrics
+        let metrics = BridgeMetrics::new("jsonrpc_bridge", chain_id, "jsonrpc");
+
         Ok(Self {
             client,
             chain_id,
             streaming_service,
-            max_batch_size: 1000, // Default batch size, matches BridgeCapabilities
+            segment_config: SegmentConfig::default(),
             validator,
+            metrics: Some(metrics),
         })
+    }
+
+    /// Create a new JSON-RPC bridge with custom segment configuration
+    pub async fn with_segment_config(
+        node_url: String,
+        chain_id: Option<u64>,
+        validator_config: Option<validators_evm::ExecutorConfig>,
+        segment_config: SegmentConfig,
+    ) -> std::result::Result<Self, anyhow::Error> {
+        let mut bridge = Self::new(node_url, chain_id, validator_config).await?;
+        bridge.segment_config = segment_config;
+        Ok(bridge)
     }
 
     /// Get bridge information
@@ -142,167 +262,690 @@ impl JsonRpcFlightBridge {
     }
 
     /// Create a stream for historical data (specific block range)
+    /// Returns BatchWithRange for phaser-query progress tracking
+    ///
+    /// Uses segment-level parallelism: multiple segments are processed concurrently,
+    /// with parallel block fetching within each segment.
     fn create_historical_stream(
         &self,
         stream_type: StreamType,
         start_block: u64,
         end_block: u64,
         validate: bool,
-    ) -> impl Stream<Item = Result<arrow::record_batch::RecordBatch, Status>> + Send {
+    ) -> impl Stream<Item = Result<phaser_server::BatchWithRange, Status>> + Send {
+        // Split range into segments
+        let segments =
+            split_into_segments(start_block, end_block, self.segment_config.segment_size);
+        let max_concurrent_segments = self.segment_config.max_concurrent_segments;
+
+        info!(
+            "Creating historical {:?} stream for blocks {} to {} ({} segments, {} concurrent)",
+            stream_type,
+            start_block,
+            end_block,
+            segments.len(),
+            max_concurrent_segments
+        );
+
+        // Clone values needed for the async closure
         let client = self.client.clone();
-        let batch_size = self.max_batch_size as u64;
+        let config = self.segment_config.clone();
         let validator = self.validator.clone();
+        let metrics = self.metrics.clone();
+
+        // Process segments in parallel, yielding results in order
+        futures::stream::iter(segments)
+            .map(move |(seg_start, seg_end)| {
+                let client = client.clone();
+                let config = config.clone();
+                let validator = validator.clone();
+                let metrics = metrics.clone();
+
+                async move {
+                    // Process this segment and return a stream of batches
+                    Self::process_segment(
+                        client,
+                        seg_start,
+                        seg_end,
+                        stream_type,
+                        validate,
+                        validator,
+                        metrics,
+                        config,
+                    )
+                }
+            })
+            .buffered(max_concurrent_segments)
+            .flatten()
+    }
+
+    /// Process a single segment: fetch blocks in parallel batches and yield results
+    ///
+    /// For logs, uses optimized range-based fetching (single eth_getLogs call per batch)
+    /// instead of per-block fetching, significantly reducing RPC round-trips.
+    #[allow(clippy::too_many_arguments)]
+    fn process_segment(
+        client: Arc<JsonRpcClient>,
+        seg_start: u64,
+        seg_end: u64,
+        stream_type: StreamType,
+        validate: bool,
+        validator: Option<Arc<dyn ValidationExecutor>>,
+        metrics: Option<BridgeMetrics>,
+        config: SegmentConfig,
+    ) -> Pin<Box<dyn Stream<Item = Result<phaser_server::BatchWithRange, Status>> + Send>> {
+        // For logs, use optimized range-based fetching
+        if stream_type == StreamType::Logs {
+            return Box::pin(Self::process_segment_logs(
+                client, seg_start, seg_end, metrics, config,
+            ));
+        }
+
+        // For blocks/transactions, use parallel per-block fetching
+        Box::pin(Self::process_segment_blocks_txs(
+            client,
+            seg_start,
+            seg_end,
+            stream_type,
+            validate,
+            validator,
+            metrics,
+            config,
+        ))
+    }
+
+    /// Process segment for logs using range-based eth_getLogs calls
+    ///
+    /// This is much more efficient than per-block fetching because:
+    /// 1. Single RPC call per batch instead of one per block
+    /// 2. Logs are returned already sorted by block
+    /// 3. No need to fetch block headers for context (log includes block_num, block_hash)
+    fn process_segment_logs(
+        client: Arc<JsonRpcClient>,
+        seg_start: u64,
+        seg_end: u64,
+        metrics: Option<BridgeMetrics>,
+        config: SegmentConfig,
+    ) -> impl Stream<Item = Result<phaser_server::BatchWithRange, Status>> + Send {
+        let batch_size = config.blocks_per_batch as u64;
+        let segment_num = seg_start / config.segment_size;
 
         async_stream::stream! {
-            use alloy::eips::BlockNumberOrTag;
             use alloy_rpc_types_eth::Filter;
-            use arrow::compute::concat_batches;
-            use tracing::debug;
 
-            info!("Fetching historical {:?} from block {} to {} (batch size: {})",
-                  stream_type, start_block, end_block, batch_size);
+            let total_blocks = seg_end - seg_start + 1;
+            info!(
+                "Segment {}: Processing logs for blocks {} to {} ({} blocks, batch size: {})",
+                segment_num, seg_start, seg_end, total_blocks, batch_size
+            );
 
-            let mut current_block = start_block;
+            // Track active workers (mirrors erigon-bridge pattern)
+            if let Some(ref m) = metrics {
+                m.active_workers_inc("logs");
+            }
 
-            while current_block <= end_block {
-                let batch_end = std::cmp::min(current_block + batch_size - 1, end_block);
-                let batch_count = (batch_end - current_block + 1) as usize;
+            let segment_start_time = Instant::now();
+            let mut current_block = seg_start;
+            let mut total_logs_in_segment: u64 = 0;
+            let mut batches_fetched: u64 = 0;
 
-                debug!("Fetching batch: blocks {} to {} ({} blocks)", current_block, batch_end, batch_count);
+            while current_block <= seg_end {
+                let batch_end = std::cmp::min(current_block + batch_size - 1, seg_end);
+                let block_range_size = batch_end - current_block + 1;
 
-                // Collect RecordBatches for this batch
-                let mut record_batches = Vec::new();
+                debug!(
+                    "Segment {}: Fetching logs for block range {} to {} ({} blocks)",
+                    segment_num, current_block, batch_end, block_range_size
+                );
 
-                for block_num in current_block..=batch_end {
-                    // Fetch block with transactions
-                    let block = match client.get_block_with_txs(BlockNumberOrTag::Number(block_num)).await {
-                        Ok(Some(block)) => block,
-                        Ok(None) => {
-                            error!("Block #{} not found", block_num);
-                            continue;
-                        }
-                        Err(e) => {
-                            error!("Failed to fetch block #{}: {}", block_num, e);
-                            yield Err(Status::internal(format!("Failed to fetch block {block_num}: {e}")));
-                            continue;
-                        }
-                    };
-
-                    match stream_type {
-                        StreamType::Blocks => {
-                            // Convert block header to RecordBatch
-                            match evm_common::rpc_conversions::convert_any_header(&block.header) {
-                                Ok(batch) => {
-                                    record_batches.push(batch);
-                                },
-                                Err(e) => {
-                                    error!("Failed to convert block header #{}: {}", block_num, e);
-                                    yield Err(Status::internal(format!("Conversion error: {e}")));
-                                }
-                            }
-                        }
-                        StreamType::Transactions => {
-                            // Convert transactions (if any)
-                            if !block.transactions.is_empty() {
-                                // Validate transactions if requested and validator is available
-                                if validate {
-                                    if let Some(ref val) = validator {
-                                        // Extract block record and transaction records for validation
-                                        // This validates our conversion: TransactionRecord → TxEnvelope → RLP → merkle root
-                                        let block_record = evm_common::rpc_conversions::convert_any_header_to_record(&block.header);
-
-                                        match evm_common::rpc_conversions::extract_transaction_records(&block) {
-                                            Ok(tx_records) => {
-                                                // Validate the transactions against the block's transactions_root
-                                                // Using spawn_validate_records() for post-conversion validation
-                                                match val.spawn_validate_records(block_record, tx_records).await {
-                                                    Ok(()) => {
-                                                        debug!("Validated {} transactions for block #{}", block.transactions.len(), block_num);
-                                                    },
-                                                    Err(e) => {
-                                                        error!("Transaction validation failed for block #{}: {}", block_num, e);
-                                                        yield Err(Status::internal(format!("Validation error for block {block_num}: {e}")));
-                                                        continue;
-                                                    }
-                                                }
-                                            },
-                                            Err(e) => {
-                                                error!("Failed to extract transaction records for validation: {}", e);
-                                                yield Err(Status::internal(format!("Failed to extract records for validation: {e}")));
-                                                continue;
-                                            }
-                                        }
-                                    } else {
-                                        // Validation requested but no validator available
-                                        error!("Validation requested but validator not configured");
-                                        yield Err(Status::failed_precondition("Validation requested but validator not configured"));
-                                        return;
-                                    }
-                                }
-
-                                // Convert to RecordBatch after validation
-                                match JsonRpcConverter::convert_transactions(&block) {
-                                    Ok(batch) => {
-                                        record_batches.push(batch);
-                                    },
-                                    Err(e) => {
-                                        error!("Failed to convert transactions for block #{}: {}", block_num, e);
-                                        yield Err(Status::internal(format!("Conversion error: {e}")));
-                                    }
-                                }
-                            }
-                        }
-                        StreamType::Logs => {
-                            // Fetch and convert logs
-                            let filter = Filter::new().from_block(block_num).to_block(block_num);
-
-                            match client.get_logs(filter).await {
-                                Ok(logs) if !logs.is_empty() => {
-                                    let block_hash = block.header.hash;
-                                    match JsonRpcConverter::convert_logs(&logs, block_num, block_hash, block.header.timestamp) {
-                                        Ok(batch) => record_batches.push(batch),
-                                        Err(e) => {
-                                            error!("Failed to convert logs for block #{}: {}", block_num, e);
-                                            yield Err(Status::internal(format!("Conversion error: {e}")));
-                                        }
-                                    }
-                                }
-                                Ok(_) => {
-                                    // No logs in this block, skip
-                                }
-                                Err(e) => {
-                                    error!("Failed to fetch logs for block #{}: {}", block_num, e);
-                                    yield Err(Status::internal(format!("Failed to fetch logs: {e}")));
-                                }
-                            }
-                        }
-                        StreamType::Trie => {
-                            yield Err(Status::unimplemented("Trie streaming not supported via JSON-RPC"));
-                            return;
-                        }
-                    }
+                // Track active RPC request (similar to grpc_stream_inc in erigon-bridge)
+                if let Some(ref m) = metrics {
+                    m.grpc_stream_inc("logs");
                 }
 
-                // If we collected any batches, concatenate and yield them
-                if !record_batches.is_empty() {
-                    let schema = record_batches[0].schema();
-                    match concat_batches(&schema, &record_batches) {
-                        Ok(combined_batch) => {
-                            debug!("Yielding combined batch with {} rows for blocks {} to {}",
-                                   combined_batch.num_rows(), current_block, batch_end);
-                            yield Ok(combined_batch);
+                // Single eth_getLogs call for the entire batch range
+                let filter = Filter::new()
+                    .from_block(current_block)
+                    .to_block(batch_end);
+
+                let log_start = Instant::now();
+                match client.get_logs(filter).await {
+                    Ok(logs) => {
+                        let fetch_duration_ms = log_start.elapsed().as_millis() as f64;
+                        let log_count = logs.len();
+                        batches_fetched += 1;
+
+                        if let Some(ref m) = metrics {
+                            m.grpc_stream_dec("logs");
+
+                            // Record fetch duration with method indicating range-based fetching
+                            m.grpc_request_duration_logs(
+                                segment_num,
+                                "eth_getLogs_range",
+                                fetch_duration_ms,
+                            );
+
+                            // Track response size (estimate: ~200 bytes per log on average)
+                            // This mirrors grpc_message_size in erigon-bridge
+                            let estimated_size = log_count * 200;
+                            m.grpc_message_size("logs", estimated_size);
                         }
-                        Err(e) => {
-                            error!("Failed to concatenate batches: {}", e);
-                            yield Err(Status::internal(format!("Failed to concatenate batches: {e}")));
+
+                        if !logs.is_empty() {
+                            total_logs_in_segment += log_count as u64;
+
+                            // Use multi-block conversion - extracts block context from each log
+                            match JsonRpcConverter::convert_logs_multi_block(&logs) {
+                                Ok(batch) => {
+                                    if let Some(ref m) = metrics {
+                                        // Track logs processed (worker_id=0 for single-threaded)
+                                        m.items_processed_inc(0, segment_num, "logs", log_count as u64);
+
+                                        // Update progress
+                                        let blocks_processed = batch_end - seg_start + 1;
+                                        let progress_pct = (blocks_processed as f64 / total_blocks as f64) * 100.0;
+                                        m.set_worker_progress(0, segment_num, "logs", progress_pct);
+                                    }
+
+                                    info!(
+                                        "Segment {}: Yielding {} logs for blocks {} to {} ({:.0}ms, {:.1} logs/block)",
+                                        segment_num, batch.num_rows(), current_block, batch_end,
+                                        fetch_duration_ms,
+                                        log_count as f64 / block_range_size as f64
+                                    );
+                                    yield Ok(phaser_server::BatchWithRange::new(batch, current_block, batch_end));
+                                }
+                                Err(e) => {
+                                    error!("Segment {}: Failed to convert logs: {}", segment_num, e);
+                                    if let Some(ref m) = metrics {
+                                        m.error("conversion_error", "logs");
+                                        m.active_workers_dec("logs");
+                                        m.segment_attempt(false);
+                                    }
+                                    yield Err(Status::internal(format!("Failed to convert logs: {e}")));
+                                    return;
+                                }
+                            }
+                        } else {
+                            // No logs in this range - still track it for progress
+                            debug!(
+                                "Segment {}: No logs in block range {} to {} ({:.0}ms)",
+                                segment_num, current_block, batch_end, fetch_duration_ms
+                            );
+                            // Don't yield anything for empty ranges - the range will still
+                            // be considered processed based on the next batch's start
                         }
+                    }
+                    Err(e) => {
+                        if let Some(ref m) = metrics {
+                            m.grpc_stream_dec("logs");
+                        }
+
+                        // Categorize error for better monitoring
+                        let error_type = Self::categorize_rpc_error(&e);
+                        error!(
+                            "Segment {}: Failed to fetch logs for range {} to {}: {} (type: {})",
+                            segment_num, current_block, batch_end, e, error_type
+                        );
+                        if let Some(ref m) = metrics {
+                            m.error(&error_type, "logs");
+                            m.active_workers_dec("logs");
+                            m.segment_attempt(false);
+                        }
+                        yield Err(Status::internal(format!(
+                            "Failed to fetch logs for range {current_block}-{batch_end}: {e}"
+                        )));
+                        return;
                     }
                 }
 
                 current_block = batch_end + 1;
             }
 
-            info!("Completed historical {:?} query for blocks {} to {}", stream_type, start_block, end_block);
+            // Record segment-level metrics (success path only - errors return early)
+            let duration = segment_start_time.elapsed();
+            if let Some(ref m) = metrics {
+                m.segment_duration("logs", duration.as_secs_f64());
+                m.active_workers_dec("logs");
+                m.segment_attempt(true);
+            }
+
+            let logs_per_second = if duration.as_secs_f64() > 0.0 {
+                total_logs_in_segment as f64 / duration.as_secs_f64()
+            } else {
+                0.0
+            };
+
+            info!(
+                "Segment {}: Completed logs for blocks {} to {} in {:.2}s ({} logs in {} batches, {:.0} logs/sec)",
+                segment_num, seg_start, seg_end, duration.as_secs_f64(),
+                total_logs_in_segment, batches_fetched, logs_per_second
+            );
+        }
+    }
+
+    /// Categorize RPC error for metrics (mirrors erigon-bridge's categorize_error pattern)
+    fn categorize_rpc_error(error: &anyhow::Error) -> String {
+        let err_str = error.to_string();
+        let err_lower = err_str.to_lowercase();
+
+        if err_lower.contains("timeout") || err_lower.contains("timed out") {
+            "timeout".to_string()
+        } else if err_lower.contains("connection") || err_lower.contains("connect") {
+            "connection".to_string()
+        } else if err_lower.contains("rate limit") || err_lower.contains("429") {
+            "rate_limit".to_string()
+        } else if err_lower.contains("not found") || err_lower.contains("404") {
+            "not_found".to_string()
+        } else if err_lower.contains("server error") || err_lower.contains("500") {
+            "server_error".to_string()
+        } else if err_lower.contains("invalid") || err_lower.contains("parse") {
+            "invalid_response".to_string()
+        } else {
+            // For unknown errors, include truncated message
+            let pattern = err_str
+                .split(':')
+                .next()
+                .unwrap_or(&err_str)
+                .trim()
+                .chars()
+                .take(50)
+                .collect::<String>();
+            format!("unknown:{pattern}")
+        }
+    }
+
+    /// Process segment for blocks/transactions using parallel per-block fetching
+    ///
+    /// Fetches blocks concurrently using `max_concurrent_requests` to limit parallelism.
+    /// Each block requires a separate `eth_getBlockByNumber` RPC call.
+    #[allow(clippy::too_many_arguments)]
+    fn process_segment_blocks_txs(
+        client: Arc<JsonRpcClient>,
+        seg_start: u64,
+        seg_end: u64,
+        stream_type: StreamType,
+        validate: bool,
+        validator: Option<Arc<dyn ValidationExecutor>>,
+        metrics: Option<BridgeMetrics>,
+        config: SegmentConfig,
+    ) -> impl Stream<Item = Result<phaser_server::BatchWithRange, Status>> + Send {
+        let batch_size = config.blocks_per_batch as u64;
+        let max_concurrent = config.max_concurrent_requests;
+        let segment_num = seg_start / config.segment_size;
+
+        let data_type = match stream_type {
+            StreamType::Blocks => "blocks",
+            StreamType::Transactions => "transactions",
+            StreamType::Logs => "logs",
+            StreamType::Trie => "trie",
+        };
+
+        async_stream::stream! {
+            use arrow::compute::concat_batches;
+            use futures::stream::{self as fstream, StreamExt as FuturesStreamExt};
+
+            let total_blocks = seg_end - seg_start + 1;
+            info!(
+                "Segment {}: Processing {} for blocks {} to {} ({} blocks, batch size: {}, concurrency: {})",
+                segment_num, data_type, seg_start, seg_end, total_blocks, batch_size, max_concurrent
+            );
+
+            // Track active workers (mirrors erigon-bridge pattern)
+            if let Some(ref m) = metrics {
+                m.active_workers_inc(data_type);
+            }
+
+            let segment_start_time = Instant::now();
+            let mut current_block = seg_start;
+            let mut total_items: u64 = 0;
+            let mut batches_yielded: u64 = 0;
+
+            while current_block <= seg_end {
+                let batch_end = std::cmp::min(current_block + batch_size - 1, seg_end);
+                let batch_count = (batch_end - current_block + 1) as usize;
+
+                debug!(
+                    "Segment {}: Fetching {} blocks {} to {} ({} blocks)",
+                    segment_num, data_type, current_block, batch_end, batch_count
+                );
+
+                // Create block range iterator
+                let block_range: Vec<u64> = (current_block..=batch_end).collect();
+
+                // Track active RPC requests
+                if let Some(ref m) = metrics {
+                    m.grpc_stream_inc(data_type);
+                }
+
+                let batch_start = Instant::now();
+
+                // Fetch blocks in parallel using buffered stream
+                let client_clone = client.clone();
+                let validator_clone = validator.clone();
+                let stream_type_clone = stream_type;
+                let metrics_clone = metrics.clone();
+
+                let results: Vec<Result<Option<arrow::record_batch::RecordBatch>, Status>> = fstream::iter(block_range)
+                    .map(move |block_num| {
+                        let client = client_clone.clone();
+                        let validator = validator_clone.clone();
+                        let metrics = metrics_clone.clone();
+                        async move {
+                            Self::fetch_and_convert_block(
+                                &client,
+                                block_num,
+                                stream_type_clone,
+                                validate,
+                                validator.as_ref(),
+                                metrics.as_ref(),
+                                segment_num,
+                            ).await
+                        }
+                    })
+                    .buffered(max_concurrent)
+                    .collect()
+                    .await;
+
+                let batch_duration_ms = batch_start.elapsed().as_millis() as f64;
+
+                if let Some(ref m) = metrics {
+                    m.grpc_stream_dec(data_type);
+                }
+
+                // Process results - collect successful batches and report errors
+                let mut record_batches = Vec::with_capacity(batch_count);
+                let mut error_count = 0;
+
+                for result in results {
+                    match result {
+                        Ok(Some(batch)) => {
+                            total_items += batch.num_rows() as u64;
+                            record_batches.push(batch);
+                        }
+                        Ok(None) => {
+                            // Block had no data (e.g., empty transactions) - skip
+                        }
+                        Err(e) => {
+                            // Log but continue - we want to process as many blocks as possible
+                            let error_type = Self::categorize_rpc_error_from_status(&e);
+                            error!("Segment {}: Error fetching block: {} (type: {})", segment_num, e, error_type);
+                            if let Some(ref m) = metrics {
+                                m.error(&error_type, data_type);
+                            }
+                            error_count += 1;
+                        }
+                    }
+                }
+
+                // If we collected any batches, concatenate and yield them wrapped with range
+                if !record_batches.is_empty() {
+                    let schema = record_batches[0].schema();
+                    match concat_batches(&schema, &record_batches) {
+                        Ok(combined_batch) => {
+                            if let Some(ref m) = metrics {
+                                // Track items processed
+                                m.items_processed_inc(0, segment_num, data_type, combined_batch.num_rows() as u64);
+
+                                // Update progress
+                                let blocks_processed = batch_end - seg_start + 1;
+                                let progress_pct = (blocks_processed as f64 / total_blocks as f64) * 100.0;
+                                m.set_worker_progress(0, segment_num, data_type, progress_pct);
+                            }
+
+                            batches_yielded += 1;
+                            info!(
+                                "Segment {}: Yielding {} rows for blocks {} to {} ({:.0}ms, {} errors)",
+                                segment_num, combined_batch.num_rows(), current_block, batch_end,
+                                batch_duration_ms, error_count
+                            );
+                            yield Ok(phaser_server::BatchWithRange::new(combined_batch, current_block, batch_end));
+                        }
+                        Err(e) => {
+                            error!("Segment {}: Failed to concatenate batches: {}", segment_num, e);
+                            if let Some(ref m) = metrics {
+                                m.error("concatenate_error", data_type);
+                                m.active_workers_dec(data_type);
+                                m.segment_attempt(false);
+                            }
+                            yield Err(Status::internal(format!("Failed to concatenate batches: {e}")));
+                            return;
+                        }
+                    }
+                } else if error_count > 0 {
+                    // All blocks had errors - report the batch as failed
+                    error!(
+                        "Segment {}: All {} blocks failed in range {}-{}",
+                        segment_num, batch_count, current_block, batch_end
+                    );
+                    if let Some(ref m) = metrics {
+                        m.error("all_blocks_failed", data_type);
+                        m.active_workers_dec(data_type);
+                        m.segment_attempt(false);
+                    }
+                    yield Err(Status::internal(format!(
+                        "Segment {segment_num}: Failed to fetch any blocks in range {current_block}-{batch_end}"
+                    )));
+                    return;
+                }
+
+                current_block = batch_end + 1;
+            }
+
+            // Record segment-level metrics (success path only - errors return early)
+            let duration = segment_start_time.elapsed();
+            if let Some(ref m) = metrics {
+                m.segment_duration(data_type, duration.as_secs_f64());
+                m.active_workers_dec(data_type);
+                m.segment_attempt(true);
+            }
+
+            let items_per_second = if duration.as_secs_f64() > 0.0 {
+                total_items as f64 / duration.as_secs_f64()
+            } else {
+                0.0
+            };
+
+            info!(
+                "Segment {}: Completed {} for blocks {} to {} in {:.2}s ({} items in {} batches, {:.0} items/sec)",
+                segment_num, data_type, seg_start, seg_end, duration.as_secs_f64(),
+                total_items, batches_yielded, items_per_second
+            );
+        }
+    }
+
+    /// Categorize error from Status for metrics
+    fn categorize_rpc_error_from_status(status: &Status) -> String {
+        let msg = status.message().to_lowercase();
+        if msg.contains("timeout") || msg.contains("timed out") {
+            "timeout".to_string()
+        } else if msg.contains("connection") || msg.contains("connect") {
+            "connection".to_string()
+        } else if msg.contains("rate limit") || msg.contains("429") {
+            "rate_limit".to_string()
+        } else if msg.contains("not found") || msg.contains("404") {
+            "not_found".to_string()
+        } else if msg.contains("server error") || msg.contains("500") {
+            "server_error".to_string()
+        } else {
+            "rpc_error".to_string()
+        }
+    }
+
+    /// Fetch a single block and convert it to RecordBatch based on stream type
+    async fn fetch_and_convert_block(
+        client: &JsonRpcClient,
+        block_num: u64,
+        stream_type: StreamType,
+        validate: bool,
+        validator: Option<&Arc<dyn ValidationExecutor>>,
+        metrics: Option<&BridgeMetrics>,
+        segment_num: u64,
+    ) -> Result<Option<arrow::record_batch::RecordBatch>, Status> {
+        use alloy::eips::BlockNumberOrTag;
+        use alloy_rpc_types_eth::Filter;
+
+        // Fetch block with transactions
+        let start = Instant::now();
+        let block = match client
+            .get_block_with_txs(BlockNumberOrTag::Number(block_num))
+            .await
+        {
+            Ok(Some(block)) => {
+                if let Some(m) = metrics {
+                    m.grpc_request_duration_blocks(
+                        segment_num,
+                        "eth_getBlockByNumber",
+                        start.elapsed().as_millis() as f64,
+                    );
+                }
+                block
+            }
+            Ok(None) => {
+                error!("Block #{} not found", block_num);
+                if let Some(m) = metrics {
+                    m.error("not_found", "blocks");
+                }
+                return Err(Status::not_found(format!("Block {block_num} not found")));
+            }
+            Err(e) => {
+                error!("Failed to fetch block #{}: {}", block_num, e);
+                if let Some(m) = metrics {
+                    m.error("fetch_error", "blocks");
+                }
+                return Err(Status::internal(format!(
+                    "Failed to fetch block {block_num}: {e}"
+                )));
+            }
+        };
+
+        match stream_type {
+            StreamType::Blocks => {
+                // Convert block header to RecordBatch
+                match evm_common::rpc_conversions::convert_any_header(&block.header) {
+                    Ok(batch) => Ok(Some(batch)),
+                    Err(e) => {
+                        error!("Failed to convert block header #{}: {}", block_num, e);
+                        Err(Status::internal(format!("Conversion error: {e}")))
+                    }
+                }
+            }
+            StreamType::Transactions => {
+                // Convert transactions (if any)
+                if block.transactions.is_empty() {
+                    return Ok(None);
+                }
+
+                // Validate transactions if requested and validator is available
+                if validate {
+                    if let Some(val) = validator {
+                        let block_record =
+                            evm_common::rpc_conversions::convert_any_header_to_record(
+                                &block.header,
+                            );
+
+                        match evm_common::rpc_conversions::extract_transaction_records(&block) {
+                            Ok(tx_records) => {
+                                match val.spawn_validate_records(block_record, tx_records).await {
+                                    Ok(()) => {
+                                        debug!(
+                                            "Validated {} transactions for block #{}",
+                                            block.transactions.len(),
+                                            block_num
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "Transaction validation failed for block #{}: {}",
+                                            block_num, e
+                                        );
+                                        return Err(Status::internal(format!(
+                                            "Validation error for block {block_num}: {e}"
+                                        )));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to extract transaction records for validation: {}",
+                                    e
+                                );
+                                return Err(Status::internal(format!(
+                                    "Failed to extract records for validation: {e}"
+                                )));
+                            }
+                        }
+                    } else {
+                        error!("Validation requested but validator not configured");
+                        return Err(Status::failed_precondition(
+                            "Validation requested but validator not configured",
+                        ));
+                    }
+                }
+
+                // Convert to RecordBatch
+                match JsonRpcConverter::convert_transactions(&block) {
+                    Ok(batch) => Ok(Some(batch)),
+                    Err(e) => {
+                        error!(
+                            "Failed to convert transactions for block #{}: {}",
+                            block_num, e
+                        );
+                        Err(Status::internal(format!("Conversion error: {e}")))
+                    }
+                }
+            }
+            StreamType::Logs => {
+                // Fetch and convert logs
+                let filter = Filter::new().from_block(block_num).to_block(block_num);
+
+                let log_start = Instant::now();
+                match client.get_logs(filter).await {
+                    Ok(logs) if !logs.is_empty() => {
+                        if let Some(m) = metrics {
+                            m.grpc_request_duration_logs(
+                                segment_num,
+                                "eth_getLogs",
+                                log_start.elapsed().as_millis() as f64,
+                            );
+                        }
+                        let block_hash = block.header.hash;
+                        match JsonRpcConverter::convert_logs(
+                            &logs,
+                            block_num,
+                            block_hash,
+                            block.header.timestamp,
+                        ) {
+                            Ok(batch) => Ok(Some(batch)),
+                            Err(e) => {
+                                error!("Failed to convert logs for block #{}: {}", block_num, e);
+                                Err(Status::internal(format!("Conversion error: {e}")))
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        // No logs in this block
+                        if let Some(m) = metrics {
+                            m.grpc_request_duration_logs(
+                                segment_num,
+                                "eth_getLogs",
+                                log_start.elapsed().as_millis() as f64,
+                            );
+                        }
+                        Ok(None)
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch logs for block #{}: {}", block_num, e);
+                        if let Some(m) = metrics {
+                            m.error("fetch_error", "logs");
+                        }
+                        Err(Status::internal(format!("Failed to fetch logs: {e}")))
+                    }
+                }
+            }
+            StreamType::Trie => Err(Status::unimplemented(
+                "Trie streaming not supported via JSON-RPC",
+            )),
         }
     }
 }
@@ -320,7 +963,7 @@ impl FlightBridge for JsonRpcFlightBridge {
             supports_reorg_notifications: false,
             supports_filters: true,
             supports_validation: self.validator.is_some(),
-            max_batch_size: self.max_batch_size,
+            max_batch_size: self.segment_config.blocks_per_batch,
         })
     }
 
@@ -328,8 +971,12 @@ impl FlightBridge for JsonRpcFlightBridge {
         // Query current block from node
         let current_block = self.client.get_block_number().await.unwrap_or(0);
 
+        // Get node capabilities (probed at connection time)
+        let caps = self.client.capabilities();
+
         // Define available tables (JSON-RPC doesn't support trie)
-        let tables = vec![
+        // If eth_getBlockReceipts is supported, we could add a "receipts" table
+        let mut tables = vec![
             TableDescriptor::new("blocks", "_block_num")
                 .with_modes(vec!["historical", "live"])
                 .with_sorted_by(vec!["_block_num"]),
@@ -341,15 +988,71 @@ impl FlightBridge for JsonRpcFlightBridge {
                 .with_sorted_by(vec!["_block_num", "_tx_idx", "_log_idx"]),
         ];
 
-        // Add chain_id to metadata
+        // Add receipts table if eth_getBlockReceipts is supported
+        if caps.supports_block_receipts {
+            tables.push(
+                TableDescriptor::new("receipts", "_block_num")
+                    .with_modes(vec!["historical"])
+                    .with_sorted_by(vec!["_block_num", "_tx_idx"]),
+            );
+        }
+
+        // Build metadata from node capabilities
         let mut metadata = std::collections::HashMap::new();
+
+        // Chain info
         metadata.insert(
             "chain_id".to_string(),
             serde_json::Value::Number(self.chain_id.into()),
         );
+
+        // Transport capabilities
         metadata.insert(
             "supports_subscriptions".to_string(),
             serde_json::Value::Bool(self.client.supports_subscriptions()),
+        );
+
+        // Node capabilities (from probing at connection time)
+        metadata.insert(
+            "client_version".to_string(),
+            serde_json::Value::String(caps.client_version.clone()),
+        );
+        metadata.insert(
+            "supports_block_receipts".to_string(),
+            serde_json::Value::Bool(caps.supports_block_receipts),
+        );
+        metadata.insert(
+            "supports_debug_namespace".to_string(),
+            serde_json::Value::Bool(caps.supports_debug_namespace),
+        );
+
+        // Query hints for clients
+        if let Some(max_range) = caps.max_logs_block_range {
+            metadata.insert(
+                "max_logs_block_range".to_string(),
+                serde_json::Value::Number(max_range.into()),
+            );
+        }
+        metadata.insert(
+            "recommended_logs_batch_size".to_string(),
+            serde_json::Value::Number(self.client.recommended_logs_batch_size().into()),
+        );
+
+        // Node type hints
+        if caps.is_erigon {
+            metadata.insert(
+                "node_type".to_string(),
+                serde_json::Value::String("erigon".to_string()),
+            );
+        } else if caps.is_geth {
+            metadata.insert(
+                "node_type".to_string(),
+                serde_json::Value::String("geth".to_string()),
+            );
+        }
+        metadata.insert(
+            "is_managed_provider".to_string(),
+            serde_json::Value::Bool(caps.is_managed_provider),
         );
 
         Ok(DiscoveryCapabilities {
@@ -478,8 +1181,9 @@ impl FlightBridge for JsonRpcFlightBridge {
         let schema = Self::get_schema_for_type(stream_type).map_err(|e| *e)?;
 
         // Build the batch stream based on query mode
+        // Historical streams return BatchWithRange, live streams return plain RecordBatch
         let batch_stream: Pin<
-            Box<dyn Stream<Item = Result<arrow::record_batch::RecordBatch, Status>> + Send>,
+            Box<dyn Stream<Item = Result<phaser_server::BatchWithRange, Status>> + Send>,
         > = match query.mode {
             GenericQueryMode::Range { start, end } => {
                 info!(
@@ -510,31 +1214,72 @@ impl FlightBridge for JsonRpcFlightBridge {
                     }
                 };
 
+                // Wrap live batches with placeholder range (0,0) since they're real-time
                 Box::pin(async_stream::stream! {
                     let mut rx = receiver;
                     while let Ok(batch) = rx.recv().await {
-                        yield Ok(batch);
+                        yield Ok(phaser_server::BatchWithRange::new(batch, 0, 0));
                     }
                 })
             }
         };
 
-        // Convert Status errors to FlightError for the encoder
-        let flight_batch_stream = batch_stream.map(|result| {
-            result.map_err(|status| arrow_flight::error::FlightError::Tonic(Box::new(status)))
-        });
+        // Manually construct FlightData to include app_metadata with responsibility ranges
+        // This mirrors the erigon-bridge approach for phaser-query compatibility
+        use arrow::ipc::writer::IpcWriteOptions;
+        use arrow_flight::utils::batches_to_flight_data;
 
-        // Encode as Flight data
-        let encoder = FlightDataEncoderBuilder::new()
-            .with_schema(schema)
-            .build(flight_batch_stream);
+        let flight_stream = async_stream::stream! {
+            // First, send the schema
+            let schema_flight_data: FlightData = arrow_flight::SchemaAsIpc::new(&schema, &IpcWriteOptions::default())
+                .into();
+            yield Ok(schema_flight_data);
 
-        let flight_stream = encoder.map(|result| {
-            result.map_err(|e| {
-                error!("Error encoding flight data: {}", e);
-                Status::internal(format!("Encoding error: {e}"))
-            })
-        });
+            // Then stream batches with app_metadata containing responsibility ranges
+            let mut batch_stream = batch_stream;
+            while let Some(batch_result) = batch_stream.next().await {
+                match batch_result {
+                    Ok(batch_with_range) => {
+                        // Encode the batch metadata (responsibility range)
+                        let metadata = match batch_with_range.encode_metadata() {
+                            Ok(m) => m,
+                            Err(e) => {
+                                error!("Failed to encode batch metadata: {}", e);
+                                yield Err(Status::internal(format!("Metadata encoding error: {e}")));
+                                continue;
+                            }
+                        };
+
+                        // Convert RecordBatch to FlightData using arrow-flight utilities
+                        let batches = vec![batch_with_range.batch];
+                        match batches_to_flight_data(&schema, batches) {
+                            Ok(flight_data_vec) => {
+                                // batches_to_flight_data includes a schema message as the first element
+                                // Skip it since we already sent the schema
+                                let data_messages: Vec<_> = flight_data_vec
+                                    .into_iter()
+                                    .skip(1) // Skip the schema message
+                                    .collect();
+
+                                // Attach app_metadata to each FlightData
+                                for mut flight_data in data_messages {
+                                    flight_data.app_metadata = metadata.clone().into();
+                                    yield Ok(flight_data);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Error encoding batch to flight data: {}", e);
+                                yield Err(Status::internal(format!("Batch encoding error: {e}")));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error in batch stream: {}", e);
+                        yield Err(Status::internal(format!("Stream error: {e}")));
+                    }
+                }
+            }
+        };
 
         Ok(Response::new(Box::pin(flight_stream)))
     }
@@ -736,4 +1481,54 @@ fn create_flight_info(stream_type: StreamType) -> Result<FlightInfo, Box<Status>
         .with_endpoint(FlightEndpoint::new().with_ticket(Ticket::new(vec![])))
         .with_total_records(0)
         .with_total_bytes(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_into_segments() {
+        // Test full segments
+        let segments = split_into_segments(0, 29_999, 10_000);
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0], (0, 9_999));
+        assert_eq!(segments[1], (10_000, 19_999));
+        assert_eq!(segments[2], (20_000, 29_999));
+    }
+
+    #[test]
+    fn test_split_partial_segment() {
+        // Test partial last segment
+        let segments = split_into_segments(0, 15_000, 10_000);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0], (0, 9_999));
+        assert_eq!(segments[1], (10_000, 15_000));
+    }
+
+    #[test]
+    fn test_split_single_segment() {
+        // Test range smaller than segment size
+        let segments = split_into_segments(0, 5_000, 10_000);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0], (0, 5_000));
+    }
+
+    #[test]
+    fn test_split_unaligned_start() {
+        // Test starting from an unaligned block
+        let segments = split_into_segments(5_000, 25_000, 10_000);
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0], (5_000, 14_999));
+        assert_eq!(segments[1], (15_000, 24_999));
+        assert_eq!(segments[2], (25_000, 25_000));
+    }
+
+    #[test]
+    fn test_split_single_block() {
+        // Test single block range
+        let segments = split_into_segments(100, 100, 10_000);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0], (100, 100));
+    }
 }

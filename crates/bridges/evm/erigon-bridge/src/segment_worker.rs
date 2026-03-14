@@ -15,10 +15,11 @@ use alloy_rlp::Decodable;
 use arrow_array::RecordBatch;
 use futures::stream::StreamExt;
 use phaser_server::{BatchWithRange, StreamError};
+use prost::Message as ProstMessage;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use validators_evm::ValidationExecutor;
 
 /// Configuration for segment-based processing and validation
@@ -187,7 +188,7 @@ impl SegmentWorker {
             let blocks_phase_start = Instant::now();
             let mut yielded_batches = 0u64;
 
-            info!(
+            debug!(
                 "Worker {} segment {} processing transactions for blocks {} to {} ({} blocks)",
                 worker_id,
                 segment_id,
@@ -297,8 +298,11 @@ impl SegmentWorker {
                 match batch_result {
                     Ok(tx_batch) => {
                         batch_count += 1;
-                        debug!("Worker {} segment {}: Received transaction batch {} with {} transactions",
-                            worker_id, segment_id, batch_count, tx_batch.transactions.len());
+                        // Track gRPC message size for capacity planning
+                        let msg_size = tx_batch.encoded_len();
+                        self.metrics.grpc_message_size("transactions", msg_size);
+                        debug!("Worker {} segment {}: Received transaction batch {} with {} transactions ({} bytes)",
+                            worker_id, segment_id, batch_count, tx_batch.transactions.len(), msg_size);
                         let tx_count = tx_batch.transactions.len() as u64;
                         all_transactions.extend(tx_batch.transactions);
                         self.metrics
@@ -316,7 +320,7 @@ impl SegmentWorker {
             }
 
             // Stream completed successfully
-            info!("Worker {} segment {}: Transaction stream completed for blocks {}-{}, received {} batches with {} total transactions",
+            debug!("Worker {} segment {}: Transaction stream completed for blocks {}-{}, received {} batches with {} total transactions",
                 worker_id, segment_id, start_block, end_block, batch_count, all_transactions.len());
             self.metrics.grpc_stream_dec("transactions");
 
@@ -395,7 +399,7 @@ impl SegmentWorker {
             // Yield this batch immediately - no buffering!
             // Wrap with responsibility range metadata
             yielded_batches += 1;
-            info!(
+            debug!(
                 "BRIDGE YIELD: Worker {} segment {}: Yielding transaction batch {}, blocks {}-{}",
                 worker_id, segment_id, yielded_batches, start_block, end_block
             );
@@ -431,7 +435,7 @@ impl SegmentWorker {
             return;
         }
 
-        info!(
+        debug!(
             "Worker {} segment {}: Completed transaction processing in {:.2}s, yielded {} RecordBatches",
             worker_id,
             segment_id,
@@ -460,7 +464,7 @@ impl SegmentWorker {
         let mut yielded_batches = 0u64;
         let mut total_receipts_processed = 0u64;
 
-        info!(
+        debug!(
             "Worker {} segment {} processing logs for blocks {} to {} ({} blocks)",
             worker_id,
             segment_id,
@@ -485,7 +489,7 @@ impl SegmentWorker {
             current_block = chunk_end + 1;
         }
 
-        info!(
+        debug!(
             "Worker {} segment {}: Created {} work units for parallel execution",
             worker_id, segment_id, work_units.len()
         );
@@ -644,7 +648,7 @@ impl SegmentWorker {
 
         // Record phase duration and metrics
         let duration = phase_start.elapsed().as_secs_f64();
-        info!(
+        debug!(
             "Worker {} segment {}: Completed log processing, yielded {} RecordBatches, processed {} receipts in {:.2}s",
             worker_id,
             segment_id,
@@ -669,7 +673,7 @@ impl SegmentWorker {
         batch_size: u32,
         metrics: &BridgeMetrics,
     ) -> Result<HashMap<u64, (Header, i64)>, ErigonBridgeError> {
-        info!(
+        debug!(
             "ERIGON REQUEST: Requesting blocks {}-{} from Erigon (expecting {} blocks)",
             segment_start,
             segment_end,
@@ -701,13 +705,17 @@ impl SegmentWorker {
             match batch_result {
                 Ok(block_batch) => {
                     batch_count += 1;
+                    // Track gRPC message size for capacity planning
+                    let msg_size = block_batch.encoded_len();
+                    metrics.grpc_message_size("blocks", msg_size);
 
                     debug!(
-                        "Blocks {}-{}: Received header batch {} with {} blocks",
+                        "Blocks {}-{}: Received header batch {} with {} blocks ({} bytes)",
                         segment_start,
                         segment_end,
                         batch_count,
-                        block_batch.blocks.len()
+                        block_batch.blocks.len(),
+                        msg_size
                     );
 
                     for block in block_batch.blocks {
@@ -758,7 +766,7 @@ impl SegmentWorker {
                     segment_start, segment_end, headers.len(), expected_count, min_received, max_received, missing_count
                 );
             } else {
-                info!(
+                debug!(
                     "ERIGON RESPONSE: Blocks {}-{}: Received {} headers (complete), range {}-{}",
                     segment_start,
                     segment_end,
@@ -924,6 +932,9 @@ impl SegmentWorker {
             match batch_result {
                 Ok(receipt_batch) => {
                     batch_count += 1;
+                    // Track gRPC message size for capacity planning (logs come from receipts)
+                    let msg_size = receipt_batch.encoded_len();
+                    metrics.grpc_message_size("logs", msg_size);
                     for receipt in receipt_batch.receipts {
                         let block_num = receipt.block_number;
                         receipts_by_block

@@ -928,7 +928,7 @@ impl DataScanner {
                     missing_parts.push(format!("logs ({} ranges)", missing_logs.len()));
                 }
 
-                info!(
+                debug!(
                     "Segment {} (blocks {}-{}) incomplete - missing: {}",
                     segment_num,
                     segment_start,

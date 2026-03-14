@@ -122,7 +122,11 @@ pub fn convert_rpc_transactions(block: &AnyRpcBlock) -> Result<RecordBatch> {
     Ok(arrays.into_record_batch())
 }
 
-/// Convert RPC logs to RecordBatch
+/// Convert RPC logs to RecordBatch (single block version)
+///
+/// For logs from a single block where you already know the block context.
+/// For logs from multiple blocks (e.g., eth_getLogs with block range), use
+/// `convert_rpc_logs_multi_block` instead.
 pub fn convert_rpc_logs(
     logs: &[RpcLog],
     block_num: u64,
@@ -132,6 +136,53 @@ pub fn convert_rpc_logs(
     let mut builders = LogRecord::new_builders(logs.len());
 
     for log in logs {
+        // Extract topics (up to 4)
+        let topics = log.topics();
+        let topic0 = topics.first().map(|t| (*t).into());
+        let topic1 = topics.get(1).map(|t| (*t).into());
+        let topic2 = topics.get(2).map(|t| (*t).into());
+        let topic3 = topics.get(3).map(|t| (*t).into());
+
+        let record = LogRecord {
+            _block_num: block_num,
+            block_num,
+            block_hash: block_hash.into(),
+            timestamp: timestamp as i64 * 1_000_000_000,
+            tx_index: log.transaction_index.unwrap_or(0) as u32,
+            tx_hash: log.transaction_hash.unwrap_or_default().into(),
+            log_index: log.log_index.unwrap_or(0) as u32,
+            address: log.address().into(),
+            data: log.data().data.to_vec(),
+            topic0,
+            topic1,
+            topic2,
+            topic3,
+            removed: log.removed,
+        };
+
+        builders.append_row(record);
+    }
+
+    let arrays = builders.finish();
+    Ok(arrays.into_record_batch())
+}
+
+/// Convert RPC logs to RecordBatch (multi-block version)
+///
+/// For logs from eth_getLogs spanning multiple blocks. Extracts block_num,
+/// block_hash, and timestamp from each log individually. This is more efficient
+/// than calling `convert_rpc_logs` per-block because it reduces RPC round-trips.
+pub fn convert_rpc_logs_multi_block(logs: &[RpcLog]) -> Result<RecordBatch> {
+    let mut builders = LogRecord::new_builders(logs.len());
+
+    for log in logs {
+        // Extract block context from the log itself
+        let block_num = log.block_number.unwrap_or(0);
+        let block_hash = log.block_hash.unwrap_or_default();
+        // Note: block_timestamp is not always present in all nodes
+        // If missing, use 0 and let downstream handle it
+        let timestamp = log.block_timestamp.unwrap_or(0);
+
         // Extract topics (up to 4)
         let topics = log.topics();
         let topic0 = topics.first().map(|t| (*t).into());

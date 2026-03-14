@@ -428,12 +428,13 @@ impl SyncServer {
                             metrics.sync_errors(error_category, data_type);
 
                             // Check if error is retryable
+                            // Most errors should be retried - only validation and stuck workers are truly non-retryable
                             use crate::sync::error::ErrorCategory;
-                            let is_retryable = matches!(
+                            let is_retryable = !matches!(
                                 sync_err.category,
-                                ErrorCategory::Connection
-                                    | ErrorCategory::Timeout
-                                    | ErrorCategory::Cancelled
+                                ErrorCategory::Validation
+                                    | ErrorCategory::StuckWorker
+                                    | ErrorCategory::NoData
                             );
 
                             if !is_retryable {

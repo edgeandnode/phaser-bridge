@@ -105,6 +105,7 @@ pub struct BridgeMetrics {
     grpc_request_duration_blocks: HistogramVec,
     grpc_request_duration_transactions: HistogramVec,
     grpc_request_duration_logs: HistogramVec,
+    grpc_message_size_bytes: HistogramVec,
 }
 
 impl SegmentMetrics for BridgeMetrics {
@@ -397,6 +398,29 @@ impl BridgeMetrics {
                 ]
             )
             .unwrap(),
+            grpc_message_size_bytes: register_histogram_vec!(
+                format!("{}_grpc_message_size_bytes", service_name_str),
+                "Size of gRPC messages received from Erigon in bytes",
+                &["chain_id", "bridge_name", "data_type"],
+                // 1KB, 10KB, 100KB, 1MB, 5MB, 10MB, 25MB, 50MB, 100MB, 150MB, 200MB, 256MB, 384MB, 512MB
+                vec![
+                    1024.0,
+                    10240.0,
+                    102400.0,
+                    1048576.0,
+                    5242880.0,
+                    10485760.0,
+                    26214400.0,
+                    52428800.0,
+                    104857600.0,
+                    157286400.0,
+                    209715200.0,
+                    268435456.0,
+                    402653184.0,
+                    536870912.0
+                ]
+            )
+            .unwrap(),
         }
     }
 
@@ -458,6 +482,13 @@ impl BridgeMetrics {
                 method,
             ])
             .observe(duration_millis);
+    }
+
+    /// Record gRPC message size in bytes
+    pub fn grpc_message_size(&self, data_type: &str, size_bytes: usize) {
+        self.grpc_message_size_bytes
+            .with_label_values(&[&self.base.chain_id, &self.base.bridge_name, data_type])
+            .observe(size_bytes as f64);
     }
 }
 

@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 # Bridge framework
 phaser-server = { workspace = true }
+phaser-metrics = { workspace = true }
 evm-common = { workspace = true }
 validators-evm = { workspace = true }
 
@@ -52,3 +53,5 @@ tokio-stream = "0.1"
 tower = "0.5"
 hyper-util = "0.1"
 num_cpus = { workspace = true }
+axum = { workspace = true }
+prometheus = "0.13"

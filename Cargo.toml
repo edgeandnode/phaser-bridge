@@ -17,6 +17,7 @@ members = [
     "crates/parquet-index-rocksdb",
     "crates/parquet-meta",
     "crates/phaser-parquet-metadata",
+    "crates/tools/bridge-test",
 ]
 
 [workspace.dependencies]
@@ -86,3 +87,15 @@ futures = "0.3"
 tonic = { version = "0.14", features = ["transport", "gzip", "zstd", "tls-native-roots"] }
 prost = "0.14"
 prost-types = "0.14"
+
+# Release profile with debug info for profiling
+[profile.release]
+debug = true  # Include debug symbols
+strip = false # Don't strip symbols
+
+# Optimized release without debug info (for production)
+[profile.release-prod]
+inherits = "release"
+debug = false
+strip = true
+lto = "thin"

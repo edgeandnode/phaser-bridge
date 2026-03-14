@@ -1659,6 +1659,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-test"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "clap",
+ "futures",
+ "phaser-client",
+ "phaser-types",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "brotli"
 version = "8.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3414,6 +3429,7 @@ dependencies = [
  "arrow-schema",
  "async-stream",
  "async-trait",
+ "axum 0.7.9",
  "clap",
  "evm-common",
  "futures",
@@ -3421,7 +3437,9 @@ dependencies = [
  "hex",
  "hyper-util",
  "num_cpus",
+ "phaser-metrics",
  "phaser-server",
+ "prometheus",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

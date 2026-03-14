@@ -225,7 +225,7 @@ impl SyncWorker {
     }
 
     pub async fn run(&mut self) -> Result<(), SyncError> {
-        info!(
+        debug!(
             "Worker {} starting sync of blocks {}-{} from {}",
             self.worker_id, self.from_block, self.to_block, self.bridge_endpoint
         );
@@ -235,7 +235,7 @@ impl SyncWorker {
         let missing_txs = self.segment_work.missing_transactions.clone();
         let missing_logs = self.segment_work.missing_logs.clone();
 
-        info!(
+        debug!(
             "Worker {} segment work: blocks={} ranges, txs={} ranges, logs={} ranges",
             self.worker_id,
             missing_blocks.len(),
@@ -281,7 +281,7 @@ impl SyncWorker {
             return Err(multi_err.into());
         }
 
-        info!("Worker {} completed sync successfully", self.worker_id);
+        debug!("Worker {} completed sync successfully", self.worker_id);
         Ok(())
     }
 
@@ -308,7 +308,7 @@ impl SyncWorker {
             })?;
 
         for range in &missing_blocks {
-            info!(
+            debug!(
                 "Worker {} syncing blocks {}-{}",
                 self.worker_id, range.start, range.end
             );
@@ -342,7 +342,7 @@ impl SyncWorker {
             })?;
 
         for range in &missing_txs {
-            info!(
+            debug!(
                 "Worker {} syncing transactions {}-{}",
                 self.worker_id, range.start, range.end
             );
@@ -364,7 +364,7 @@ impl SyncWorker {
 
         // Acquire 1 permit for this entire segment
         // This limits how many segments can be processing logs concurrently
-        info!(
+        debug!(
             "Worker {} acquiring log semaphore permit for segment (blocks {}-{})",
             self.worker_id, self.from_block, self.to_block
         );
@@ -384,7 +384,7 @@ impl SyncWorker {
                 )
             })?;
 
-        info!(
+        debug!(
             "Worker {} acquired permit, starting log sync for {} ranges",
             self.worker_id,
             missing_logs.len()
@@ -405,7 +405,7 @@ impl SyncWorker {
 
         // Process all ranges sequentially while holding all permits
         for range in &missing_logs {
-            info!(
+            debug!(
                 "Worker {} syncing logs {}-{}",
                 self.worker_id, range.start, range.end
             );
@@ -499,7 +499,7 @@ impl SyncWorker {
 
                     if resume_from > to_block {
                         // We actually completed, the error was after all data
-                        info!(
+                        debug!(
                             "Worker {} completed blocks {}-{} before stream error",
                             self.worker_id, from_block, to_block
                         );
@@ -664,7 +664,7 @@ impl SyncWorker {
             // This is valid when a block range legitimately has no blocks (shouldn't happen but handle gracefully).
             // Arrow Flight doesn't transmit 0-row RecordBatches, so receiving 0 batches
             // means the range was processed successfully but contains no data.
-            info!(
+            debug!(
                 "Worker {} received ZERO batches for blocks {}-{}. \
                 Range processed successfully with no blocks.",
                 self.worker_id, from_block, to_block
@@ -712,7 +712,7 @@ impl SyncWorker {
             .unwrap_or(false);
 
         let mut proof_writer = if generate_proofs {
-            info!(
+            debug!(
                 "Worker {} will generate merkle proofs for transactions",
                 self.worker_id
             );
@@ -797,7 +797,7 @@ impl SyncWorker {
 
                     if resume_from > to_block {
                         // We actually completed, the error was after all data
-                        info!(
+                        debug!(
                             "Worker {} completed transactions {}-{} before stream error",
                             self.worker_id, from_block, to_block
                         );
@@ -842,7 +842,7 @@ impl SyncWorker {
         // Create historical query using GenericQuery
         let query = GenericQuery::historical("transactions", from_block, to_block);
 
-        info!(
+        debug!(
             "Worker {} requesting transactions for blocks {}-{} (segment {})",
             self.worker_id,
             from_block,
@@ -916,7 +916,7 @@ impl SyncWorker {
                     }
 
                     // Log what we received from bridge
-                    info!(
+                    debug!(
                         "PHASER RECEIVED: Worker {} transactions batch {}, blocks {}-{} ({} rows)",
                         self.worker_id,
                         batches_processed + 1,
@@ -933,10 +933,11 @@ impl SyncWorker {
             if let Some(ref mut proof_w) = proof_writer {
                 if let Ok(proof_batch) = self.generate_proofs_for_batch(&batch) {
                     proof_w.write_batch(proof_batch).await.map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to write proof batch. Write error: {:?}. Error chain: {}",
-                            e,
-                            e.to_string()
+                        SyncError::disk_io_error(
+                            DataType::Transactions,
+                            from_block,
+                            to_block,
+                            format!("Failed to write proof batch: {e}"),
                         )
                     })?;
                 } else {
@@ -949,10 +950,11 @@ impl SyncWorker {
 
             // Write Arrow RecordBatch directly to parquet and get actual bytes written
             let batch_bytes = writer.write_batch(batch).await.map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to write transaction batch. Write error: {:?}. Error chain: {}",
-                    e,
-                    e.to_string()
+                SyncError::disk_io_error(
+                    DataType::Transactions,
+                    from_block,
+                    to_block,
+                    format!("Failed to write transaction batch: {e}"),
                 )
             })?;
 
@@ -962,7 +964,7 @@ impl SyncWorker {
             batches_processed += 1;
         }
 
-        info!(
+        debug!(
             "Worker {} received {} batches for transactions {}-{} (first_block: {:?}, last_block: {:?})",
             self.worker_id,
             batches_processed,
@@ -1023,7 +1025,7 @@ impl SyncWorker {
             // This is valid when a block range legitimately has no transactions.
             // Arrow Flight doesn't transmit 0-row RecordBatches, so receiving 0 batches
             // means the range was processed successfully but contains no data.
-            info!(
+            debug!(
                 "Worker {} received ZERO batches for transactions {}-{}. \
                 Range processed successfully with no transactions.",
                 self.worker_id, from_block, to_block
@@ -1174,7 +1176,7 @@ impl SyncWorker {
 
                     if resume_from > to_block {
                         // We actually completed, the error was after all data
-                        info!(
+                        debug!(
                             "Worker {} completed logs {}-{} before stream error",
                             self.worker_id, from_block, to_block
                         );
@@ -1287,10 +1289,11 @@ impl SyncWorker {
 
             // Write Arrow RecordBatch directly to parquet and get actual bytes written
             let batch_bytes = writer.write_batch(batch).await.map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to write log batch. Write error: {:?}. Error chain: {}",
-                    e,
-                    e.to_string()
+                SyncError::disk_io_error(
+                    DataType::Logs,
+                    from_block,
+                    to_block,
+                    format!("Failed to write log batch: {e}"),
                 )
             })?;
 
@@ -1340,7 +1343,7 @@ impl SyncWorker {
             // This is valid when a block range legitimately has no logs.
             // Arrow Flight doesn't transmit 0-row RecordBatches, so receiving 0 batches
             // means the range was processed successfully but contains no data.
-            info!(
+            debug!(
                 "Worker {} received ZERO batches for logs {}-{}. \
                 Range processed successfully with no logs.",
                 self.worker_id, from_block, to_block

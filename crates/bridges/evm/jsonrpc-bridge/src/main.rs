@@ -1,10 +1,12 @@
 use anyhow::Result;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
-use jsonrpc_bridge::JsonRpcFlightBridge;
+use jsonrpc_bridge::{gather_metrics, JsonRpcFlightBridge, MetricsLayer, SegmentConfig};
 use std::net::SocketAddr;
 use tonic::transport::Server;
 use tracing::{error, info};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use validators_evm::ExecutorType;
 
 #[derive(Parser, Debug)]
@@ -40,22 +42,54 @@ struct Args {
     #[arg(long, env = "EXECUTOR_THREADS")]
     threads: Option<usize>,
 
+    /// Segment size in blocks for parallel fetching (default: 10000)
+    #[arg(long, env = "SEGMENT_SIZE", default_value_t = 10_000)]
+    segment_size: u64,
+
+    /// Maximum number of segments to process in parallel (default: 4)
+    #[arg(long, env = "MAX_CONCURRENT_SEGMENTS", default_value_t = 4)]
+    max_concurrent_segments: usize,
+
+    /// Number of blocks to fetch in parallel within a segment (default: 50)
+    ///
+    /// For logs: One eth_getLogs call covers this many blocks.
+    /// For blocks/txs: This many blocks are fetched concurrently.
+    #[arg(long, env = "BLOCKS_PER_BATCH", default_value_t = 50)]
+    blocks_per_batch: usize,
+
+    /// Maximum concurrent RPC requests (default: same as blocks_per_batch)
+    ///
+    /// Limits how many eth_getBlockByNumber calls run simultaneously.
+    /// Reduce for rate-limited nodes (e.g., 10-20 for Infura/Alchemy).
+    #[arg(long, env = "MAX_CONCURRENT_REQUESTS")]
+    max_concurrent_requests: Option<usize>,
+
     /// Enable debug logging
     #[arg(long, short, env = "DEBUG")]
     debug: bool,
+
+    /// Prometheus metrics port (default: 9091)
+    #[arg(long, env = "METRICS_PORT", default_value_t = 9091)]
+    metrics_port: u16,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize logging
-    let log_level = if args.debug { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    // Initialize tracing with metrics layer
+    let log_level = if args.debug {
+        "jsonrpc_bridge=debug"
+    } else {
+        "jsonrpc_bridge=info"
+    };
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
         )
+        .with(tracing_subscriber::fmt::layer().with_ansi(false))
+        .with(MetricsLayer::new("jsonrpc-bridge"))
         .init();
 
     info!("Starting JSON-RPC Flight Bridge");
@@ -70,20 +104,81 @@ async fn main() -> Result<()> {
         info!("Validation enabled with executor: {:?}", config);
     }
 
-    // Create the bridge
-    let bridge =
-        JsonRpcFlightBridge::new(args.jsonrpc_url.clone(), args.chain_id, validator_config)
-            .await
-            .map_err(|e| {
-                error!("Failed to create JSON-RPC bridge: {}", e);
-                e
-            })?;
+    // Build segment config from CLI args
+    let segment_config = SegmentConfig {
+        segment_size: args.segment_size,
+        max_concurrent_segments: args.max_concurrent_segments,
+        blocks_per_batch: args.blocks_per_batch,
+        max_concurrent_requests: args
+            .max_concurrent_requests
+            .unwrap_or(args.blocks_per_batch),
+    };
+
+    info!("Segment configuration:");
+    info!("  Segment size: {} blocks", segment_config.segment_size);
+    info!(
+        "  Max concurrent segments: {}",
+        segment_config.max_concurrent_segments
+    );
+    info!("  Blocks per batch: {}", segment_config.blocks_per_batch);
+    info!(
+        "  Max concurrent RPC requests: {}",
+        segment_config.max_concurrent_requests
+    );
+
+    // Create the bridge with segment config
+    let bridge = JsonRpcFlightBridge::with_segment_config(
+        args.jsonrpc_url.clone(),
+        args.chain_id,
+        validator_config,
+        segment_config,
+    )
+    .await
+    .map_err(|e| {
+        error!("Failed to create JSON-RPC bridge: {}", e);
+        e
+    })?;
 
     let bridge_info = bridge.bridge_info();
     info!(
         "Bridge initialized: {}",
         serde_json::to_string_pretty(&bridge_info)?
     );
+
+    // Start Prometheus metrics server
+    let metrics_port = args.metrics_port;
+    tokio::spawn(async move {
+        use axum::{response::IntoResponse, routing::get, Router};
+
+        async fn metrics_handler() -> impl IntoResponse {
+            match gather_metrics() {
+                Ok(metrics) => (
+                    axum::http::StatusCode::OK,
+                    [("content-type", "text/plain; version=0.0.4")],
+                    metrics,
+                ),
+                Err(e) => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    [("content-type", "text/plain")],
+                    format!("Error gathering metrics: {e}"),
+                ),
+            }
+        }
+
+        let app = Router::new().route("/metrics", get(metrics_handler));
+
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{metrics_port}"))
+            .await
+            .unwrap();
+        info!(
+            "Prometheus metrics server listening on {}",
+            listener.local_addr().unwrap()
+        );
+
+        if let Err(e) = axum::serve(listener, app).await {
+            error!("Metrics server error: {}", e);
+        }
+    });
 
     // Create the Flight service
     let flight_service = FlightServiceServer::new(bridge);

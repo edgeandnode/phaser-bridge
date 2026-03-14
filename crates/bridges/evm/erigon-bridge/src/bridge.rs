@@ -9,6 +9,7 @@ use phaser_server::{
     BridgeCapabilities, BridgeInfo, DiscoveryCapabilities, FlightBridge, GenericQuery,
     GenericQueryMode, StreamType, TableDescriptor,
 };
+use prost::Message as ProstMessage;
 use std::pin::Pin;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, error, info};
@@ -624,7 +625,10 @@ impl ErigonFlightBridge {
                         match batch_result {
                             Ok(block_batch) => {
                                 batch_count += 1;
-                                debug!("Received batch {} from BlockDataBackend with {} blocks", batch_count, block_batch.blocks.len());
+                                // Track gRPC message size for capacity planning
+                                let msg_size = block_batch.encoded_len();
+                                metrics.grpc_message_size("blocks", msg_size);
+                                debug!("Received batch {} from BlockDataBackend with {} blocks ({} bytes)", batch_count, block_batch.blocks.len(), msg_size);
                                 match BlockDataConverter::blocks_to_arrow(block_batch) {
                                     Ok(record_batch) => {
                                         debug!("Converted block batch {} with {} rows", batch_count, record_batch.num_rows());

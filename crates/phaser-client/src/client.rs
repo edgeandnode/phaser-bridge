@@ -86,9 +86,9 @@ impl FlightBridgeClient {
             Channel::from_shared(uri)?.connect().await?
         };
 
-        // Configure message size limits (256MB global max for large batches)
+        // Configure message size limits (512MB global max for large batches)
         // This allows the client to receive large messages from the bridge
-        const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
+        const MAX_MESSAGE_SIZE: usize = 512 * 1024 * 1024;
 
         // Client accepts compression if server sends it
         // Compression is controlled by the bridge's --compression flag
@@ -278,10 +278,11 @@ impl FlightBridgeClient {
 
     /// Check if the bridge is healthy
     pub async fn health_check(&mut self) -> Result<bool> {
-        // Implement a simple health check by trying to get flight info
-        let descriptor = BlockchainDescriptor::historical(phaser_types::StreamType::Blocks, 0, 0);
+        // Implement a simple health check by trying to get flight info for blocks table
+        let query = GenericQuery::historical("blocks", 0, 0);
+        let flight_desc = query.to_flight_descriptor();
 
-        match self.get_flight_info(&descriptor).await {
+        match self.client.get_flight_info(flight_desc).await {
             Ok(_) => Ok(true),
             Err(e) => {
                 error!("Health check failed: {}", e);
