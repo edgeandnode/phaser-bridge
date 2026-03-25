@@ -6,10 +6,10 @@
 //! # Example
 //!
 //! ```ignore
-//! use phaser_client::{FlightBridgeClient, BridgeError, GenericQuery};
+//! use phaser_client::{PhaserClient, BridgeError, GenericQuery};
 //!
 //! async fn example() -> Result<(), BridgeError> {
-//!     let mut client = FlightBridgeClient::connect("http://localhost:50051".into()).await?;
+//!     let mut client = PhaserClient::connect("http://localhost:50051".into()).await?;
 //!
 //!     // Discover available tables
 //!     let capabilities = client.discover().await?;
@@ -26,7 +26,7 @@
 mod client;
 mod error;
 
-pub use client::FlightBridgeClient;
+pub use client::PhaserClient;
 pub use error::BridgeError;
 
 // Re-export core types for convenience

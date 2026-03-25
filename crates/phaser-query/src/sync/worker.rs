@@ -6,7 +6,7 @@ use arrow::array as arrow_array;
 use evm_common::proof::{generate_transaction_proof, MerkleProofRecord};
 use evm_common::transaction::TransactionRecord;
 use futures::StreamExt;
-use phaser_client::{FlightBridgeClient, GenericQuery, ValidationStage};
+use phaser_client::{GenericQuery, PhaserClient, ValidationStage};
 use phaser_metrics::SegmentMetrics;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -295,7 +295,7 @@ impl SyncWorker {
         }
 
         // Connect to bridge
-        let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
+        let mut client = PhaserClient::connect(self.bridge_endpoint.clone())
             .await
             .map_err(|e| {
                 SyncError::from_anyhow_with_context(
@@ -329,7 +329,7 @@ impl SyncWorker {
         }
 
         // Connect to bridge
-        let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
+        let mut client = PhaserClient::connect(self.bridge_endpoint.clone())
             .await
             .map_err(|e| {
                 SyncError::from_anyhow_with_context(
@@ -391,7 +391,7 @@ impl SyncWorker {
         );
 
         // Connect to bridge
-        let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
+        let mut client = PhaserClient::connect(self.bridge_endpoint.clone())
             .await
             .map_err(|e| {
                 SyncError::from_anyhow_with_context(
@@ -418,7 +418,7 @@ impl SyncWorker {
 
     async fn sync_blocks_range(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
     ) -> Result<(), SyncError> {
@@ -534,7 +534,7 @@ impl SyncWorker {
 
     async fn try_sync_blocks_stream(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
         writer: &mut ParquetWriter,
@@ -677,7 +677,7 @@ impl SyncWorker {
 
     async fn sync_transactions_range(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
     ) -> Result<(), SyncError> {
@@ -832,7 +832,7 @@ impl SyncWorker {
 
     async fn try_sync_transactions_stream(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
         writer: &mut ParquetWriter,
@@ -1095,7 +1095,7 @@ impl SyncWorker {
 
     async fn sync_logs_range(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
     ) -> Result<(), SyncError> {
@@ -1211,7 +1211,7 @@ impl SyncWorker {
 
     async fn try_sync_logs_stream(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
         writer: &mut ParquetWriter,

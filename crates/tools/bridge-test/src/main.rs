@@ -5,7 +5,7 @@
 
 use clap::{Parser, Subcommand};
 use futures::StreamExt;
-use phaser_client::{FlightBridgeClient, GenericQuery};
+use phaser_client::{GenericQuery, PhaserClient};
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -131,7 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn discover_bridge(endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
     info!("Discovering bridge at: {}", endpoint);
 
-    let mut client = FlightBridgeClient::connect(endpoint.to_string()).await?;
+    let mut client = PhaserClient::connect(endpoint.to_string()).await?;
     let capabilities = client.discover().await?;
 
     println!("Bridge Discovery Results:");
@@ -168,8 +168,8 @@ async fn compare_bridges(
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("Comparing bridges: {} vs {}", bridge1, bridge2);
 
-    let mut client1 = FlightBridgeClient::connect(bridge1.to_string()).await?;
-    let mut client2 = FlightBridgeClient::connect(bridge2.to_string()).await?;
+    let mut client1 = PhaserClient::connect(bridge1.to_string()).await?;
+    let mut client2 = PhaserClient::connect(bridge2.to_string()).await?;
 
     let caps1 = client1.discover().await?;
     let caps2 = client2.discover().await?;
@@ -265,7 +265,7 @@ async fn fetch_data(
         table, endpoint, start, end
     );
 
-    let mut client = FlightBridgeClient::connect(endpoint.to_string()).await?;
+    let mut client = PhaserClient::connect(endpoint.to_string()).await?;
 
     let query = GenericQuery::historical(table, start, end);
 
@@ -315,8 +315,8 @@ async fn compare_data(
         table, start, end
     );
 
-    let mut client1 = FlightBridgeClient::connect(bridge1.to_string()).await?;
-    let mut client2 = FlightBridgeClient::connect(bridge2.to_string()).await?;
+    let mut client1 = PhaserClient::connect(bridge1.to_string()).await?;
+    let mut client2 = PhaserClient::connect(bridge2.to_string()).await?;
 
     let query = GenericQuery::historical(table, start, end);
 

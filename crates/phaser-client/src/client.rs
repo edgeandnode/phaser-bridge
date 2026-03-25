@@ -18,12 +18,12 @@ use crate::error::BridgeError;
 pub type Result<T> = std::result::Result<T, BridgeError>;
 
 /// Client for connecting to blockchain data bridges
-pub struct FlightBridgeClient {
+pub struct PhaserClient {
     client: FlightClient,
     info: Option<BridgeInfo>,
 }
 
-impl FlightBridgeClient {
+impl PhaserClient {
     /// Connect to a bridge endpoint (TCP or Unix domain socket)
     pub async fn connect(endpoint: String) -> Result<Self> {
         info!("Connecting to bridge at {}", endpoint);

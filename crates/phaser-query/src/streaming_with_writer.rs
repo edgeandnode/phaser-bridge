@@ -4,7 +4,7 @@ use anyhow::Result;
 use arrow::array::UInt64Array;
 use arrow::record_batch::RecordBatch;
 use futures::StreamExt;
-use phaser_client::{FlightBridgeClient, GenericQuery, StreamType};
+use phaser_client::{GenericQuery, PhaserClient, StreamType};
 use rocksdb::DB;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use tracing::{error, info};
 
 /// Enhanced streaming service with parquet writing capabilities
 pub struct StreamingServiceWithWriter {
-    bridges: Vec<FlightBridgeClient>,
+    bridges: Vec<PhaserClient>,
     data_dir: PathBuf,
     max_file_size_mb: u64,
     segment_size: u64,
@@ -37,7 +37,7 @@ impl StreamingServiceWithWriter {
 
         for endpoint in bridge_endpoints {
             info!("Connecting to bridge at {}", endpoint);
-            let client = FlightBridgeClient::connect(endpoint).await?;
+            let client = PhaserClient::connect(endpoint).await?;
             bridges.push(client);
         }
 
