@@ -200,13 +200,13 @@ async fn compare_bridges(
         let t1 = caps1.tables.iter().find(|t| &t.name == *table_name);
         let t2 = caps2.tables.iter().find(|t| &t.name == *table_name);
 
-        if let (Some(t1), Some(t2)) = (t1, t2) {
-            if t1.position_column != t2.position_column {
-                issues.push(format!(
-                    "Table '{}' position column mismatch: {} vs {}",
-                    table_name, t1.position_column, t2.position_column
-                ));
-            }
+        if let (Some(t1), Some(t2)) = (t1, t2)
+            && t1.position_column != t2.position_column
+        {
+            issues.push(format!(
+                "Table '{}' position column mismatch: {} vs {}",
+                table_name, t1.position_column, t2.position_column
+            ));
         }
     }
 
@@ -377,15 +377,15 @@ async fn compare_data(
             let f1 = schema1.field_with_name(field_name).ok();
             let f2 = schema2.field_with_name(field_name).ok();
 
-            if let (Some(f1), Some(f2)) = (f1, f2) {
-                if f1.data_type() != f2.data_type() {
-                    issues.push(format!(
-                        "Field '{}' type mismatch: {:?} vs {:?}",
-                        field_name,
-                        f1.data_type(),
-                        f2.data_type()
-                    ));
-                }
+            if let (Some(f1), Some(f2)) = (f1, f2)
+                && f1.data_type() != f2.data_type()
+            {
+                issues.push(format!(
+                    "Field '{}' type mismatch: {:?} vs {:?}",
+                    field_name,
+                    f1.data_type(),
+                    f2.data_type()
+                ));
             }
         }
     }
