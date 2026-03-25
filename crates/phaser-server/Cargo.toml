@@ -1,0 +1,31 @@
+[package]
+name = "phaser-server"
+version = "0.1.0"
+edition = "2021"
+description = "Flight server implementation for phaser bridges"
+
+[dependencies]
+# Core types
+phaser-types = { path = "../phaser-types" }
+
+# Arrow and Flight (includes server features)
+arrow = { workspace = true }
+arrow-flight = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+
+# Async and gRPC
+tokio = { workspace = true }
+tonic = { workspace = true }
+async-trait = { workspace = true }
+futures = "0.3"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }

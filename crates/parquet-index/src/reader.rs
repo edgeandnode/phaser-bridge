@@ -4,6 +4,7 @@
 use crate::{FileRegistry, ReaderError};
 use arrow::record_batch::RecordBatch;
 use fusio::disk::LocalFs;
+use fusio::executor::NoopExecutor;
 use fusio::path::Path;
 use fusio::DynFs;
 use fusio_parquet::reader::AsyncReader;
@@ -56,8 +57,8 @@ impl<FR: FileRegistry> PageReader<FR> {
         // Get file size for AsyncReader
         let content_length = file.size().await?;
 
-        // Create async parquet reader
-        let async_reader = AsyncReader::new(Box::new(file), content_length).await?;
+        // Create async parquet reader (NoopExecutor for tokio runtime)
+        let async_reader = AsyncReader::new(Box::new(file), content_length, NoopExecutor).await?;
 
         // Build the stream reader for the specific row group
         let builder = ParquetRecordBatchStreamBuilder::new(async_reader).await?;

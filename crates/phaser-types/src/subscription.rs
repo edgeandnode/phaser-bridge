@@ -1,9 +1,6 @@
-use arrow_array::RecordBatch;
-use futures::Stream;
+//! Subscription types for streaming data from bridges
+
 use serde::{Deserialize, Serialize};
-use std::pin::Pin;
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 
 /// How to handle backpressure when consumer is slow
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,13 +42,18 @@ pub struct FilterSpec {
 }
 
 /// Handle to an active subscription
+///
+/// Note: This type contains a Stream which is not Send+Sync by default.
+/// It's defined here but typically constructed in the client crate.
 pub struct SubscriptionHandle {
     /// Unique subscription ID
     pub id: String,
-    /// Stream of record batches
-    pub stream: Pin<Box<dyn Stream<Item = Result<RecordBatch, anyhow::Error>> + Send>>,
+    /// Stream of record batches (boxed to avoid generic complexity)
+    pub stream: std::pin::Pin<
+        Box<dyn futures::Stream<Item = Result<arrow_array::RecordBatch, anyhow::Error>> + Send>,
+    >,
     /// Last delivered block number (for resumption)
-    pub checkpoint: Arc<AtomicU64>,
+    pub checkpoint: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Information about an active subscription

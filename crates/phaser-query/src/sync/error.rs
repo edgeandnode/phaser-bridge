@@ -1,5 +1,65 @@
 use std::fmt;
 
+/// Categorize an error message into an ErrorCategory
+/// This is the single source of truth for error categorization based on message content
+fn categorize_error_message(err_lower: &str) -> ErrorCategory {
+    // Connection errors
+    if err_lower.contains("connection") || err_lower.contains("connect") {
+        return ErrorCategory::Connection;
+    }
+
+    // Timeout errors
+    if err_lower.contains("timeout") || err_lower.contains("timed out") {
+        return ErrorCategory::Timeout;
+    }
+
+    // Cancelled errors
+    if err_lower.contains("cancelled") || err_lower.contains("canceled") {
+        return ErrorCategory::Cancelled;
+    }
+
+    // Block/data not found - non-transient for historical sync
+    if err_lower.contains("header not found") || err_lower.contains("block not found") {
+        return ErrorCategory::NoData;
+    }
+
+    // No data / empty responses
+    if err_lower.contains("no data") || err_lower.contains("empty") {
+        return ErrorCategory::NoData;
+    }
+
+    // Stuck worker errors
+    if err_lower.contains("failed to make progress") {
+        return ErrorCategory::StuckWorker;
+    }
+
+    // Protocol errors (bridge returned zero batches, etc.)
+    if err_lower.contains("zero batches") || err_lower.contains("protocol error") {
+        return ErrorCategory::ProtocolError;
+    }
+
+    // Disk I/O errors - check BEFORE validation since some validation errors might mention "file"
+    // Include parquet/arrow write errors which are typically disk or serialization issues
+    if err_lower.contains("io error")
+        || err_lower.contains("disk")
+        || err_lower.contains("parquet")
+        || err_lower.contains("arrow")
+        || err_lower.contains("write error")
+        || err_lower.contains("failed to write")
+        || (err_lower.contains("file") && !err_lower.contains("validation"))
+    {
+        return ErrorCategory::DiskIo;
+    }
+
+    // Validation errors
+    if err_lower.contains("validation") || err_lower.contains("invalid") {
+        return ErrorCategory::Validation;
+    }
+
+    // Unknown - catch-all for unrecognized errors
+    ErrorCategory::Unknown
+}
+
 /// Type of data being synced when error occurred
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
@@ -224,22 +284,7 @@ impl SyncError {
         let err_lower = message.to_lowercase();
 
         // Categorize based on error message
-        let category = if err_lower.contains("connection") || err_lower.contains("connect") {
-            ErrorCategory::Connection
-        } else if err_lower.contains("timeout") || err_lower.contains("timed out") {
-            ErrorCategory::Timeout
-        } else if err_lower.contains("header not found") || err_lower.contains("block not found") {
-            // Block doesn't exist - likely beyond chain tip, not a transient error for historical sync
-            ErrorCategory::NoData
-        } else if err_lower.contains("validation") || err_lower.contains("invalid") {
-            ErrorCategory::Validation
-        } else if err_lower.contains("io error") || err_lower.contains("file") {
-            ErrorCategory::DiskIo
-        } else if err_lower.contains("cancelled") {
-            ErrorCategory::Cancelled
-        } else {
-            ErrorCategory::Unknown
-        };
+        let category = categorize_error_message(&err_lower);
 
         Self {
             data_type,
@@ -266,22 +311,7 @@ impl SyncError {
         let err_lower = err_str.to_lowercase();
 
         // Categorize based on error message
-        let category = if err_lower.contains("connection") || err_lower.contains("connect") {
-            ErrorCategory::Connection
-        } else if err_lower.contains("timeout") || err_lower.contains("timed out") {
-            ErrorCategory::Timeout
-        } else if err_lower.contains("header not found") || err_lower.contains("block not found") {
-            // Block doesn't exist - likely beyond chain tip, not a transient error for historical sync
-            ErrorCategory::NoData
-        } else if err_lower.contains("validation") || err_lower.contains("invalid") {
-            ErrorCategory::Validation
-        } else if err_lower.contains("io error") || err_lower.contains("file") {
-            ErrorCategory::DiskIo
-        } else if err_lower.contains("cancelled") {
-            ErrorCategory::Cancelled
-        } else {
-            ErrorCategory::Unknown
-        };
+        let category = categorize_error_message(&err_lower);
 
         let context_str = context.into();
         let message = format!("{context_str}: {err_str}");
@@ -308,22 +338,7 @@ impl SyncError {
         let err_lower = err_str.to_lowercase();
 
         // Categorize based on error message
-        let category = if err_lower.contains("connection") || err_lower.contains("connect") {
-            ErrorCategory::Connection
-        } else if err_lower.contains("timeout") || err_lower.contains("timed out") {
-            ErrorCategory::Timeout
-        } else if err_lower.contains("header not found") || err_lower.contains("block not found") {
-            // Block doesn't exist - likely beyond chain tip, not a transient error for historical sync
-            ErrorCategory::NoData
-        } else if err_lower.contains("validation") || err_lower.contains("invalid") {
-            ErrorCategory::Validation
-        } else if err_lower.contains("io error") || err_lower.contains("file") {
-            ErrorCategory::DiskIo
-        } else if err_lower.contains("cancelled") {
-            ErrorCategory::Cancelled
-        } else {
-            ErrorCategory::Unknown
-        };
+        let category = categorize_error_message(&err_lower);
 
         let context_str = context.into();
         let message = format!("{context_str}: {err_str}");
@@ -356,26 +371,8 @@ impl From<anyhow::Error> for SyncError {
             DataType::Unknown
         };
 
-        // Categorize error
-        let category = if err_lower.contains("connection") || err_lower.contains("connect") {
-            ErrorCategory::Connection
-        } else if err_lower.contains("timeout") || err_lower.contains("timed out") {
-            ErrorCategory::Timeout
-        } else if err_lower.contains("no data") || err_lower.contains("empty") {
-            ErrorCategory::NoData
-        } else if err_lower.contains("failed to make progress") {
-            ErrorCategory::StuckWorker
-        } else if err_lower.contains("validation") || err_lower.contains("invalid") {
-            ErrorCategory::Validation
-        } else if err_lower.contains("io error") || err_lower.contains("file") {
-            ErrorCategory::DiskIo
-        } else if err_lower.contains("cancelled") {
-            ErrorCategory::Cancelled
-        } else if err_lower.contains("zero batches") || err_lower.contains("protocol error") {
-            ErrorCategory::ProtocolError
-        } else {
-            ErrorCategory::Unknown
-        };
+        // Categorize error using common function
+        let category = categorize_error_message(&err_lower);
 
         Self {
             data_type,

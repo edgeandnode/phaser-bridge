@@ -1,0 +1,19 @@
+[package]
+name = "bridge-test"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "bridge-test"
+path = "src/main.rs"
+
+[dependencies]
+phaser-client = { path = "../../phaser-client" }
+phaser-types = { path = "../../phaser-types" }
+tokio = { workspace = true }
+clap = { version = "4.0", features = ["derive"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+arrow = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }

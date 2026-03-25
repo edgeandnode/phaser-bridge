@@ -35,7 +35,9 @@ impl JsonRpcConverter {
         Ok(rpc_conversions::convert_rpc_transactions(block)?)
     }
 
-    /// Convert logs to RecordBatch
+    /// Convert logs to RecordBatch (single block version)
+    ///
+    /// For logs from a single block where you already have the block context.
     pub fn convert_logs(
         logs: &[Log],
         block_num: u64,
@@ -45,5 +47,14 @@ impl JsonRpcConverter {
         Ok(rpc_conversions::convert_rpc_logs(
             logs, block_num, block_hash, timestamp,
         )?)
+    }
+
+    /// Convert logs to RecordBatch (multi-block version)
+    ///
+    /// For logs fetched via eth_getLogs with a block range. Extracts block_num,
+    /// block_hash, and timestamp from each log. More efficient than per-block
+    /// fetching for historical sync.
+    pub fn convert_logs_multi_block(logs: &[Log]) -> Result<RecordBatch> {
+        Ok(rpc_conversions::convert_rpc_logs_multi_block(logs)?)
     }
 }

@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Local dependencies
-phaser-bridge = { workspace = true }
+phaser-server = { workspace = true }
 phaser-metrics = { workspace = true }
 evm-common = { workspace = true }
 validators-evm = { workspace = true }
@@ -24,13 +24,14 @@ typed-arrow = { workspace = true }
 # Arrow and Flight dependencies
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
-arrow-array = "56.1"
-arrow-schema = "56.1"
-arrow-ipc = "56.1"
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-ipc = { workspace = true }
 
 # Async and gRPC
 tokio = { workspace = true }
 tonic = { workspace = true }
+tonic-prost = "0.14"
 async-trait = { workspace = true }
 futures = "0.3"
 tokio-stream = "0.1"
@@ -71,4 +72,4 @@ alloy-primitives = { workspace = true }
 derive_more = { version = "1.0", features = ["display"] }
 
 [build-dependencies]
-tonic-build = "0.13"
+tonic-prost-build = "0.14"

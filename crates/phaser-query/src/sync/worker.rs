@@ -6,8 +6,7 @@ use arrow::array as arrow_array;
 use evm_common::proof::{generate_transaction_proof, MerkleProofRecord};
 use evm_common::transaction::TransactionRecord;
 use futures::StreamExt;
-use phaser_bridge::client::FlightBridgeClient;
-use phaser_bridge::descriptors::{BlockchainDescriptor, StreamType, ValidationStage};
+use phaser_client::{GenericQuery, PhaserClient, ValidationStage};
 use phaser_metrics::SegmentMetrics;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -88,7 +87,7 @@ pub struct SyncWorker {
     _batch_size: u32,
     parquet_config: Option<ParquetConfig>,
     progress_tracker: Option<ProgressTracker>,
-    validation_stage: ValidationStage,
+    _validation_stage: phaser_client::ValidationStage,
     segment_work: crate::sync::data_scanner::SegmentWork, // Pre-computed missing ranges
     current_progress: Arc<RwLock<WorkerProgress>>,        // Real-time progress state
     logs_semaphore: Arc<tokio::sync::Semaphore>,
@@ -147,7 +146,7 @@ impl SyncWorker {
             _batch_size: config.batch_size,
             parquet_config: config.parquet_config,
             progress_tracker: None,
-            validation_stage: config.validation_stage,
+            _validation_stage: config.validation_stage,
             segment_work,
             current_progress,
             logs_semaphore: config.logs_semaphore,
@@ -226,7 +225,7 @@ impl SyncWorker {
     }
 
     pub async fn run(&mut self) -> Result<(), SyncError> {
-        info!(
+        debug!(
             "Worker {} starting sync of blocks {}-{} from {}",
             self.worker_id, self.from_block, self.to_block, self.bridge_endpoint
         );
@@ -236,7 +235,7 @@ impl SyncWorker {
         let missing_txs = self.segment_work.missing_transactions.clone();
         let missing_logs = self.segment_work.missing_logs.clone();
 
-        info!(
+        debug!(
             "Worker {} segment work: blocks={} ranges, txs={} ranges, logs={} ranges",
             self.worker_id,
             missing_blocks.len(),
@@ -282,7 +281,7 @@ impl SyncWorker {
             return Err(multi_err.into());
         }
 
-        info!("Worker {} completed sync successfully", self.worker_id);
+        debug!("Worker {} completed sync successfully", self.worker_id);
         Ok(())
     }
 
@@ -296,7 +295,7 @@ impl SyncWorker {
         }
 
         // Connect to bridge
-        let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
+        let mut client = PhaserClient::connect(self.bridge_endpoint.clone())
             .await
             .map_err(|e| {
                 SyncError::from_anyhow_with_context(
@@ -304,12 +303,12 @@ impl SyncWorker {
                     self.from_block,
                     self.to_block,
                     "Failed to connect to bridge",
-                    e,
+                    e.into(),
                 )
             })?;
 
         for range in &missing_blocks {
-            info!(
+            debug!(
                 "Worker {} syncing blocks {}-{}",
                 self.worker_id, range.start, range.end
             );
@@ -330,7 +329,7 @@ impl SyncWorker {
         }
 
         // Connect to bridge
-        let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
+        let mut client = PhaserClient::connect(self.bridge_endpoint.clone())
             .await
             .map_err(|e| {
                 SyncError::from_anyhow_with_context(
@@ -338,12 +337,12 @@ impl SyncWorker {
                     self.from_block,
                     self.to_block,
                     "Failed to connect to bridge",
-                    e,
+                    e.into(),
                 )
             })?;
 
         for range in &missing_txs {
-            info!(
+            debug!(
                 "Worker {} syncing transactions {}-{}",
                 self.worker_id, range.start, range.end
             );
@@ -365,7 +364,7 @@ impl SyncWorker {
 
         // Acquire 1 permit for this entire segment
         // This limits how many segments can be processing logs concurrently
-        info!(
+        debug!(
             "Worker {} acquiring log semaphore permit for segment (blocks {}-{})",
             self.worker_id, self.from_block, self.to_block
         );
@@ -385,14 +384,14 @@ impl SyncWorker {
                 )
             })?;
 
-        info!(
+        debug!(
             "Worker {} acquired permit, starting log sync for {} ranges",
             self.worker_id,
             missing_logs.len()
         );
 
         // Connect to bridge
-        let mut client = FlightBridgeClient::connect(self.bridge_endpoint.clone())
+        let mut client = PhaserClient::connect(self.bridge_endpoint.clone())
             .await
             .map_err(|e| {
                 SyncError::from_anyhow_with_context(
@@ -400,13 +399,13 @@ impl SyncWorker {
                     self.from_block,
                     self.to_block,
                     "Failed to connect to bridge",
-                    e,
+                    e.into(),
                 )
             })?;
 
         // Process all ranges sequentially while holding all permits
         for range in &missing_logs {
-            info!(
+            debug!(
                 "Worker {} syncing logs {}-{}",
                 self.worker_id, range.start, range.end
             );
@@ -419,7 +418,7 @@ impl SyncWorker {
 
     async fn sync_blocks_range(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
     ) -> Result<(), SyncError> {
@@ -500,7 +499,7 @@ impl SyncWorker {
 
                     if resume_from > to_block {
                         // We actually completed, the error was after all data
-                        info!(
+                        debug!(
                             "Worker {} completed blocks {}-{} before stream error",
                             self.worker_id, from_block, to_block
                         );
@@ -535,35 +534,25 @@ impl SyncWorker {
 
     async fn try_sync_blocks_stream(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
         writer: &mut ParquetWriter,
         original_from: u64,
     ) -> Result<(), SyncError> {
-        // Create historical query descriptor with large message preferences
-        use phaser_bridge::descriptors::StreamPreferences;
-        let preferences = StreamPreferences {
-            max_message_bytes: 32 * 1024 * 1024, // 32MB for historical sync
-            compression: phaser_bridge::descriptors::Compression::None,
-            batch_size_hint: 100,
-        };
-        let descriptor = BlockchainDescriptor::historical(StreamType::Blocks, from_block, to_block)
-            .with_preferences(preferences);
+        // Create historical query using GenericQuery
+        let query = GenericQuery::historical("blocks", from_block, to_block);
 
         // Subscribe to the block stream with metadata (returns RecordBatch + responsibility range)
-        let stream = client
-            .subscribe_with_metadata(&descriptor)
-            .await
-            .map_err(|e| {
-                SyncError::from_anyhow_with_context(
-                    DataType::Blocks,
-                    from_block,
-                    to_block,
-                    "Failed to subscribe to block stream",
-                    e,
-                )
-            })?;
+        let stream = client.query_with_metadata(query).await.map_err(|e| {
+            SyncError::from_anyhow_with_context(
+                DataType::Blocks,
+                from_block,
+                to_block,
+                "Failed to subscribe to block stream",
+                e.into(),
+            )
+        })?;
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
@@ -675,7 +664,7 @@ impl SyncWorker {
             // This is valid when a block range legitimately has no blocks (shouldn't happen but handle gracefully).
             // Arrow Flight doesn't transmit 0-row RecordBatches, so receiving 0 batches
             // means the range was processed successfully but contains no data.
-            info!(
+            debug!(
                 "Worker {} received ZERO batches for blocks {}-{}. \
                 Range processed successfully with no blocks.",
                 self.worker_id, from_block, to_block
@@ -688,7 +677,7 @@ impl SyncWorker {
 
     async fn sync_transactions_range(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
     ) -> Result<(), SyncError> {
@@ -723,7 +712,7 @@ impl SyncWorker {
             .unwrap_or(false);
 
         let mut proof_writer = if generate_proofs {
-            info!(
+            debug!(
                 "Worker {} will generate merkle proofs for transactions",
                 self.worker_id
             );
@@ -808,7 +797,7 @@ impl SyncWorker {
 
                     if resume_from > to_block {
                         // We actually completed, the error was after all data
-                        info!(
+                        debug!(
                             "Worker {} completed transactions {}-{} before stream error",
                             self.worker_id, from_block, to_block
                         );
@@ -843,37 +832,27 @@ impl SyncWorker {
 
     async fn try_sync_transactions_stream(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
         writer: &mut ParquetWriter,
         proof_writer: &mut Option<ParquetWriter>,
         _original_from: u64,
     ) -> Result<(), SyncError> {
-        // Create historical query descriptor for transactions with configured validation stage
-        use phaser_bridge::descriptors::StreamPreferences;
-        let preferences = StreamPreferences {
-            max_message_bytes: 32 * 1024 * 1024, // 32MB for historical sync
-            compression: phaser_bridge::descriptors::Compression::None,
-            batch_size_hint: 100,
-        };
-        let descriptor =
-            BlockchainDescriptor::historical(StreamType::Transactions, from_block, to_block)
-                .with_validation(self.validation_stage)
-                .with_preferences(preferences);
+        // Create historical query using GenericQuery
+        let query = GenericQuery::historical("transactions", from_block, to_block);
 
-        info!(
-            "Worker {} requesting transactions for blocks {}-{} (segment {}, validation: {:?})",
+        debug!(
+            "Worker {} requesting transactions for blocks {}-{} (segment {})",
             self.worker_id,
             from_block,
             to_block,
             from_block / 500000,
-            self.validation_stage
         );
 
         // Subscribe to the transaction stream with metadata (returns RecordBatch + responsibility range)
         let stream = client
-            .subscribe_with_metadata(&descriptor)
+            .query_with_metadata(query)
             .await
             .context("Failed to subscribe to transaction stream")?;
         let mut stream = Box::pin(stream);
@@ -937,7 +916,7 @@ impl SyncWorker {
                     }
 
                     // Log what we received from bridge
-                    info!(
+                    debug!(
                         "PHASER RECEIVED: Worker {} transactions batch {}, blocks {}-{} ({} rows)",
                         self.worker_id,
                         batches_processed + 1,
@@ -954,10 +933,11 @@ impl SyncWorker {
             if let Some(ref mut proof_w) = proof_writer {
                 if let Ok(proof_batch) = self.generate_proofs_for_batch(&batch) {
                     proof_w.write_batch(proof_batch).await.map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to write proof batch. Write error: {:?}. Error chain: {}",
-                            e,
-                            e.to_string()
+                        SyncError::disk_io_error(
+                            DataType::Transactions,
+                            from_block,
+                            to_block,
+                            format!("Failed to write proof batch: {e}"),
                         )
                     })?;
                 } else {
@@ -970,10 +950,11 @@ impl SyncWorker {
 
             // Write Arrow RecordBatch directly to parquet and get actual bytes written
             let batch_bytes = writer.write_batch(batch).await.map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to write transaction batch. Write error: {:?}. Error chain: {}",
-                    e,
-                    e.to_string()
+                SyncError::disk_io_error(
+                    DataType::Transactions,
+                    from_block,
+                    to_block,
+                    format!("Failed to write transaction batch: {e}"),
                 )
             })?;
 
@@ -983,7 +964,7 @@ impl SyncWorker {
             batches_processed += 1;
         }
 
-        info!(
+        debug!(
             "Worker {} received {} batches for transactions {}-{} (first_block: {:?}, last_block: {:?})",
             self.worker_id,
             batches_processed,
@@ -1044,7 +1025,7 @@ impl SyncWorker {
             // This is valid when a block range legitimately has no transactions.
             // Arrow Flight doesn't transmit 0-row RecordBatches, so receiving 0 batches
             // means the range was processed successfully but contains no data.
-            info!(
+            debug!(
                 "Worker {} received ZERO batches for transactions {}-{}. \
                 Range processed successfully with no transactions.",
                 self.worker_id, from_block, to_block
@@ -1114,7 +1095,7 @@ impl SyncWorker {
 
     async fn sync_logs_range(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
     ) -> Result<(), SyncError> {
@@ -1195,7 +1176,7 @@ impl SyncWorker {
 
                     if resume_from > to_block {
                         // We actually completed, the error was after all data
-                        info!(
+                        debug!(
                             "Worker {} completed logs {}-{} before stream error",
                             self.worker_id, from_block, to_block
                         );
@@ -1230,37 +1211,27 @@ impl SyncWorker {
 
     async fn try_sync_logs_stream(
         &self,
-        client: &mut FlightBridgeClient,
+        client: &mut PhaserClient,
         from_block: u64,
         to_block: u64,
         writer: &mut ParquetWriter,
         _original_from: u64,
     ) -> Result<(), SyncError> {
-        // Create historical query descriptor for logs with configured validation stage
-        use phaser_bridge::descriptors::StreamPreferences;
-        let preferences = StreamPreferences {
-            max_message_bytes: 32 * 1024 * 1024, // 32MB for historical sync
-            compression: phaser_bridge::descriptors::Compression::None,
-            batch_size_hint: 100,
-        };
-        let descriptor = BlockchainDescriptor::historical(StreamType::Logs, from_block, to_block)
-            .with_validation(self.validation_stage)
-            .with_preferences(preferences)
-            .with_traces(true);
+        // Create historical query using GenericQuery
+        // Note: enable_traces can be passed as a filter if needed
+        let query = GenericQuery::historical("logs", from_block, to_block)
+            .with_filter("enable_traces", serde_json::json!(true));
 
         // Subscribe to the log stream with metadata (returns RecordBatch + responsibility range)
-        let stream = client
-            .subscribe_with_metadata(&descriptor)
-            .await
-            .map_err(|e| {
-                SyncError::from_anyhow_with_context(
-                    DataType::Logs,
-                    from_block,
-                    to_block,
-                    "Failed to subscribe to log stream",
-                    e,
-                )
-            })?;
+        let stream = client.query_with_metadata(query).await.map_err(|e| {
+            SyncError::from_anyhow_with_context(
+                DataType::Logs,
+                from_block,
+                to_block,
+                "Failed to subscribe to log stream",
+                e.into(),
+            )
+        })?;
         let mut stream = Box::pin(stream);
 
         let mut batches_processed = 0u64;
@@ -1318,10 +1289,11 @@ impl SyncWorker {
 
             // Write Arrow RecordBatch directly to parquet and get actual bytes written
             let batch_bytes = writer.write_batch(batch).await.map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to write log batch. Write error: {:?}. Error chain: {}",
-                    e,
-                    e.to_string()
+                SyncError::disk_io_error(
+                    DataType::Logs,
+                    from_block,
+                    to_block,
+                    format!("Failed to write log batch: {e}"),
                 )
             })?;
 
@@ -1371,7 +1343,7 @@ impl SyncWorker {
             // This is valid when a block range legitimately has no logs.
             // Arrow Flight doesn't transmit 0-row RecordBatches, so receiving 0 batches
             // means the range was processed successfully but contains no data.
-            info!(
+            debug!(
                 "Worker {} received ZERO batches for logs {}-{}. \
                 Range processed successfully with no logs.",
                 self.worker_id, from_block, to_block

@@ -1,3 +1,5 @@
+//! Error types for bridge server operations
+
 use thiserror::Error;
 
 /// Errors that can occur in bridge stream operations

@@ -14,8 +14,8 @@ pub struct BlockDataClient {
     endpoint: String,
 }
 
-// Configure message size limits (128MB to handle large transaction batches)
-const MAX_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
+// Configure message size limits (512MB to handle large log batches from dense blocks)
+const MAX_MESSAGE_SIZE: usize = 512 * 1024 * 1024;
 
 impl BlockDataClient {
     /// Connect to Erigon's BlockDataBackend service

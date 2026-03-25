@@ -215,7 +215,7 @@ pub struct PhaserConfig {
     #[serde(default)]
     pub parquet: Option<ParquetConfig>,
     #[serde(default)]
-    pub validation_stage: phaser_bridge::ValidationStage, // Validation stage for sync (none, ingestion, conversion, both)
+    pub validation_stage: phaser_client::ValidationStage, // Validation stage for sync (none, ingestion, conversion, both)
 }
 
 fn default_segment_size() -> u64 {

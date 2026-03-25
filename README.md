@@ -67,7 +67,7 @@ The core library defining the Arrow Flight protocol abstraction:
 - **`FlightBridge` trait**: Interface that bridge implementations must satisfy
 - **`BlockchainDescriptor`**: Specifies what data to stream (type, range, filters)
 - **`StreamType`**: Blocks, Transactions, Logs, State, etc.
-- **`FlightBridgeClient`**: Client for connecting to any bridge implementation
+- **`PhaserClient`**: Client for connecting to any bridge implementation
 - **`FlightBridgeServer`**: Server wrapper for exposing a bridge via Flight
 
 **Compression Support:**

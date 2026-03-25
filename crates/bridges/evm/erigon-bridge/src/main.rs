@@ -23,7 +23,7 @@ use tracing_subscriber::EnvFilter;
 use validators_evm::ExecutorType;
 
 use bridge::ErigonFlightBridge;
-use phaser_bridge::FlightBridgeServer;
+use phaser_server::FlightBridgeServer;
 
 #[derive(Parser, Debug)]
 #[command(name = "erigon-bridge")]
@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("erigon_bridge=info")),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_ansi(false))
         .with(metrics::MetricsLayer::new("erigon-bridge"))
         .init();
 
@@ -226,9 +226,9 @@ async fn main() -> Result<()> {
     // Create the Flight server
     let flight_server = FlightBridgeServer::new(bridge);
 
-    // Configure global maximum message size (256MB)
+    // Configure global maximum message size (512MB)
     // Per-stream limits are negotiated via StreamPreferences
-    const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
+    const MAX_MESSAGE_SIZE: usize = 512 * 1024 * 1024;
 
     // Configure compression based on CLI flag
     let mut flight_service = flight_server

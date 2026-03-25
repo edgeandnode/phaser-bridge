@@ -58,10 +58,10 @@ async fn main() -> Result<()> {
         .with(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("phaser_query=info".parse()?)
-                .add_directive("phaser_bridge=info".parse()?)
+                .add_directive("phaser_client=info".parse()?)
                 .add_directive("erigon_bridge=info".parse()?),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_ansi(false))
         .with(phaser_query::sync::metrics::MetricsLayer::new(
             "phaser-query",
         ))

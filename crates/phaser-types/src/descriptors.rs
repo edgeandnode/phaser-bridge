@@ -1,7 +1,12 @@
+//! Blockchain-specific descriptors for data requests
+//!
+//! These types are used for EVM-style bridges with block-based data.
+
 use crate::subscription::{QueryMode, SubscriptionOptions};
-use anyhow;
 use arrow_flight::{FlightDescriptor, Ticket};
 use serde::{Deserialize, Serialize};
+
+use crate::discovery::ParseError;
 
 /// Types of blockchain data streams
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,11 +188,11 @@ impl BlockchainDescriptor {
         FlightDescriptor::new_path(vec![json])
     }
 
-    pub fn from_flight_descriptor(desc: &FlightDescriptor) -> Result<Self, anyhow::Error> {
+    pub fn from_flight_descriptor(desc: &FlightDescriptor) -> Result<Self, ParseError> {
         if let Some(path) = desc.path.first() {
             Ok(serde_json::from_str(path)?)
         } else {
-            Err(anyhow::anyhow!("No path in descriptor"))
+            Err(ParseError::NoPath)
         }
     }
 

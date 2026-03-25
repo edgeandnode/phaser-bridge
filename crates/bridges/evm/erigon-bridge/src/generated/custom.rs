@@ -2,7 +2,7 @@
 /// Request state root for a block
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetStateRootRequest {
     #[prost(oneof = "get_state_root_request::BlockId", tags = "1, 2, 3")]
     pub block_id: ::core::option::Option<get_state_root_request::BlockId>,
@@ -11,7 +11,7 @@ pub struct GetStateRootRequest {
 pub mod get_state_root_request {
     #[allow(dead_code)]
     #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum BlockId {
         #[prost(uint64, tag = "1")]
         BlockNumber(u64),
@@ -24,7 +24,7 @@ pub mod get_state_root_request {
 }
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetStateRootReply {
     /// 32-byte state root hash
     #[prost(bytes = "vec", tag = "1")]
@@ -40,7 +40,7 @@ pub struct GetStateRootReply {
 /// Stream commitment nodes for full trie reconstruction
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StreamCommitmentRequest {
     /// Target state root (empty for latest)
     #[prost(bytes = "vec", tag = "1")]
@@ -92,7 +92,7 @@ pub struct CommitmentNodeBatch {
 /// Individual commitment node from domain - minimal version
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommitmentNode {
     /// Trie path/key from CommitmentDomain (variable length)
     #[prost(bytes = "vec", tag = "1")]
@@ -110,7 +110,7 @@ pub struct CommitmentNode {
 /// Get specific nodes (for gap filling)
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetNodesByHashRequest {
     /// List of 32-byte node hashes
     #[prost(bytes = "vec", repeated, tag = "1")]
@@ -136,10 +136,10 @@ pub mod trie_backend_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     /// TrieBackend service provides access to Merkle Patricia Trie data from CommitmentDomain
     #[derive(Debug, Clone)]
     pub struct TrieBackendClient<T> {
@@ -184,9 +184,8 @@ pub mod trie_backend_client {
                     <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
+                Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             TrieBackendClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -225,22 +224,12 @@ pub mod trie_backend_client {
         pub async fn get_state_root(
             &mut self,
             request: impl tonic::IntoRequest<super::GetStateRootRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetStateRootReply>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/custom.TrieBackend/GetStateRoot",
-            );
+        ) -> std::result::Result<tonic::Response<super::GetStateRootReply>, tonic::Status> {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/custom.TrieBackend/GetStateRoot");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("custom.TrieBackend", "GetStateRoot"));
@@ -254,43 +243,30 @@ pub mod trie_backend_client {
             tonic::Response<tonic::codec::Streaming<super::CommitmentNodeBatch>>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/custom.TrieBackend/StreamCommitmentNodes",
-            );
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/custom.TrieBackend/StreamCommitmentNodes");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("custom.TrieBackend", "StreamCommitmentNodes"));
+            req.extensions_mut().insert(GrpcMethod::new(
+                "custom.TrieBackend",
+                "StreamCommitmentNodes",
+            ));
             self.inner.server_streaming(req, path, codec).await
         }
         /// Get specific nodes by hash (for filling gaps)
         pub async fn get_nodes_by_hash(
             &mut self,
             request: impl tonic::IntoRequest<super::GetNodesByHashRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetNodesByHashReply>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/custom.TrieBackend/GetNodesByHash",
-            );
+        ) -> std::result::Result<tonic::Response<super::GetNodesByHashReply>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/custom.TrieBackend/GetNodesByHash");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("custom.TrieBackend", "GetNodesByHash"));
@@ -301,7 +277,7 @@ pub mod trie_backend_client {
 /// Request to stream data for a block range
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BlockRangeRequest {
     /// Starting block number (inclusive)
     #[prost(uint64, tag = "1")]
@@ -338,7 +314,7 @@ pub struct BlockBatch {
 /// RLP-encoded block header data
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BlockData {
     #[prost(uint64, tag = "1")]
     pub block_number: u64,
@@ -371,7 +347,7 @@ pub struct TransactionBatch {
 /// RLP-encoded transaction data (no receipts - use ExecuteBlocks for receipts)
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TransactionData {
     #[prost(uint64, tag = "1")]
     pub block_number: u64,
@@ -413,7 +389,7 @@ pub struct ReceiptBatch {
 /// RLP-encoded receipt data with optional trace data
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReceiptData {
     #[prost(uint64, tag = "1")]
     pub block_number: u64,
@@ -440,10 +416,10 @@ pub mod block_data_backend_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     /// BlockDataBackend service provides blockchain data as RLP-encoded bytes
     /// This service streams data from both snapshots (frozen blocks) and live database
     #[derive(Debug, Clone)]
@@ -489,9 +465,8 @@ pub mod block_data_backend_client {
                     <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
+                Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             BlockDataBackendClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -534,18 +509,12 @@ pub mod block_data_backend_client {
             tonic::Response<tonic::codec::Streaming<super::BlockBatch>>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/custom.BlockDataBackend/StreamBlocks",
-            );
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/custom.BlockDataBackend/StreamBlocks");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("custom.BlockDataBackend", "StreamBlocks"));
@@ -559,23 +528,17 @@ pub mod block_data_backend_client {
             tonic::Response<tonic::codec::Streaming<super::TransactionBatch>>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/custom.BlockDataBackend/StreamTransactions",
-            );
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/custom.BlockDataBackend/StreamTransactions");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("custom.BlockDataBackend", "StreamTransactions"),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "custom.BlockDataBackend",
+                "StreamTransactions",
+            ));
             self.inner.server_streaming(req, path, codec).await
         }
         /// Execute blocks in range and stream RLP receipts (slow: executes blocks, generates receipts)
@@ -587,18 +550,12 @@ pub mod block_data_backend_client {
             tonic::Response<tonic::codec::Streaming<super::ReceiptBatch>>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/custom.BlockDataBackend/ExecuteBlocks",
-            );
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path =
+                http::uri::PathAndQuery::from_static("/custom.BlockDataBackend/ExecuteBlocks");
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("custom.BlockDataBackend", "ExecuteBlocks"));

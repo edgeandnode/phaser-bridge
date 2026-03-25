@@ -42,7 +42,7 @@ pub enum ErigonBridgeError {
     ConnectionFailed(String),
 
     #[error("Stream protocol error: {0}")]
-    StreamProtocol(#[from] phaser_bridge::StreamError),
+    StreamProtocol(#[from] phaser_server::StreamError),
 }
 
 /// Implements conversion from tonic::Status to ErigonBridgeError
