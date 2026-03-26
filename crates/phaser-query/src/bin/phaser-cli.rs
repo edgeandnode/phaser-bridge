@@ -117,8 +117,8 @@ async fn main() -> Result<()> {
                             println!(
                                 "    Segment {} (blocks {}-{}): missing {}",
                                 detail.segment_num,
-                                detail.from_block,
-                                detail.to_block,
+                                detail.from_position,
+                                detail.to_position,
                                 detail.missing_data_types.join(", ")
                             );
                         }
@@ -131,8 +131,8 @@ async fn main() -> Result<()> {
                             println!(
                                 "    Segment {} (blocks {}-{}): missing {}",
                                 detail.segment_num,
-                                detail.from_block,
-                                detail.to_block,
+                                detail.from_position,
+                                detail.to_position,
                                 detail.missing_data_types.join(", ")
                             );
                         }
@@ -189,96 +189,52 @@ async fn main() -> Result<()> {
                     };
 
                     if let Some(ref gap) = job.gap_analysis {
-                        println!("\nData Progress (by segment):");
                         let total_segments = gap.total_segments;
-                        let mut blocks_incomplete = 0;
-                        let mut txs_incomplete = 0;
-                        let mut logs_incomplete = 0;
+                        let mut incomplete_by_type: std::collections::HashMap<String, u64> =
+                            std::collections::HashMap::new();
 
                         for detail in &gap.incomplete_details {
-                            if !detail.missing_blocks_ranges.is_empty() {
-                                blocks_incomplete += 1;
-                            }
-                            if !detail.missing_transactions_ranges.is_empty() {
-                                txs_incomplete += 1;
-                            }
-                            if !detail.missing_logs_ranges.is_empty() {
-                                logs_incomplete += 1;
-                            }
-                        }
-
-                        if let Some(ref blocks) = progress.blocks {
-                            let blocks_complete = total_segments - blocks_incomplete;
-                            println!(
-                                "  Blocks:        {}/{} segments - {} files, {}{}",
-                                blocks_complete,
-                                total_segments,
-                                progress
-                                    .file_stats
-                                    .as_ref()
-                                    .map(|s| s.blocks_files)
-                                    .unwrap_or(0),
-                                format_size(
-                                    progress
-                                        .file_stats
-                                        .as_ref()
-                                        .map(|s| s.blocks_disk_bytes)
-                                        .unwrap_or(0)
-                                ),
-                                if blocks.gap_count > 0 {
-                                    format!(" ({} gaps)", blocks.gap_count)
-                                } else {
-                                    String::new()
+                            // Count incomplete segments by data type
+                            for dt_ranges in &detail.missing_ranges {
+                                if !dt_ranges.ranges.is_empty() {
+                                    *incomplete_by_type
+                                        .entry(dt_ranges.data_type.clone())
+                                        .or_insert(0) += 1;
                                 }
-                            );
+                            }
                         }
 
-                        if let Some(ref txs) = progress.transactions {
-                            let txs_complete = total_segments - txs_incomplete;
-                            println!(
-                                "  Transactions:  {}/{} segments - {} files, {}{}",
-                                txs_complete,
-                                total_segments,
-                                progress
-                                    .file_stats
-                                    .as_ref()
-                                    .map(|s| s.transactions_files)
-                                    .unwrap_or(0),
-                                format_size(
-                                    progress
-                                        .file_stats
-                                        .as_ref()
-                                        .map(|s| s.transactions_disk_bytes)
-                                        .unwrap_or(0)
-                                ),
-                                if txs.gap_count > 0 {
-                                    format!(" ({} gaps)", txs.gap_count)
-                                } else {
-                                    String::new()
+                        // Display progress for each data type using generic by_type
+                        println!("\nData Progress (by segment):");
+                        for (data_type, type_progress) in &progress.by_type {
+                            let incomplete =
+                                incomplete_by_type.get(data_type).copied().unwrap_or(0);
+                            let complete = total_segments - incomplete;
+                            let file_stats = progress
+                                .file_stats
+                                .as_ref()
+                                .and_then(|s| s.by_type.get(data_type));
+                            let file_count = file_stats.map(|s| s.file_count).unwrap_or(0);
+                            let disk_bytes = file_stats.map(|s| s.disk_bytes).unwrap_or(0);
+
+                            // Capitalize first letter for display
+                            let display_name = {
+                                let mut chars = data_type.chars();
+                                match chars.next() {
+                                    None => String::new(),
+                                    Some(c) => c.to_uppercase().chain(chars).collect(),
                                 }
-                            );
-                        }
+                            };
 
-                        if let Some(ref logs) = progress.logs {
-                            let logs_complete = total_segments - logs_incomplete;
                             println!(
-                                "  Logs:          {}/{} segments - {} files, {}{}",
-                                logs_complete,
+                                "  {:14}{}/{} segments - {} files, {}{}",
+                                format!("{}:", display_name),
+                                complete,
                                 total_segments,
-                                progress
-                                    .file_stats
-                                    .as_ref()
-                                    .map(|s| s.logs_files)
-                                    .unwrap_or(0),
-                                format_size(
-                                    progress
-                                        .file_stats
-                                        .as_ref()
-                                        .map(|s| s.logs_disk_bytes)
-                                        .unwrap_or(0)
-                                ),
-                                if logs.gap_count > 0 {
-                                    format!(" ({} gaps)", logs.gap_count)
+                                file_count,
+                                format_size(disk_bytes),
+                                if type_progress.gap_count > 0 {
+                                    format!(" ({} gaps)", type_progress.gap_count)
                                 } else {
                                     String::new()
                                 }
@@ -304,31 +260,22 @@ async fn main() -> Result<()> {
                     );
 
                     if gap.missing_segments > 0 {
-                        let mut missing_blocks_count = 0;
-                        let mut missing_txs_count = 0;
-                        let mut missing_logs_count = 0;
+                        let mut missing_by_type: std::collections::HashMap<String, u64> =
+                            std::collections::HashMap::new();
 
                         for detail in &gap.incomplete_details {
-                            if !detail.missing_blocks_ranges.is_empty() {
-                                missing_blocks_count += 1;
-                            }
-                            if !detail.missing_transactions_ranges.is_empty() {
-                                missing_txs_count += 1;
-                            }
-                            if !detail.missing_logs_ranges.is_empty() {
-                                missing_logs_count += 1;
+                            for dt_ranges in &detail.missing_ranges {
+                                if !dt_ranges.ranges.is_empty() {
+                                    *missing_by_type
+                                        .entry(dt_ranges.data_type.clone())
+                                        .or_insert(0) += 1;
+                                }
                             }
                         }
 
                         println!("Incomplete Segments: {}", gap.missing_segments);
-                        if missing_blocks_count > 0 {
-                            println!("  - {missing_blocks_count} segments missing blocks");
-                        }
-                        if missing_txs_count > 0 {
-                            println!("  - {missing_txs_count} segments missing transactions");
-                        }
-                        if missing_logs_count > 0 {
-                            println!("  - {missing_logs_count} segments missing logs");
+                        for (data_type, count) in &missing_by_type {
+                            println!("  - {count} segments missing {data_type}");
                         }
                     }
 
@@ -421,97 +368,49 @@ async fn main() -> Result<()> {
                                 println!("\nData Progress (by segment):");
 
                                 let total_segments = gap.total_segments;
-                                let mut blocks_incomplete = 0;
-                                let mut txs_incomplete = 0;
-                                let mut logs_incomplete = 0;
+                                let mut incomplete_by_type: std::collections::HashMap<String, u64> =
+                                    std::collections::HashMap::new();
 
                                 for detail in &gap.incomplete_details {
-                                    if !detail.missing_blocks_ranges.is_empty() {
-                                        blocks_incomplete += 1;
-                                    }
-                                    if !detail.missing_transactions_ranges.is_empty() {
-                                        txs_incomplete += 1;
-                                    }
-                                    if !detail.missing_logs_ranges.is_empty() {
-                                        logs_incomplete += 1;
-                                    }
-                                }
-
-                                // Blocks
-                                if let Some(ref blocks) = progress.blocks {
-                                    let blocks_complete = total_segments - blocks_incomplete;
-                                    println!(
-                                        "  Blocks:        {}/{} segments - {} files, {}{}",
-                                        blocks_complete,
-                                        total_segments,
-                                        progress
-                                            .file_stats
-                                            .as_ref()
-                                            .map(|s| s.blocks_files)
-                                            .unwrap_or(0),
-                                        format_size(
-                                            progress
-                                                .file_stats
-                                                .as_ref()
-                                                .map(|s| s.blocks_disk_bytes)
-                                                .unwrap_or(0)
-                                        ),
-                                        if blocks.gap_count > 0 {
-                                            format!(" ({} gaps)", blocks.gap_count)
-                                        } else {
-                                            String::new()
+                                    for dt_ranges in &detail.missing_ranges {
+                                        if !dt_ranges.ranges.is_empty() {
+                                            *incomplete_by_type
+                                                .entry(dt_ranges.data_type.clone())
+                                                .or_insert(0) += 1;
                                         }
-                                    );
+                                    }
                                 }
 
-                                // Transactions
-                                if let Some(ref txs) = progress.transactions {
-                                    let txs_complete = total_segments - txs_incomplete;
-                                    println!(
-                                        "  Transactions:  {}/{} segments - {} files, {}{}",
-                                        txs_complete,
-                                        total_segments,
-                                        progress
-                                            .file_stats
-                                            .as_ref()
-                                            .map(|s| s.transactions_files)
-                                            .unwrap_or(0),
-                                        format_size(
-                                            progress
-                                                .file_stats
-                                                .as_ref()
-                                                .map(|s| s.transactions_disk_bytes)
-                                                .unwrap_or(0)
-                                        ),
-                                        if txs.gap_count > 0 {
-                                            format!(" ({} gaps)", txs.gap_count)
-                                        } else {
-                                            String::new()
+                                // Display progress for each data type using generic by_type
+                                for (data_type, type_progress) in &progress.by_type {
+                                    let incomplete =
+                                        incomplete_by_type.get(data_type).copied().unwrap_or(0);
+                                    let complete = total_segments - incomplete;
+                                    let file_stats = progress
+                                        .file_stats
+                                        .as_ref()
+                                        .and_then(|s| s.by_type.get(data_type));
+                                    let file_count = file_stats.map(|s| s.file_count).unwrap_or(0);
+                                    let disk_bytes = file_stats.map(|s| s.disk_bytes).unwrap_or(0);
+
+                                    // Capitalize first letter for display
+                                    let display_name = {
+                                        let mut chars = data_type.chars();
+                                        match chars.next() {
+                                            None => String::new(),
+                                            Some(c) => c.to_uppercase().chain(chars).collect(),
                                         }
-                                    );
-                                }
+                                    };
 
-                                // Logs
-                                if let Some(ref logs) = progress.logs {
-                                    let logs_complete = total_segments - logs_incomplete;
                                     println!(
-                                        "  Logs:          {}/{} segments - {} files, {}{}",
-                                        logs_complete,
+                                        "  {:14}{}/{} segments - {} files, {}{}",
+                                        format!("{}:", display_name),
+                                        complete,
                                         total_segments,
-                                        progress
-                                            .file_stats
-                                            .as_ref()
-                                            .map(|s| s.logs_files)
-                                            .unwrap_or(0),
-                                        format_size(
-                                            progress
-                                                .file_stats
-                                                .as_ref()
-                                                .map(|s| s.logs_disk_bytes)
-                                                .unwrap_or(0)
-                                        ),
-                                        if logs.gap_count > 0 {
-                                            format!(" ({} gaps)", logs.gap_count)
+                                        file_count,
+                                        format_size(disk_bytes),
+                                        if type_progress.gap_count > 0 {
+                                            format!(" ({} gaps)", type_progress.gap_count)
                                         } else {
                                             String::new()
                                         }
@@ -541,33 +440,22 @@ async fn main() -> Result<()> {
 
                             // Show breakdown of incomplete segments by data type
                             if gap.missing_segments > 0 {
-                                let mut missing_blocks_count = 0;
-                                let mut missing_txs_count = 0;
-                                let mut missing_logs_count = 0;
+                                let mut missing_by_type: std::collections::HashMap<String, u64> =
+                                    std::collections::HashMap::new();
 
                                 for detail in &gap.incomplete_details {
-                                    if !detail.missing_blocks_ranges.is_empty() {
-                                        missing_blocks_count += 1;
-                                    }
-                                    if !detail.missing_transactions_ranges.is_empty() {
-                                        missing_txs_count += 1;
-                                    }
-                                    if !detail.missing_logs_ranges.is_empty() {
-                                        missing_logs_count += 1;
+                                    for dt_ranges in &detail.missing_ranges {
+                                        if !dt_ranges.ranges.is_empty() {
+                                            *missing_by_type
+                                                .entry(dt_ranges.data_type.clone())
+                                                .or_insert(0) += 1;
+                                        }
                                     }
                                 }
 
                                 println!("Incomplete Segments: {}", gap.missing_segments);
-                                if missing_blocks_count > 0 {
-                                    println!("  - {missing_blocks_count} segments missing blocks");
-                                }
-                                if missing_txs_count > 0 {
-                                    println!(
-                                        "  - {missing_txs_count} segments missing transactions"
-                                    );
-                                }
-                                if missing_logs_count > 0 {
-                                    println!("  - {missing_logs_count} segments missing logs");
+                                for (data_type, count) in &missing_by_type {
+                                    println!("  - {count} segments missing {data_type}");
                                 }
                             }
 
@@ -645,40 +533,20 @@ async fn main() -> Result<()> {
                     for detail in &gap.incomplete_details {
                         println!(
                             "    Segment {} (blocks {}-{}):",
-                            detail.segment_num, detail.from_block, detail.to_block
+                            detail.segment_num, detail.from_position, detail.to_position
                         );
 
-                        // Show detailed ranges for each data type
-                        if !detail.missing_blocks_ranges.is_empty() {
-                            println!("      - blocks:");
-                            for range in &detail.missing_blocks_ranges {
-                                let count = range.end - range.start + 1;
-                                println!(
-                                    "        {}-{} ({} blocks)",
-                                    range.start, range.end, count
-                                );
-                            }
-                        }
-
-                        if !detail.missing_transactions_ranges.is_empty() {
-                            println!("      - transactions:");
-                            for range in &detail.missing_transactions_ranges {
-                                let count = range.end - range.start + 1;
-                                println!(
-                                    "        {}-{} ({} blocks)",
-                                    range.start, range.end, count
-                                );
-                            }
-                        }
-
-                        if !detail.missing_logs_ranges.is_empty() {
-                            println!("      - logs:");
-                            for range in &detail.missing_logs_ranges {
-                                let count = range.end - range.start + 1;
-                                println!(
-                                    "        {}-{} ({} blocks)",
-                                    range.start, range.end, count
-                                );
+                        // Show detailed ranges for each data type (using generic missing_ranges)
+                        for data_type_ranges in &detail.missing_ranges {
+                            if !data_type_ranges.ranges.is_empty() {
+                                println!("      - {}:", data_type_ranges.data_type);
+                                for range in &data_type_ranges.ranges {
+                                    let count = range.end - range.start + 1;
+                                    println!(
+                                        "        {}-{} ({} positions)",
+                                        range.start, range.end, count
+                                    );
+                                }
                             }
                         }
                     }

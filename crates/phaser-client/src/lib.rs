@@ -1,9 +1,11 @@
 //! Flight client for connecting to phaser bridges
 //!
-//! This crate provides a minimal client for connecting to bridges without
-//! pulling in server dependencies. Use this in consumers like flight-streamer.
+//! This crate provides a client for connecting to Phaser bridges, with both
+//! low-level Flight protocol access and high-level sync orchestration.
 //!
-//! # Example
+//! # Low-Level API
+//!
+//! The `PhaserClient` provides direct access to bridge streams:
 //!
 //! ```ignore
 //! use phaser_client::{PhaserClient, BridgeError, GenericQuery};
@@ -22,9 +24,36 @@
 //!     Ok(())
 //! }
 //! ```
+//!
+//! # High-Level Sync API
+//!
+//! The `sync` module provides orchestration for syncing large amounts of data
+//! with automatic retry, work queues, and progress tracking:
+//!
+//! ```ignore
+//! use phaser_client::sync::{PhaserSyncer, SyncConfig, BatchWriter, DataType};
+//!
+//! // Implement BatchWriter for your storage backend
+//! struct MyWriter { /* ... */ }
+//!
+//! impl BatchWriter for MyWriter {
+//!     fn data_type(&self) -> DataType { DataType::Blocks }
+//!     async fn write_batch(&mut self, batch: RecordBatch) -> Result<u64, SyncError> {
+//!         // Write to your storage
+//!         Ok(bytes_written)
+//!     }
+//!     // ...
+//! }
+//!
+//! // Use the syncer
+//! let config = SyncConfig::default();
+//! let syncer = PhaserSyncer::new(config, writer_factory);
+//! let result = syncer.sync_range("http://bridge:50051", 0, 1_000_000, work).await?;
+//! ```
 
 mod client;
 mod error;
+pub mod sync;
 
 pub use client::PhaserClient;
 pub use error::BridgeError;
@@ -36,14 +65,11 @@ pub use phaser_types::{
     // Batch metadata
     BatchMetadata,
     BatchWithRange,
-    BlockRange,
     // Descriptors
     BlockchainDescriptor,
     BridgeInfo,
     Compression,
     ControlAction,
-    DataAvailability,
-    DataSource,
     // Discovery
     DiscoveryCapabilities,
     FilterDescriptor,

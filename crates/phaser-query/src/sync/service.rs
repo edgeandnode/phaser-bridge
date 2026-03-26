@@ -18,8 +18,10 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::proto::admin::{
-    DataProgress as ProtoDataProgress, DataTypeProgress as ProtoDataTypeProgress,
+    DataProgress as ProtoDataProgress, DataTypeFileStats,
+    DataTypeProgress as ProtoDataTypeProgress, DataTypeRanges,
     FileStatistics as ProtoFileStatistics, GapAnalysis as ProtoGapAnalysis, IncompleteSegment,
+    Range as ProtoRange,
 };
 use crate::sync::data_scanner::{
     DataProgress, DataTypeProgress, FileStatistics, GapAnalysis as DataGapAnalysis,
@@ -31,45 +33,34 @@ fn gap_analysis_to_proto(analysis: &DataGapAnalysis, segment_size: u64) -> Proto
         .segments_needing_work
         .iter()
         .map(|work| {
-            let from_block = work.segment_num * segment_size;
-            let to_block = from_block + segment_size - 1;
+            let from_position = work.segment_num * segment_size;
+            let to_position = from_position + segment_size - 1;
 
-            // Convert BlockRange vectors to proto
-            let missing_blocks_ranges = work
-                .missing_blocks
+            // Convert all missing ranges to proto format
+            let missing_ranges: Vec<DataTypeRanges> = work
+                .missing_ranges
                 .iter()
-                .map(|r| crate::proto::admin::BlockRange {
-                    start: r.start,
-                    end: r.end,
-                })
-                .collect();
-
-            let missing_transactions_ranges = work
-                .missing_transactions
-                .iter()
-                .map(|r| crate::proto::admin::BlockRange {
-                    start: r.start,
-                    end: r.end,
-                })
-                .collect();
-
-            let missing_logs_ranges = work
-                .missing_logs
-                .iter()
-                .map(|r| crate::proto::admin::BlockRange {
-                    start: r.start,
-                    end: r.end,
+                .filter(|(_, ranges)| !ranges.is_empty())
+                .map(|(data_type, ranges)| DataTypeRanges {
+                    data_type: data_type.clone(),
+                    ranges: ranges
+                        .iter()
+                        .map(|r| ProtoRange {
+                            start: r.start,
+                            end: r.end,
+                        })
+                        .collect(),
                 })
                 .collect();
 
             IncompleteSegment {
                 segment_num: work.segment_num,
-                from_block,
-                to_block,
+                from_position,
+                to_position,
                 missing_data_types: work.missing_types(),
-                missing_blocks_ranges,
-                missing_transactions_ranges,
-                missing_logs_ranges,
+                missing_ranges,
+                // Deprecated fields removed - use missing_ranges instead
+                ..Default::default()
             }
         })
         .collect();
@@ -91,18 +82,32 @@ fn gap_analysis_to_proto(analysis: &DataGapAnalysis, segment_size: u64) -> Proto
 
 /// Convert internal DataProgress to proto
 fn data_progress_to_proto(progress: &DataProgress) -> ProtoDataProgress {
+    let mut by_type = std::collections::HashMap::new();
+    by_type.insert(
+        "blocks".to_string(),
+        data_type_progress_to_proto(&progress.blocks),
+    );
+    by_type.insert(
+        "transactions".to_string(),
+        data_type_progress_to_proto(&progress.transactions),
+    );
+    by_type.insert(
+        "logs".to_string(),
+        data_type_progress_to_proto(&progress.logs),
+    );
+
     ProtoDataProgress {
-        blocks: Some(data_type_progress_to_proto(&progress.blocks)),
-        transactions: Some(data_type_progress_to_proto(&progress.transactions)),
-        logs: Some(data_type_progress_to_proto(&progress.logs)),
+        by_type,
         file_stats: Some(file_statistics_to_proto(&progress.file_stats)),
+        // Deprecated fields removed - use by_type instead
+        ..Default::default()
     }
 }
 
 /// Convert internal DataTypeProgress to proto
 fn data_type_progress_to_proto(progress: &DataTypeProgress) -> ProtoDataTypeProgress {
     ProtoDataTypeProgress {
-        blocks_on_disk: progress.blocks_on_disk,
+        positions_on_disk: progress.blocks_on_disk,
         gap_count: progress.gap_count,
         coverage_percentage: progress.coverage_percentage,
         highest_continuous: progress.highest_continuous,
@@ -111,17 +116,42 @@ fn data_type_progress_to_proto(progress: &DataTypeProgress) -> ProtoDataTypeProg
 
 /// Convert internal FileStatistics to proto
 fn file_statistics_to_proto(stats: &FileStatistics) -> ProtoFileStatistics {
+    let mut by_type = std::collections::HashMap::new();
+    by_type.insert(
+        "blocks".to_string(),
+        DataTypeFileStats {
+            file_count: stats.blocks_files,
+            disk_bytes: stats.blocks_disk_bytes,
+        },
+    );
+    by_type.insert(
+        "transactions".to_string(),
+        DataTypeFileStats {
+            file_count: stats.transactions_files,
+            disk_bytes: stats.transactions_disk_bytes,
+        },
+    );
+    by_type.insert(
+        "logs".to_string(),
+        DataTypeFileStats {
+            file_count: stats.logs_files,
+            disk_bytes: stats.logs_disk_bytes,
+        },
+    );
+    by_type.insert(
+        "proofs".to_string(),
+        DataTypeFileStats {
+            file_count: stats.proofs_files,
+            disk_bytes: stats.proofs_disk_bytes,
+        },
+    );
+
     ProtoFileStatistics {
         total_files: stats.total_files,
-        blocks_files: stats.blocks_files,
-        transactions_files: stats.transactions_files,
-        logs_files: stats.logs_files,
-        proofs_files: stats.proofs_files,
         total_disk_bytes: stats.total_disk_bytes,
-        blocks_disk_bytes: stats.blocks_disk_bytes,
-        transactions_disk_bytes: stats.transactions_disk_bytes,
-        logs_disk_bytes: stats.logs_disk_bytes,
-        proofs_disk_bytes: stats.proofs_disk_bytes,
+        by_type,
+        // Deprecated fields removed - use by_type instead
+        ..Default::default()
     }
 }
 
@@ -353,10 +383,15 @@ impl SyncServer {
                     };
 
                     let segment_num = work.segment_num;
-                    let segment_from = work.segment_from;
-                    let segment_to = work.segment_to;
+                    let segment_from = work.segment_start;
+                    let segment_to = work.segment_end;
                     let retry_count = work.retry_count.unwrap_or(0);
-                    let segment_start = std::time::Instant::now();
+                    let segment_start_time = std::time::Instant::now();
+
+                    // Count missing ranges by data type
+                    let missing_blocks_count = work.get_missing_ranges("blocks").len();
+                    let missing_txs_count = work.get_missing_ranges("transactions").len();
+                    let missing_logs_count = work.get_missing_ranges("logs").len();
 
                     info!(
                         worker_id = worker_id,
@@ -364,9 +399,9 @@ impl SyncServer {
                         from_block = segment_from,
                         to_block = segment_to,
                         retry_count = retry_count,
-                        missing_blocks = work.missing_blocks.len(),
-                        missing_txs = work.missing_transactions.len(),
-                        missing_logs = work.missing_logs.len(),
+                        missing_blocks = missing_blocks_count,
+                        missing_txs = missing_txs_count,
+                        missing_logs = missing_logs_count,
                         "Starting segment processing"
                     );
 
@@ -396,7 +431,7 @@ impl SyncServer {
 
                     match worker.run().await {
                         Ok(()) => {
-                            let duration = segment_start.elapsed();
+                            let duration = segment_start_time.elapsed();
 
                             // Metrics
                             metrics.segment_attempts("success");
@@ -427,15 +462,8 @@ impl SyncServer {
                             // Metrics
                             metrics.sync_errors(error_category, data_type);
 
-                            // Check if error is retryable
-                            // Most errors should be retried - only validation and stuck workers are truly non-retryable
-                            use crate::sync::error::ErrorCategory;
-                            let is_retryable = !matches!(
-                                sync_err.category,
-                                ErrorCategory::Validation
-                                    | ErrorCategory::StuckWorker
-                                    | ErrorCategory::NoData
-                            );
+                            // Check if error is retryable using phaser-client's method
+                            let is_retryable = !sync_err.is_permanent();
 
                             if !is_retryable {
                                 // Non-retryable error - fail immediately

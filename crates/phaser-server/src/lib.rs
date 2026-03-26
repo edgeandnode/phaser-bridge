@@ -37,14 +37,11 @@ pub use phaser_types::{
     // Batch metadata
     BatchMetadata,
     BatchWithRange,
-    BlockRange,
     // Descriptors
     BlockchainDescriptor,
     BridgeInfo,
     Compression,
     ControlAction,
-    DataAvailability,
-    DataSource,
     // Discovery
     DiscoveryCapabilities,
     FilterDescriptor,

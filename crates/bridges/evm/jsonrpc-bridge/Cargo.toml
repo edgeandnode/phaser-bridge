@@ -32,6 +32,7 @@ arrow = { workspace = true }
 arrow-flight = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-ipc = { workspace = true }
 typed-arrow = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

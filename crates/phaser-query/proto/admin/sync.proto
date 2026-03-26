@@ -74,29 +74,44 @@ message GapAnalysis {
   repeated IncompleteSegment incomplete_details = 7;
 }
 
-message BlockRange {
-  // Start block (inclusive)
+// A contiguous range of positions (blocks, slots, offsets, etc.)
+// Generic - works for any ordered data source
+message Range {
+  // Start position (inclusive)
   uint64 start = 1;
 
-  // End block (inclusive)
+  // End position (inclusive)
   uint64 end = 2;
+}
+
+// Missing ranges for a specific data type
+message DataTypeRanges {
+  // Data type name (e.g., "blocks", "transactions", "logs", "events")
+  string data_type = 1;
+
+  // Missing ranges for this data type
+  repeated Range ranges = 2;
 }
 
 message IncompleteSegment {
   // Segment number
   uint64 segment_num = 1;
 
-  // Block range for this segment
-  uint64 from_block = 2;
-  uint64 to_block = 3;
+  // Position range for this segment
+  uint64 from_position = 2;
+  uint64 to_position = 3;
 
   // Missing data types (e.g., "blocks", "txs", "logs")
   repeated string missing_data_types = 4;
 
-  // Detailed missing ranges for each data type
-  repeated BlockRange missing_blocks_ranges = 5;
-  repeated BlockRange missing_transactions_ranges = 6;
-  repeated BlockRange missing_logs_ranges = 7;
+  // Generic missing ranges by data type (replaces separate fields)
+  repeated DataTypeRanges missing_ranges = 8;
+
+  // DEPRECATED: Use missing_ranges instead
+  // Kept for backwards compatibility during transition
+  repeated Range missing_blocks_ranges = 5 [deprecated = true];
+  repeated Range missing_transactions_ranges = 6 [deprecated = true];
+  repeated Range missing_logs_ranges = 7 [deprecated = true];
 }
 
 message SyncStatusRequest {
@@ -233,23 +248,22 @@ message AnalyzeGapsResponse {
 
 // Detailed progress tracking for each data type
 message DataProgress {
-  // Blocks progress
-  DataTypeProgress blocks = 1;
-
-  // Transactions progress
-  DataTypeProgress transactions = 2;
-
-  // Logs progress
-  DataTypeProgress logs = 3;
+  // Generic progress by data type name (replaces separate fields)
+  map<string, DataTypeProgress> by_type = 5;
 
   // File statistics
   FileStatistics file_stats = 4;
+
+  // DEPRECATED: Use by_type["blocks"] instead
+  DataTypeProgress blocks = 1 [deprecated = true];
+  DataTypeProgress transactions = 2 [deprecated = true];
+  DataTypeProgress logs = 3 [deprecated = true];
 }
 
-// Progress for a specific data type (blocks, transactions, or logs)
+// Progress for a specific data type
 message DataTypeProgress {
-  // Number of blocks covered by files on disk (may have gaps)
-  uint64 blocks_on_disk = 1;
+  // Number of positions covered by files on disk (may have gaps)
+  uint64 positions_on_disk = 1;
 
   // Number of gaps (missing ranges)
   uint32 gap_count = 2;
@@ -257,8 +271,14 @@ message DataTypeProgress {
   // Percentage of target range covered (0-100)
   double coverage_percentage = 3;
 
-  // Highest continuous block number (no gaps before this)
+  // Highest continuous position (no gaps before this)
   uint64 highest_continuous = 4;
+}
+
+// File statistics for a specific data type
+message DataTypeFileStats {
+  uint32 file_count = 1;
+  uint64 disk_bytes = 2;
 }
 
 // File and disk statistics
@@ -266,20 +286,21 @@ message FileStatistics {
   // Total number of parquet files
   uint32 total_files = 1;
 
-  // Files by type
-  uint32 blocks_files = 2;
-  uint32 transactions_files = 3;
-  uint32 logs_files = 4;
-  uint32 proofs_files = 5;
-
   // Total disk usage in bytes
   uint64 total_disk_bytes = 6;
 
-  // Disk usage by type
-  uint64 blocks_disk_bytes = 7;
-  uint64 transactions_disk_bytes = 8;
-  uint64 logs_disk_bytes = 9;
-  uint64 proofs_disk_bytes = 10;
+  // Generic file stats by data type name
+  map<string, DataTypeFileStats> by_type = 11;
+
+  // DEPRECATED: Use by_type instead
+  uint32 blocks_files = 2 [deprecated = true];
+  uint32 transactions_files = 3 [deprecated = true];
+  uint32 logs_files = 4 [deprecated = true];
+  uint32 proofs_files = 5 [deprecated = true];
+  uint64 blocks_disk_bytes = 7 [deprecated = true];
+  uint64 transactions_disk_bytes = 8 [deprecated = true];
+  uint64 logs_disk_bytes = 9 [deprecated = true];
+  uint64 proofs_disk_bytes = 10 [deprecated = true];
 }
 
 enum SyncStatus {

@@ -1,8 +1,10 @@
 [package]
 name = "phaser-client"
-version = "0.1.0"
-edition = "2021"
-description = "Flight client for connecting to phaser bridges"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Flight client for connecting to phaser bridges with smart sync orchestration"
 
 [dependencies]
 # Core types
@@ -22,6 +24,7 @@ futures = "0.3"
 tower = "0.5"
 hyper-util = "0.1"
 async-stream = "0.3"
+async-trait = "0.1"
 
 # Serialization
 serde = { workspace = true }
@@ -30,9 +33,13 @@ prost = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
+anyhow = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
 
 # HTTP types (for InvalidUri)
 http = "1.0"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
