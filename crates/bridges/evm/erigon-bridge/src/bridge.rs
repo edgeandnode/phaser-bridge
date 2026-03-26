@@ -829,35 +829,22 @@ impl FlightBridge for ErigonFlightBridge {
         &self,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<SchemaResult>, Status> {
+        use arrow_flight::SchemaAsIpc;
+
         let descriptor = request.into_inner();
         let query = Self::parse_descriptor(&descriptor)?;
         let stream_type = Self::table_to_stream_type(&query.table)?;
         let schema = Self::get_schema_for_type(stream_type);
 
-        // Convert Arrow schema to IPC format for Flight
-        // SchemaResult expects raw bytes - we need to encode the schema properly
-        let ipc_message = {
-            use arrow::ipc::writer::IpcWriteOptions;
-            let options = IpcWriteOptions::default();
+        // Convert Arrow schema to IPC format for Flight SchemaResult
+        let options = IpcWriteOptions::default();
+        let schema_result: SchemaResult = SchemaAsIpc::new(&schema, &options).try_into().map_err(
+            |e: arrow::error::ArrowError| {
+                Status::internal(format!("Failed to encode schema: {}", e))
+            },
+        )?;
 
-            // Use FlightDataEncoderBuilder to get the schema as bytes
-            let encoder = FlightDataEncoderBuilder::new()
-                .with_schema(schema.clone())
-                .with_options(options)
-                .build(stream::empty());
-
-            // Get just the schema message (first item from encoder)
-            let mut encoded_schema = vec![];
-            futures::pin_mut!(encoder);
-            if let Some(Ok(flight_data)) = encoder.next().await {
-                encoded_schema = flight_data.data_header.to_vec();
-            }
-            encoded_schema
-        };
-
-        Ok(Response::new(SchemaResult {
-            schema: ipc_message.into(),
-        }))
+        Ok(Response::new(schema_result))
     }
 
     async fn do_get(

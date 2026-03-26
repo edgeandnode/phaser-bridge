@@ -53,35 +53,54 @@ pub struct GapAnalysis {
     #[prost(message, repeated, tag = "7")]
     pub incomplete_details: ::prost::alloc::vec::Vec<IncompleteSegment>,
 }
+/// A contiguous range of positions (blocks, slots, offsets, etc.)
+/// Generic - works for any ordered data source
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct BlockRange {
-    /// Start block (inclusive)
+pub struct Range {
+    /// Start position (inclusive)
     #[prost(uint64, tag = "1")]
     pub start: u64,
-    /// End block (inclusive)
+    /// End position (inclusive)
     #[prost(uint64, tag = "2")]
     pub end: u64,
+}
+/// Missing ranges for a specific data type
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataTypeRanges {
+    /// Data type name (e.g., "blocks", "transactions", "logs", "events")
+    #[prost(string, tag = "1")]
+    pub data_type: ::prost::alloc::string::String,
+    /// Missing ranges for this data type
+    #[prost(message, repeated, tag = "2")]
+    pub ranges: ::prost::alloc::vec::Vec<Range>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct IncompleteSegment {
     /// Segment number
     #[prost(uint64, tag = "1")]
     pub segment_num: u64,
-    /// Block range for this segment
+    /// Position range for this segment
     #[prost(uint64, tag = "2")]
-    pub from_block: u64,
+    pub from_position: u64,
     #[prost(uint64, tag = "3")]
-    pub to_block: u64,
+    pub to_position: u64,
     /// Missing data types (e.g., "blocks", "txs", "logs")
     #[prost(string, repeated, tag = "4")]
     pub missing_data_types: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Detailed missing ranges for each data type
+    /// Generic missing ranges by data type (replaces separate fields)
+    #[prost(message, repeated, tag = "8")]
+    pub missing_ranges: ::prost::alloc::vec::Vec<DataTypeRanges>,
+    /// DEPRECATED: Use missing_ranges instead
+    /// Kept for backwards compatibility during transition
+    #[deprecated]
     #[prost(message, repeated, tag = "5")]
-    pub missing_blocks_ranges: ::prost::alloc::vec::Vec<BlockRange>,
+    pub missing_blocks_ranges: ::prost::alloc::vec::Vec<Range>,
+    #[deprecated]
     #[prost(message, repeated, tag = "6")]
-    pub missing_transactions_ranges: ::prost::alloc::vec::Vec<BlockRange>,
+    pub missing_transactions_ranges: ::prost::alloc::vec::Vec<Range>,
+    #[deprecated]
     #[prost(message, repeated, tag = "7")]
-    pub missing_logs_ranges: ::prost::alloc::vec::Vec<BlockRange>,
+    pub missing_logs_ranges: ::prost::alloc::vec::Vec<Range>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SyncStatusRequest {
@@ -233,62 +252,90 @@ pub struct AnalyzeGapsResponse {
     pub message: ::prost::alloc::string::String,
 }
 /// Detailed progress tracking for each data type
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DataProgress {
-    /// Blocks progress
-    #[prost(message, optional, tag = "1")]
-    pub blocks: ::core::option::Option<DataTypeProgress>,
-    /// Transactions progress
-    #[prost(message, optional, tag = "2")]
-    pub transactions: ::core::option::Option<DataTypeProgress>,
-    /// Logs progress
-    #[prost(message, optional, tag = "3")]
-    pub logs: ::core::option::Option<DataTypeProgress>,
+    /// Generic progress by data type name (replaces separate fields)
+    #[prost(map = "string, message", tag = "5")]
+    pub by_type: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        DataTypeProgress,
+    >,
     /// File statistics
     #[prost(message, optional, tag = "4")]
     pub file_stats: ::core::option::Option<FileStatistics>,
+    /// DEPRECATED: Use by_type\["blocks"\] instead
+    #[deprecated]
+    #[prost(message, optional, tag = "1")]
+    pub blocks: ::core::option::Option<DataTypeProgress>,
+    #[deprecated]
+    #[prost(message, optional, tag = "2")]
+    pub transactions: ::core::option::Option<DataTypeProgress>,
+    #[deprecated]
+    #[prost(message, optional, tag = "3")]
+    pub logs: ::core::option::Option<DataTypeProgress>,
 }
-/// Progress for a specific data type (blocks, transactions, or logs)
+/// Progress for a specific data type
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct DataTypeProgress {
-    /// Number of blocks covered by files on disk (may have gaps)
+    /// Number of positions covered by files on disk (may have gaps)
     #[prost(uint64, tag = "1")]
-    pub blocks_on_disk: u64,
+    pub positions_on_disk: u64,
     /// Number of gaps (missing ranges)
     #[prost(uint32, tag = "2")]
     pub gap_count: u32,
     /// Percentage of target range covered (0-100)
     #[prost(double, tag = "3")]
     pub coverage_percentage: f64,
-    /// Highest continuous block number (no gaps before this)
+    /// Highest continuous position (no gaps before this)
     #[prost(uint64, tag = "4")]
     pub highest_continuous: u64,
 }
-/// File and disk statistics
+/// File statistics for a specific data type
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DataTypeFileStats {
+    #[prost(uint32, tag = "1")]
+    pub file_count: u32,
+    #[prost(uint64, tag = "2")]
+    pub disk_bytes: u64,
+}
+/// File and disk statistics
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FileStatistics {
     /// Total number of parquet files
     #[prost(uint32, tag = "1")]
     pub total_files: u32,
-    /// Files by type
-    #[prost(uint32, tag = "2")]
-    pub blocks_files: u32,
-    #[prost(uint32, tag = "3")]
-    pub transactions_files: u32,
-    #[prost(uint32, tag = "4")]
-    pub logs_files: u32,
-    #[prost(uint32, tag = "5")]
-    pub proofs_files: u32,
     /// Total disk usage in bytes
     #[prost(uint64, tag = "6")]
     pub total_disk_bytes: u64,
-    /// Disk usage by type
+    /// Generic file stats by data type name
+    #[prost(map = "string, message", tag = "11")]
+    pub by_type: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        DataTypeFileStats,
+    >,
+    /// DEPRECATED: Use by_type instead
+    #[deprecated]
+    #[prost(uint32, tag = "2")]
+    pub blocks_files: u32,
+    #[deprecated]
+    #[prost(uint32, tag = "3")]
+    pub transactions_files: u32,
+    #[deprecated]
+    #[prost(uint32, tag = "4")]
+    pub logs_files: u32,
+    #[deprecated]
+    #[prost(uint32, tag = "5")]
+    pub proofs_files: u32,
+    #[deprecated]
     #[prost(uint64, tag = "7")]
     pub blocks_disk_bytes: u64,
+    #[deprecated]
     #[prost(uint64, tag = "8")]
     pub transactions_disk_bytes: u64,
+    #[deprecated]
     #[prost(uint64, tag = "9")]
     pub logs_disk_bytes: u64,
+    #[deprecated]
     #[prost(uint64, tag = "10")]
     pub proofs_disk_bytes: u64,
 }

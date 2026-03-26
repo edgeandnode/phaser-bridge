@@ -2,55 +2,16 @@ use anyhow::{Context, Result};
 use core_executor::ThreadPoolExecutor;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::statistics::Statistics;
+use phaser_client::sync::SegmentWork;
 use phaser_parquet_metadata::PhaserMetadata;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use tracing::{debug, info, warn};
 
-/// Represents a block range that has been synced
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlockRange {
-    pub start: u64,
-    pub end: u64,
-}
-
-/// Work needed for a specific segment
-#[derive(Debug, Clone)]
-pub struct SegmentWork {
-    pub segment_num: u64,
-    pub segment_from: u64,
-    pub segment_to: u64,
-    pub missing_blocks: Vec<BlockRange>,
-    pub missing_transactions: Vec<BlockRange>,
-    pub missing_logs: Vec<BlockRange>,
-
-    // Retry tracking
-    pub retry_count: Option<u32>,
-    pub last_attempt: std::time::Instant,
-}
-
-impl SegmentWork {
-    pub fn is_complete(&self) -> bool {
-        self.missing_blocks.is_empty()
-            && self.missing_transactions.is_empty()
-            && self.missing_logs.is_empty()
-    }
-
-    pub fn missing_types(&self) -> Vec<String> {
-        let mut types = Vec::new();
-        if !self.missing_blocks.is_empty() {
-            types.push("blocks".to_string());
-        }
-        if !self.missing_transactions.is_empty() {
-            types.push("transactions".to_string());
-        }
-        if !self.missing_logs.is_empty() {
-            types.push("logs".to_string());
-        }
-        types
-    }
-}
+// Re-export Range as BlockRange for backwards compatibility within this module
+// TODO: Eventually update all callers to use Range directly
+pub use phaser_client::sync::Range as BlockRange;
 
 /// Analysis of what segments need syncing
 #[derive(Debug, Clone)]
@@ -857,25 +818,13 @@ impl DataScanner {
             for segment_num in first_segment..=last_segment {
                 let segment_from = segment_num * segment_size;
                 let segment_to = (segment_num + 1) * segment_size - 1;
-                segments_needing_work.push(SegmentWork {
+                // Use phaser-client's generic SegmentWork with EVM data types
+                segments_needing_work.push(SegmentWork::new_full_segment(
                     segment_num,
                     segment_from,
                     segment_to,
-                    missing_blocks: vec![BlockRange {
-                        start: segment_from,
-                        end: segment_to,
-                    }],
-                    missing_transactions: vec![BlockRange {
-                        start: segment_from,
-                        end: segment_to,
-                    }],
-                    missing_logs: vec![BlockRange {
-                        start: segment_from,
-                        end: segment_to,
-                    }],
-                    retry_count: None,
-                    last_attempt: std::time::Instant::now(),
-                });
+                    &["blocks", "transactions", "logs"],
+                ));
             }
             return Ok(GapAnalysis {
                 total_segments,
@@ -939,16 +888,18 @@ impl DataScanner {
                 // Clean any temp files for this segment
                 self.clean_temp_files_for_segment(segment_start, segment_end)?;
 
-                segments_needing_work.push(SegmentWork {
-                    segment_num,
-                    segment_from: segment_start,
-                    segment_to: segment_end,
-                    missing_blocks,
-                    missing_transactions,
-                    missing_logs,
-                    retry_count: None,
-                    last_attempt: std::time::Instant::now(),
-                });
+                // Build generic SegmentWork with missing ranges per data type
+                let mut work = SegmentWork::new(segment_num, segment_start, segment_end);
+                if !missing_blocks.is_empty() {
+                    work.add_missing("blocks", missing_blocks);
+                }
+                if !missing_transactions.is_empty() {
+                    work.add_missing("transactions", missing_transactions);
+                }
+                if !missing_logs.is_empty() {
+                    work.add_missing("logs", missing_logs);
+                }
+                segments_needing_work.push(work);
             }
         }
 

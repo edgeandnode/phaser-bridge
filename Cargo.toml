@@ -20,6 +20,12 @@ members = [
     "crates/tools/bridge-test",
 ]
 
+[workspace.package]
+version = "0.2.0-alpha.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/edgeandnode/phaser"
+
 [workspace.dependencies]
 # Internal crates
 erigon-bridge = { path = "crates/bridges/evm/erigon-bridge" }

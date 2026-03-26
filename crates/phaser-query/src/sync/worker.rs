@@ -6,6 +6,7 @@ use arrow::array as arrow_array;
 use evm_common::proof::{generate_transaction_proof, MerkleProofRecord};
 use evm_common::transaction::TransactionRecord;
 use futures::StreamExt;
+use phaser_client::sync::SegmentWork;
 use phaser_client::{GenericQuery, PhaserClient, ValidationStage};
 use phaser_metrics::SegmentMetrics;
 use std::collections::HashMap;
@@ -18,13 +19,8 @@ use typed_arrow::prelude::*;
 
 /// Check if an error is transient and should trigger a retry
 fn is_transient_error(err: &SyncError) -> bool {
-    // Check error category for transient types
-    matches!(
-        err.category,
-        ErrorCategory::Connection | ErrorCategory::Timeout | ErrorCategory::Cancelled
-    ) ||
-    // Also check message for specific transient patterns
-    err.message.contains("Timeout expired")
+    // Use the is_transient() method from phaser-client
+    err.is_transient()
 }
 
 /// Worker progress tracking
@@ -88,8 +84,8 @@ pub struct SyncWorker {
     parquet_config: Option<ParquetConfig>,
     progress_tracker: Option<ProgressTracker>,
     _validation_stage: phaser_client::ValidationStage,
-    segment_work: crate::sync::data_scanner::SegmentWork, // Pre-computed missing ranges
-    current_progress: Arc<RwLock<WorkerProgress>>,        // Real-time progress state
+    segment_work: SegmentWork, // Pre-computed missing ranges
+    current_progress: Arc<RwLock<WorkerProgress>>, // Real-time progress state
     logs_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
@@ -97,7 +93,7 @@ impl SyncWorker {
     pub fn new(
         worker_id: u32,
         config: SyncWorkerConfig,
-        segment_work: crate::sync::data_scanner::SegmentWork,
+        segment_work: SegmentWork,
         historical_boundary: Option<u64>,
     ) -> Self {
         // Cap to_block at historical boundary if present
@@ -231,9 +227,15 @@ impl SyncWorker {
         );
 
         // Use pre-computed missing ranges from segment_work (no file I/O needed!)
-        let missing_blocks = self.segment_work.missing_blocks.clone();
-        let missing_txs = self.segment_work.missing_transactions.clone();
-        let missing_logs = self.segment_work.missing_logs.clone();
+        // Convert from generic Range to BlockRange for backwards compat
+        let missing_blocks: Vec<crate::sync::data_scanner::BlockRange> =
+            self.segment_work.get_missing_ranges("blocks").to_vec();
+        let missing_txs: Vec<crate::sync::data_scanner::BlockRange> = self
+            .segment_work
+            .get_missing_ranges("transactions")
+            .to_vec();
+        let missing_logs: Vec<crate::sync::data_scanner::BlockRange> =
+            self.segment_work.get_missing_ranges("logs").to_vec();
 
         debug!(
             "Worker {} segment work: blocks={} ranges, txs={} ranges, logs={} ranges",
@@ -254,13 +256,13 @@ impl SyncWorker {
         // Collect all errors
         let mut errors = Vec::new();
         if let Err(e) = blocks_res {
-            errors.push((DataType::Blocks, e));
+            errors.push((DataType::new("blocks"), e));
         }
         if let Err(e) = txs_res {
-            errors.push((DataType::Transactions, e));
+            errors.push((DataType::new("transactions"), e));
         }
         if let Err(e) = logs_res {
-            errors.push((DataType::Logs, e));
+            errors.push((DataType::new("logs"), e));
         }
 
         // If any failed, return MultipleDataTypeErrors
@@ -299,7 +301,7 @@ impl SyncWorker {
             .await
             .map_err(|e| {
                 SyncError::from_anyhow_with_context(
-                    DataType::Blocks,
+                    DataType::new("blocks"),
                     self.from_block,
                     self.to_block,
                     "Failed to connect to bridge",
@@ -333,7 +335,7 @@ impl SyncWorker {
             .await
             .map_err(|e| {
                 SyncError::from_anyhow_with_context(
-                    DataType::Transactions,
+                    DataType::new("transactions"),
                     self.from_block,
                     self.to_block,
                     "Failed to connect to bridge",
@@ -376,7 +378,7 @@ impl SyncWorker {
             .await
             .map_err(|e| {
                 SyncError::from_anyhow_with_context(
-                    DataType::Logs,
+                    DataType::new("logs"),
                     self.from_block,
                     self.to_block,
                     "Failed to acquire log semaphore permit for segment",
@@ -395,7 +397,7 @@ impl SyncWorker {
             .await
             .map_err(|e| {
                 SyncError::from_anyhow_with_context(
-                    DataType::Logs,
+                    DataType::new("logs"),
                     self.from_block,
                     self.to_block,
                     "Failed to connect to bridge",
@@ -478,7 +480,7 @@ impl SyncWorker {
                         retries_without_progress += 1;
                         if retries_without_progress >= MAX_RETRIES_WITHOUT_PROGRESS {
                             return Err(SyncError::new(
-                                DataType::Blocks,
+                                DataType::new("blocks"),
                                 ErrorCategory::StuckWorker,
                                 resume_from,
                                 to_block,
@@ -546,7 +548,7 @@ impl SyncWorker {
         // Subscribe to the block stream with metadata (returns RecordBatch + responsibility range)
         let stream = client.query_with_metadata(query).await.map_err(|e| {
             SyncError::from_anyhow_with_context(
-                DataType::Blocks,
+                DataType::new("blocks"),
                 from_block,
                 to_block,
                 "Failed to subscribe to block stream",
@@ -566,7 +568,7 @@ impl SyncWorker {
                 Err(e) => {
                     // Preserve the full gRPC/Flight error chain from bridge/erigon
                     return Err(SyncError::from_error_with_context(
-                        DataType::Blocks,
+                        DataType::new("blocks"),
                         from_block,
                         to_block,
                         "Failed to receive block batch",
@@ -611,7 +613,7 @@ impl SyncWorker {
             // Write Arrow RecordBatch directly to parquet and get actual bytes written
             let batch_bytes = writer.write_batch(batch).await.map_err(|e| {
                 SyncError::from_anyhow_with_context(
-                    DataType::Blocks,
+                    DataType::new("blocks"),
                     from_block,
                     to_block,
                     "Failed to write block batch to parquet",
@@ -630,7 +632,7 @@ impl SyncWorker {
             if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
                 if from_block == original_from && first != from_block {
                     return Err(SyncError::validation_error(
-                        DataType::Blocks,
+                        DataType::new("blocks"),
                         from_block,
                         to_block,
                         format!(
@@ -640,7 +642,7 @@ impl SyncWorker {
                 }
                 if last != to_block {
                     return Err(SyncError::validation_error(
-                        DataType::Blocks,
+                        DataType::new("blocks"),
                         from_block,
                         to_block,
                         format!(
@@ -652,7 +654,7 @@ impl SyncWorker {
             // Finalize with the requested end block to ensure proper filename
             writer.finalize_current_file().map_err(|e| {
                 SyncError::from_anyhow_with_context(
-                    DataType::Blocks,
+                    DataType::new("blocks"),
                     from_block,
                     to_block,
                     "Failed to finalize parquet file",
@@ -776,7 +778,7 @@ impl SyncWorker {
                         retries_without_progress += 1;
                         if retries_without_progress >= MAX_RETRIES_WITHOUT_PROGRESS {
                             return Err(SyncError::new(
-                                DataType::Transactions,
+                                DataType::new("transactions"),
                                 ErrorCategory::StuckWorker,
                                 resume_from,
                                 to_block,
@@ -873,7 +875,7 @@ impl SyncWorker {
                     );
                     // Preserve the full gRPC/Flight error chain from bridge/erigon
                     return Err(SyncError::from_error_with_context(
-                        DataType::Transactions,
+                        DataType::new("transactions"),
                         from_block,
                         to_block,
                         "Failed to receive transaction batch",
@@ -934,7 +936,7 @@ impl SyncWorker {
                 if let Ok(proof_batch) = self.generate_proofs_for_batch(&batch) {
                     proof_w.write_batch(proof_batch).await.map_err(|e| {
                         SyncError::disk_io_error(
-                            DataType::Transactions,
+                            DataType::new("transactions"),
                             from_block,
                             to_block,
                             format!("Failed to write proof batch: {e}"),
@@ -951,7 +953,7 @@ impl SyncWorker {
             // Write Arrow RecordBatch directly to parquet and get actual bytes written
             let batch_bytes = writer.write_batch(batch).await.map_err(|e| {
                 SyncError::disk_io_error(
-                    DataType::Transactions,
+                    DataType::new("transactions"),
                     from_block,
                     to_block,
                     format!("Failed to write transaction batch: {e}"),
@@ -980,7 +982,7 @@ impl SyncWorker {
             if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
                 if first < from_block || first > to_block {
                     return Err(SyncError::validation_error(
-                        DataType::Transactions,
+                        DataType::new("transactions"),
                         from_block,
                         to_block,
                         format!(
@@ -990,7 +992,7 @@ impl SyncWorker {
                 }
                 if last < from_block || last > to_block {
                     return Err(SyncError::validation_error(
-                        DataType::Transactions,
+                        DataType::new("transactions"),
                         from_block,
                         to_block,
                         format!(
@@ -1002,7 +1004,7 @@ impl SyncWorker {
             // Finalize with the requested end block to ensure proper filename
             writer.finalize_current_file().map_err(|e| {
                 SyncError::from_anyhow_with_context(
-                    DataType::Transactions,
+                    DataType::new("transactions"),
                     from_block,
                     to_block,
                     "Failed to finalize parquet file",
@@ -1012,7 +1014,7 @@ impl SyncWorker {
             if let Some(ref mut proof_w) = proof_writer {
                 proof_w.finalize_current_file().map_err(|e| {
                     SyncError::from_anyhow_with_context(
-                        DataType::Transactions,
+                        DataType::new("transactions"),
                         from_block,
                         to_block,
                         "Failed to finalize proof parquet file",
@@ -1155,7 +1157,7 @@ impl SyncWorker {
                         retries_without_progress += 1;
                         if retries_without_progress >= MAX_RETRIES_WITHOUT_PROGRESS {
                             return Err(SyncError::new(
-                                DataType::Logs,
+                                DataType::new("logs"),
                                 ErrorCategory::StuckWorker,
                                 resume_from,
                                 to_block,
@@ -1225,7 +1227,7 @@ impl SyncWorker {
         // Subscribe to the log stream with metadata (returns RecordBatch + responsibility range)
         let stream = client.query_with_metadata(query).await.map_err(|e| {
             SyncError::from_anyhow_with_context(
-                DataType::Logs,
+                DataType::new("logs"),
                 from_block,
                 to_block,
                 "Failed to subscribe to log stream",
@@ -1245,7 +1247,7 @@ impl SyncWorker {
                 Err(e) => {
                     // Preserve the full gRPC/Flight error chain from bridge/erigon
                     return Err(SyncError::from_error_with_context(
-                        DataType::Logs,
+                        DataType::new("logs"),
                         from_block,
                         to_block,
                         "Failed to receive log batch",
@@ -1290,7 +1292,7 @@ impl SyncWorker {
             // Write Arrow RecordBatch directly to parquet and get actual bytes written
             let batch_bytes = writer.write_batch(batch).await.map_err(|e| {
                 SyncError::disk_io_error(
-                    DataType::Logs,
+                    DataType::new("logs"),
                     from_block,
                     to_block,
                     format!("Failed to write log batch: {e}"),
@@ -1309,7 +1311,7 @@ impl SyncWorker {
             if let (Some(first), Some(last)) = (first_block_seen, last_block_seen) {
                 if first < from_block || first > to_block {
                     return Err(SyncError::validation_error(
-                        DataType::Logs,
+                        DataType::new("logs"),
                         from_block,
                         to_block,
                         format!(
@@ -1319,7 +1321,7 @@ impl SyncWorker {
                 }
                 if last < from_block || last > to_block {
                     return Err(SyncError::validation_error(
-                        DataType::Logs,
+                        DataType::new("logs"),
                         from_block,
                         to_block,
                         format!(
@@ -1331,7 +1333,7 @@ impl SyncWorker {
             // Finalize with the requested end block to ensure proper filename
             writer.finalize_current_file().map_err(|e| {
                 SyncError::from_anyhow_with_context(
-                    DataType::Logs,
+                    DataType::new("logs"),
                     from_block,
                     to_block,
                     "Failed to finalize parquet file",

@@ -84,35 +84,3 @@ pub enum QueryMode {
     /// Subscribe to live data from current head
     Live,
 }
-
-/// Data availability information for query planning
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataAvailability {
-    /// Available block ranges
-    pub ranges: Vec<BlockRange>,
-    /// Gaps in available data
-    pub gaps: Vec<(u64, u64)>,
-    /// Estimated size per range (bytes)
-    pub estimated_sizes: Vec<(BlockRange, u64)>,
-}
-
-/// A contiguous range of blocks
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlockRange {
-    pub start: u64,
-    pub end: u64,
-    pub source: DataSource,
-}
-
-/// Where the data comes from
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DataSource {
-    /// Live streaming from node
-    Live,
-    /// Cached in memory
-    Cache,
-    /// Historical parquet files
-    Parquet,
-    /// Need to query node
-    NodeQuery,
-}

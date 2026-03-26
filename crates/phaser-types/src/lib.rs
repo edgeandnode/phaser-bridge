@@ -22,8 +22,8 @@ pub use discovery::{
     ACTION_DESCRIBE,
 };
 pub use subscription::{
-    BackpressureStrategy, BlockRange, ControlAction, DataAvailability, DataSource, FilterSpec,
-    QueryMode, SubscriptionHandle, SubscriptionInfo, SubscriptionOptions,
+    BackpressureStrategy, ControlAction, FilterSpec, QueryMode, SubscriptionHandle,
+    SubscriptionInfo, SubscriptionOptions,
 };
 
 /// Responsibility range metadata for a batch
