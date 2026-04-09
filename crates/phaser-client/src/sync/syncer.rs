@@ -10,7 +10,7 @@
 //! by the caller (e.g., "blocks", "events", "account_updates").
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -123,7 +123,7 @@ impl PhaserSyncer {
     /// know what "blocks" or "events" mean - it just syncs whatever data types
     /// are specified.
     pub async fn sync_range<F>(
-        &self,
+        &mut self,
         bridge_endpoint: &str,
         from_position: u64,
         to_position: u64,
@@ -157,6 +157,7 @@ impl PhaserSyncer {
         // Create work queue
         let segment_queue = Arc::new(Mutex::new(VecDeque::from(work)));
         let job_complete = Arc::new(AtomicBool::new(false));
+        let active_workers = Arc::new(AtomicUsize::new(0));
 
         // Create semaphore for limiting concurrent "heavy" data type syncs
         let heavy_semaphore = Arc::new(Semaphore::new(
@@ -181,6 +182,7 @@ impl PhaserSyncer {
             let progress = progress.clone();
             let config = self.config.clone();
             let writer_factory = writer_factory.clone();
+            let active_workers = active_workers.clone();
 
             let handle = tokio::spawn(async move {
                 Self::worker_loop(
@@ -188,6 +190,7 @@ impl PhaserSyncer {
                     &bridge_endpoint,
                     segment_queue,
                     job_complete,
+                    active_workers,
                     heavy_semaphore,
                     progress,
                     &config,
@@ -207,17 +210,30 @@ impl PhaserSyncer {
             let interval = self.progress_interval;
 
             Some(tokio::spawn(async move {
+                info!("progress reporter task started");
                 loop {
                     // Check if job is complete
                     if job_complete.load(Ordering::Relaxed) {
+                        info!("progress reporter observed job_complete=true; sending final update");
                         // Send final update
                         let snapshot = progress.read().await.clone();
-                        let _ = sender
+                        info!(
+                            completed_segments = snapshot.completed_segments,
+                            in_progress_segments = snapshot.in_progress_segments,
+                            positions_synced = snapshot.positions_synced,
+                            bytes_written = snapshot.bytes_written,
+                            total_retries = snapshot.total_retries,
+                            permanent_errors = snapshot.permanent_errors,
+                            "progress reporter final snapshot"
+                        );
+                        let send_result = sender
                             .send(ProgressUpdate {
                                 progress: snapshot,
                                 timestamp: std::time::Instant::now(),
                             })
                             .await;
+                        info!(send_ok = send_result.is_ok(), "progress reporter final send completed");
+                        info!("progress reporter exiting after final update");
                         break;
                     }
 
@@ -231,7 +247,7 @@ impl PhaserSyncer {
                         .await
                         .is_err()
                     {
-                        // Receiver dropped, stop reporting
+                        info!("progress reporter receiver dropped; exiting");
                         break;
                     }
 
@@ -242,30 +258,42 @@ impl PhaserSyncer {
             None
         };
 
+        info!(workers = worker_handles.len(), "waiting for all worker tasks to complete");
         // Wait for all workers to complete
         for (idx, handle) in worker_handles.into_iter().enumerate() {
+            info!(worker_idx = idx, "joining worker task");
             match handle.await {
                 Ok(Ok(())) => {
-                    debug!("Worker {} finished successfully", idx);
+                    info!(worker_idx = idx, "worker joined successfully");
                 }
                 Ok(Err(e)) => {
-                    error!("Worker {} failed: {}", idx, e);
+                    error!(worker_idx = idx, error = %e, "worker joined with error");
                 }
                 Err(e) => {
-                    error!("Worker {} panicked: {}", idx, e);
+                    error!(worker_idx = idx, error = %e, "worker join panicked");
                 }
             }
         }
 
+        info!("all worker tasks joined; setting job_complete=true");
         // Mark job complete
         job_complete.store(true, Ordering::Relaxed);
+        info!("job_complete set to true");
 
         // Wait for progress reporter to finish
         if let Some(handle) = progress_handle {
-            let _ = handle.await;
+            info!("waiting for progress reporter task to finish");
+            let join_result = handle.await;
+            info!(join_ok = join_result.is_ok(), "progress reporter task finished");
         }
 
+        let sender_still_attached = self.progress_sender.is_some();
+        info!(sender_still_attached, "sync_range returning with progress sender state");
+        self.progress_sender = None;
+        info!("progress sender cleared before sync_range return");
+
         // Collect final progress
+        info!("collecting final progress snapshot before return");
         let final_progress = progress.read().await;
         Ok(SyncResult {
             segments_synced: final_progress.completed_segments,
@@ -283,6 +311,7 @@ impl PhaserSyncer {
         bridge_endpoint: &str,
         segment_queue: Arc<Mutex<VecDeque<SegmentWork>>>,
         job_complete: Arc<AtomicBool>,
+        active_workers: Arc<AtomicUsize>,
         heavy_semaphore: Arc<Semaphore>,
         progress: Arc<RwLock<SyncProgress>>,
         config: &SyncConfig,
@@ -292,10 +321,11 @@ impl PhaserSyncer {
         F: WriterFactory,
         F::Writer: 'static,
     {
+        let mut empty_queue_polls: u64 = 0;
         loop {
             // Check if job is complete
             if job_complete.load(Ordering::Relaxed) {
-                info!(worker_id, "Worker exiting - job complete");
+                info!(worker_id, empty_queue_polls, "Worker exiting - job complete");
                 break;
             }
 
@@ -306,9 +336,34 @@ impl PhaserSyncer {
             };
 
             let work = match work {
-                Some(w) => w,
+                Some(w) => {
+                    if empty_queue_polls > 0 {
+                        info!(worker_id, empty_queue_polls, "worker acquired work after empty-queue polling");
+                    }
+                    empty_queue_polls = 0;
+                    w
+                }
                 None => {
-                    // No work available, check if we should wait or exit
+                    empty_queue_polls += 1;
+                    let job_complete_now = job_complete.load(Ordering::Relaxed);
+                    let active_workers_now = active_workers.load(Ordering::Relaxed);
+                    if job_complete_now {
+                        info!(worker_id, empty_queue_polls, active_workers = active_workers_now, "worker observed empty queue and job_complete=true; exiting");
+                        break;
+                    }
+                    if active_workers_now == 0 {
+                        info!(worker_id, empty_queue_polls, "worker observed empty queue and no active workers remain; exiting");
+                        break;
+                    }
+                    if empty_queue_polls == 1 || empty_queue_polls % 50 == 0 {
+                        info!(
+                            worker_id,
+                            empty_queue_polls,
+                            job_complete = job_complete_now,
+                            active_workers = active_workers_now,
+                            "worker observed empty queue; sleeping before retry"
+                        );
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     continue;
                 }
@@ -333,8 +388,9 @@ impl PhaserSyncer {
                 p.mark_segment_started();
             }
 
+            active_workers.fetch_add(1, Ordering::Relaxed);
             // Process the segment
-            match Self::sync_segment(
+            let sync_result = Self::sync_segment(
                 worker_id,
                 bridge_endpoint,
                 &work,
@@ -342,8 +398,11 @@ impl PhaserSyncer {
                 config,
                 &*writer_factory,
             )
-            .await
-            {
+            .await;
+            let active_after = active_workers.fetch_sub(1, Ordering::Relaxed) - 1;
+            debug!(worker_id, active_workers = active_after, "worker finished processing segment");
+
+            match sync_result {
                 Ok((positions, bytes)) => {
                     info!(
                         worker_id,

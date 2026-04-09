@@ -19,6 +19,8 @@ pub struct SegmentWorkerMetrics {
     active_workers: IntGaugeVec,
     items_processed: IntCounterVec,
     segment_attempts: IntCounterVec,
+    segment_attempts_by_segment: IntCounterVec,
+    segment_failures_by_segment: IntCounterVec,
     segment_duration: HistogramVec,
     worker_progress: GaugeVec,
     stream_retries: IntCounterVec,
@@ -56,6 +58,16 @@ pub trait SegmentMetrics {
     /// Record segment attempt
     fn segment_attempt(&self, success: bool) {
         self.base().segment_attempt(success);
+    }
+
+    /// Record segment attempt for a specific segment
+    fn segment_attempt_by_segment(&self, segment_num: u64, success: bool) {
+        self.base().segment_attempt_by_segment(segment_num, success);
+    }
+
+    /// Record segment failure for a specific segment and bounded error type
+    fn segment_failure_by_segment(&self, segment_num: u64, error_type: &str) {
+        self.base().segment_failure_by_segment(segment_num, error_type);
     }
 
     /// Observe segment processing duration
@@ -162,6 +174,18 @@ impl SegmentWorkerMetrics {
                 format!("{}_segment_attempts_total", service_name),
                 "Total segment processing attempts by result",
                 &["chain_id", "bridge_name", "result"] // result: "success", "failure"
+            )
+            .unwrap(),
+            segment_attempts_by_segment: register_int_counter_vec!(
+                format!("{}_segment_attempts_by_segment_total", service_name),
+                "Total segment processing attempts by segment and result",
+                &["chain_id", "bridge_name", "segment_num", "result"]
+            )
+            .unwrap(),
+            segment_failures_by_segment: register_int_counter_vec!(
+                format!("{}_segment_failures_by_segment_total", service_name),
+                "Total segment failures by segment and bounded error type",
+                &["chain_id", "bridge_name", "segment_num", "error_type"]
             )
             .unwrap(),
             segment_duration: register_histogram_vec!(
@@ -279,6 +303,31 @@ impl SegmentWorkerMetrics {
         let result = if success { "success" } else { "failure" };
         self.segment_attempts
             .with_label_values(&[&self.chain_id, &self.bridge_name, result])
+            .inc();
+    }
+
+    /// Record segment attempt for a specific segment
+    pub fn segment_attempt_by_segment(&self, segment_num: u64, success: bool) {
+        let result = if success { "success" } else { "failure" };
+        self.segment_attempts_by_segment
+            .with_label_values(&[
+                &self.chain_id,
+                &self.bridge_name,
+                &segment_num.to_string(),
+                result,
+            ])
+            .inc();
+    }
+
+    /// Record segment failure for a specific segment and bounded error type
+    pub fn segment_failure_by_segment(&self, segment_num: u64, error_type: &str) {
+        self.segment_failures_by_segment
+            .with_label_values(&[
+                &self.chain_id,
+                &self.bridge_name,
+                &segment_num.to_string(),
+                error_type,
+            ])
             .inc();
     }
 

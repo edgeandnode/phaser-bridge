@@ -149,6 +149,8 @@ mod tests {
 
         // These should compile and not panic - they're delegating to base()
         metrics.segment_attempt(true);
+        metrics.segment_attempt_by_segment(100, true);
+        metrics.segment_failure_by_segment(100, "timeout");
         metrics.segment_retry_count(100, 5);
         metrics.error("network", "blocks");
 
