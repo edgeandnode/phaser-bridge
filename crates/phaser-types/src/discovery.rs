@@ -116,6 +116,10 @@ fn default_filter_type() -> String {
     "string".to_string()
 }
 
+fn default_batch_size() -> usize {
+    100
+}
+
 impl FilterDescriptor {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -147,6 +151,10 @@ pub struct GenericQuery {
     /// Query mode
     pub mode: GenericQueryMode,
 
+    /// Query batch size in blocks
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+
     /// Pass-through filters (bridge validates against TableDescriptor)
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub filters: HashMap<String, serde_json::Value>,
@@ -158,6 +166,7 @@ impl GenericQuery {
         Self {
             table: table.into(),
             mode: GenericQueryMode::Range { start, end },
+            batch_size: default_batch_size(),
             filters: HashMap::new(),
         }
     }
@@ -167,6 +176,7 @@ impl GenericQuery {
         Self {
             table: table.into(),
             mode: GenericQueryMode::Live,
+            batch_size: default_batch_size(),
             filters: HashMap::new(),
         }
     }
@@ -176,8 +186,15 @@ impl GenericQuery {
         Self {
             table: table.into(),
             mode: GenericQueryMode::Snapshot { at },
+            batch_size: default_batch_size(),
             filters: HashMap::new(),
         }
+    }
+
+    /// Set the query batch size in blocks
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
     }
 
     /// Add a filter

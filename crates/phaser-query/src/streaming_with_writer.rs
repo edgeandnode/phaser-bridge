@@ -288,9 +288,9 @@ impl StreamingServiceWithWriter {
                 start_block, end_block
             );
 
-            let mut stream = bridge.query(query).await?;
-            while let Some(batch_result) = stream.next().await {
-                let batch = batch_result?;
+            let stream = bridge.query_with_metadata(query).await?;
+            let mut stream = Box::pin(stream);
+            while let Some(Ok((batch, _))) = stream.next().await {
                 info!("Processing historical batch with {} rows", batch.num_rows());
                 writer.write_batch(batch).await?;
             }

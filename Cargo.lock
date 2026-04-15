@@ -4389,7 +4389,7 @@ dependencies = [
 
 [[package]]
 name = "phaser-client"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4436,7 +4436,7 @@ dependencies = [
 
 [[package]]
 name = "phaser-metrics"
-version = "0.1.0"
+version = "0.2.0-alpha.2"
 dependencies = [
  "once_cell",
  "prometheus",
@@ -4459,7 +4459,7 @@ dependencies = [
 
 [[package]]
 name = "phaser-query"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "alloy-consensus",
  "alloy-rlp",
@@ -4506,7 +4506,7 @@ dependencies = [
 
 [[package]]
 name = "phaser-server"
-version = "0.1.0"
+version = "0.2.0-alpha.2"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -4525,7 +4525,7 @@ dependencies = [
 
 [[package]]
 name = "phaser-types"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "anyhow",
  "arrow-array",

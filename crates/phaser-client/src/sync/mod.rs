@@ -27,7 +27,7 @@
 //! ┌──────────────────────────────────────────────────────────────┐
 //! │                      BatchWriter                              │
 //! │  - write_batch(RecordBatch) -> Result<u64>                    │
-//! │  - finalize() -> Result<()>                                   │
+//! │  - finalize() -> Result<()> [async]                           │
 //! │  - last_written_block() -> Option<u64>                        │
 //! └──────────────────────────────────────────────────────────────┘
 //!                              │

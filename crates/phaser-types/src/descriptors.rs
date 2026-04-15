@@ -2,11 +2,11 @@
 //!
 //! These types are used for EVM-style bridges with block-based data.
 
-use crate::subscription::{QueryMode, SubscriptionOptions};
 use arrow_flight::{FlightDescriptor, Ticket};
 use serde::{Deserialize, Serialize};
 
 use crate::discovery::ParseError;
+use crate::subscription::{QueryMode, SubscriptionOptions};
 
 /// Types of blockchain data streams
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

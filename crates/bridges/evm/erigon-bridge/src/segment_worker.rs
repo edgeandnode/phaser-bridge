@@ -227,6 +227,8 @@ impl SegmentWorker {
                     // Track error type for monitoring
                     let error_type = Self::categorize_error(&e);
                     self.metrics.error(&error_type, "blocks");
+                    self.metrics.segment_attempt_by_segment(segment_id, false);
+                    self.metrics.segment_failure_by_segment(segment_id, &error_type);
 
                     self.metrics.active_workers_dec("blocks");
                     self.metrics.segment_attempt(false);
@@ -387,6 +389,8 @@ impl SegmentWorker {
                     // Track error type for monitoring
                     let error_type = Self::categorize_error(&e);
                     self.metrics.error(&error_type, "transactions");
+                    self.metrics.segment_attempt_by_segment(segment_id, false);
+                    self.metrics.segment_failure_by_segment(segment_id, &error_type);
 
                     // Clean up metrics before error return
                     self.metrics.active_workers_dec("transactions");
@@ -423,6 +427,8 @@ impl SegmentWorker {
                 total_blocks
             );
             self.metrics.error("empty_stream", "transactions");
+            self.metrics.segment_attempt_by_segment(segment_id, false);
+            self.metrics.segment_failure_by_segment(segment_id, "empty_stream");
             self.metrics.active_workers_dec("transactions");
             self.metrics
                 .set_worker_stage(worker_id, segment_id, WorkerStage::Idle);
@@ -449,6 +455,7 @@ impl SegmentWorker {
         self.metrics
             .set_worker_stage(worker_id, segment_id, WorkerStage::Idle);
         self.metrics.segment_attempt(true);
+        self.metrics.segment_attempt_by_segment(segment_id, true);
         }
     }
 
@@ -594,6 +601,9 @@ impl SegmentWorker {
                                 Err(e) => {
                                     let error_type = Self::categorize_error(&e);
                                     self.metrics.error(&error_type, "logs");
+                                    self.metrics.segment_attempt_by_segment(segment_id, false);
+                                    self.metrics.segment_failure_by_segment(segment_id, &error_type);
+                                    self.metrics.segment_attempt(false);
                                     self.metrics.active_workers_dec("logs");
                                     yield Err(e);
                                     return;
@@ -616,6 +626,9 @@ impl SegmentWorker {
                     Err(e) => {
                         let error_type = Self::categorize_error(&e);
                         self.metrics.error(&error_type, "logs");
+                        self.metrics.segment_attempt_by_segment(segment_id, false);
+                        self.metrics.segment_failure_by_segment(segment_id, &error_type);
+                        self.metrics.segment_attempt(false);
                         self.metrics.active_workers_dec("logs");
                         yield Err(e);
                         return;
@@ -637,6 +650,9 @@ impl SegmentWorker {
                 total_blocks
             );
             self.metrics.error("empty_stream", "logs");
+            self.metrics.segment_attempt_by_segment(segment_id, false);
+            self.metrics.segment_failure_by_segment(segment_id, "empty_stream");
+            self.metrics.segment_attempt(false);
             self.metrics.active_workers_dec("logs");
             yield Err(ErigonBridgeError::StreamProtocol(StreamError::ZeroBatchesConsumed {
                 start: self.segment_start,
@@ -662,6 +678,8 @@ impl SegmentWorker {
         self.metrics.active_workers_dec("logs");
         self.metrics
             .set_worker_stage(worker_id, segment_id, WorkerStage::Idle);
+        self.metrics.segment_attempt(true);
+        self.metrics.segment_attempt_by_segment(segment_id, true);
         }
     }
 
@@ -1099,33 +1117,31 @@ impl SegmentWorker {
         let err_str = error.to_string();
         let err_lower = err_str.to_lowercase();
 
-        // Check for known error patterns first
+        // Check for known error patterns first; keep labels bounded for metrics.
         if err_lower.contains("timeout") || err_lower.contains("timed out") {
-            return "timeout".to_string();
+            "timeout".to_string()
         } else if err_lower.contains("header not found") || err_lower.contains("block not found") {
-            return "not_found".to_string();
+            "not_found".to_string()
+        } else if err_lower.contains("stream protocol")
+            || err_lower.contains("zero batches consumed")
+            || err_lower.contains("empty stream")
+        {
+            "stream_protocol".to_string()
         } else if err_lower.contains("connection") || err_lower.contains("connect") {
-            return "connection".to_string();
+            "connection".to_string()
         } else if err_lower.contains("unavailable") {
-            return "unavailable".to_string();
+            "unavailable".to_string()
+        } else if err_lower.contains("transport") {
+            "transport".to_string()
         } else if err_lower.contains("rlp") || err_lower.contains("decoding") {
-            return "decode_error".to_string();
+            "decode_error".to_string()
         } else if err_lower.contains("validation") {
-            return "validation".to_string();
+            "validation".to_string()
+        } else if err_lower.contains("internal") {
+            "internal".to_string()
+        } else {
+            "unknown".to_string()
         }
-
-        // For unknown errors, include the actual error message (truncated to avoid extremely long labels)
-        // Take the first part up to first colon, or first 80 chars
-        let pattern = err_str
-            .split(':')
-            .next()
-            .unwrap_or(&err_str)
-            .trim()
-            .chars()
-            .take(80)
-            .collect::<String>();
-
-        format!("unknown:{pattern}")
     }
 }
 
