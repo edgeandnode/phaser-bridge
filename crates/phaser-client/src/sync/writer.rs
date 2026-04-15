@@ -45,7 +45,7 @@ use super::error::{DataType, SyncError};
 ///         self.responsibility_end = self.responsibility_end.max(block);
 ///     }
 ///
-///     fn finalize(&mut self) -> Result<(), SyncError> {
+///     async fn finalize(&mut self) -> Result<(), SyncError> {
 ///         // Flush and close the file
 ///         self.flush()?;
 ///         Ok(())
@@ -80,7 +80,7 @@ pub trait BatchWriter: Send {
     ///
     /// Called when a segment is complete. Implementors should ensure
     /// all data is persisted and the file is properly closed.
-    fn finalize(&mut self) -> Result<(), SyncError>;
+    async fn finalize(&mut self) -> Result<(), SyncError>;
 
     /// Reset the writer for a new range
     ///

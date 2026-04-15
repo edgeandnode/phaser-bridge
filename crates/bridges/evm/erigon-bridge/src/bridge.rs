@@ -497,6 +497,7 @@ impl ErigonFlightBridge {
         end: u64,
         validate: bool,
         enable_traces: bool,
+        batch_size: usize,
     ) -> Result<
         Pin<
             Box<
@@ -566,7 +567,6 @@ impl ErigonFlightBridge {
         }
 
         let blockdata_pool = self.blockdata_pool.clone();
-        let batch_size = self.segment_config.validation_batch_size;
         let metrics = self.metrics.clone();
 
         let stream = async_stream::stream! {
@@ -913,6 +913,7 @@ impl FlightBridge for ErigonFlightBridge {
                         end,
                         false, // No validation via generic query (can add filter later)
                         enable_traces,
+                        query.batch_size,
                     )
                     .await?,
                 )
@@ -921,8 +922,15 @@ impl FlightBridge for ErigonFlightBridge {
                 // Snapshot is just a single-position range
                 info!("Creating snapshot at position {}", at);
                 Box::pin(
-                    self.create_historical_stream(stream_type, at, at, false, enable_traces)
-                        .await?,
+                    self.create_historical_stream(
+                        stream_type,
+                        at,
+                        at,
+                        false,
+                        enable_traces,
+                        query.batch_size,
+                    )
+                    .await?,
                 )
             }
             GenericQueryMode::Live => {

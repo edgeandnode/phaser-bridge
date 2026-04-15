@@ -16,7 +16,7 @@ path = "src/bin/phaser-cli.rs"
 [dependencies]
 # Local dependencies
 phaser-client = { workspace = true }
-phaser-metrics = { path = "../phaser-metrics" }
+phaser-metrics = { workspace = true }
 erigon-bridge = { workspace = true }
 evm-common = { workspace = true }
 core-executor = { workspace = true }

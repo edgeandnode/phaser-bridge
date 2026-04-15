@@ -50,6 +50,8 @@ pub struct SyncConfig {
     pub batch_size: u32,
     /// Whether to enable trace data in log queries
     pub enable_traces: bool,
+    /// Record batch target size in bytes
+    pub record_batch_bytes_target: usize,
 }
 
 impl Default for SyncConfig {
@@ -59,8 +61,9 @@ impl Default for SyncConfig {
             max_workers: 4,
             max_concurrent_log_segments: 1,
             retry_policy: RetryPolicy::default(),
-            batch_size: 1000,
+            batch_size: 100,
             enable_traces: true,
+            record_batch_bytes_target: 64 * 1024 * 1024,
         }
     }
 }
@@ -95,6 +98,18 @@ impl SyncConfig {
     /// Set whether to enable traces
     pub fn with_traces(mut self, enable: bool) -> Self {
         self.enable_traces = enable;
+        self
+    }
+
+    /// Set the batch size for queries (number of blocks per request)
+    pub fn with_batch_size(mut self, batch_size: u32) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
+    /// Set the record batch target size in bytes
+    pub fn with_record_batch_bytes_target(mut self, target: usize) -> Self {
+        self.record_batch_bytes_target = target;
         self
     }
 

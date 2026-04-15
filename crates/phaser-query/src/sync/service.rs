@@ -649,28 +649,6 @@ impl SyncService for SyncServer {
                 ))
             })?;
 
-        // Validate that to_block doesn't exceed chain tip (only for historical syncs without live streaming)
-        if historical_boundary.is_none() {
-            // Connect to bridge to check chain tip
-            let mut client = PhaserClient::connect(bridge.endpoint.clone())
-                .await
-                .map_err(|e| Status::unavailable(format!("Failed to connect to bridge: {e}")))?;
-
-            let bridge_info = client
-                .get_info()
-                .await
-                .map_err(|e| Status::internal(format!("Failed to get bridge info: {e}")))?;
-
-            if bridge_info.current_block > 0 && to_block > bridge_info.current_block {
-                return Err(Status::invalid_argument(format!(
-                    "Requested to_block ({}) exceeds chain tip ({}). \
-                    Historical sync cannot request blocks that don't exist yet. \
-                    Current chain tip is at block {}.",
-                    to_block, bridge_info.current_block, bridge_info.current_block
-                )));
-            }
-        }
-
         // Generate job ID
         let job_id = Uuid::new_v4().to_string();
 

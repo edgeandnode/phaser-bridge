@@ -1122,7 +1122,10 @@ impl SegmentWorker {
             "timeout".to_string()
         } else if err_lower.contains("header not found") || err_lower.contains("block not found") {
             "not_found".to_string()
-        } else if err_lower.contains("stream protocol") || err_lower.contains("zero batches consumed") || err_lower.contains("empty stream") {
+        } else if err_lower.contains("stream protocol")
+            || err_lower.contains("zero batches consumed")
+            || err_lower.contains("empty stream")
+        {
             "stream_protocol".to_string()
         } else if err_lower.contains("connection") || err_lower.contains("connect") {
             "connection".to_string()

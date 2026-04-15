@@ -67,7 +67,8 @@ pub trait SegmentMetrics {
 
     /// Record segment failure for a specific segment and bounded error type
     fn segment_failure_by_segment(&self, segment_num: u64, error_type: &str) {
-        self.base().segment_failure_by_segment(segment_num, error_type);
+        self.base()
+            .segment_failure_by_segment(segment_num, error_type);
     }
 
     /// Observe segment processing duration

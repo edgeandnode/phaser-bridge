@@ -269,7 +269,8 @@ async fn fetch_data(
 
     let query = GenericQuery::historical(table, start, end);
 
-    let mut stream = client.query(query).await?;
+    let stream = client.query(query).await?;
+    let mut stream = Box::pin(stream);
 
     let mut total_rows = 0u64;
     let mut total_batches = 0u64;
@@ -323,6 +324,8 @@ async fn compare_data(
     // Fetch from both bridges
     let stream1 = client1.query(query.clone()).await?;
     let stream2 = client2.query(query).await?;
+    let mut stream1 = Box::pin(stream1);
+    let mut stream2 = Box::pin(stream2);
 
     let batches1: Vec<_> = stream1
         .collect::<Vec<_>>()

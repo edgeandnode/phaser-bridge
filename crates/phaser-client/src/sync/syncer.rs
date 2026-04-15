@@ -232,7 +232,10 @@ impl PhaserSyncer {
                                 timestamp: std::time::Instant::now(),
                             })
                             .await;
-                        info!(send_ok = send_result.is_ok(), "progress reporter final send completed");
+                        info!(
+                            send_ok = send_result.is_ok(),
+                            "progress reporter final send completed"
+                        );
                         info!("progress reporter exiting after final update");
                         break;
                     }
@@ -258,7 +261,10 @@ impl PhaserSyncer {
             None
         };
 
-        info!(workers = worker_handles.len(), "waiting for all worker tasks to complete");
+        info!(
+            workers = worker_handles.len(),
+            "waiting for all worker tasks to complete"
+        );
         // Wait for all workers to complete
         for (idx, handle) in worker_handles.into_iter().enumerate() {
             info!(worker_idx = idx, "joining worker task");
@@ -284,11 +290,17 @@ impl PhaserSyncer {
         if let Some(handle) = progress_handle {
             info!("waiting for progress reporter task to finish");
             let join_result = handle.await;
-            info!(join_ok = join_result.is_ok(), "progress reporter task finished");
+            info!(
+                join_ok = join_result.is_ok(),
+                "progress reporter task finished"
+            );
         }
 
         let sender_still_attached = self.progress_sender.is_some();
-        info!(sender_still_attached, "sync_range returning with progress sender state");
+        info!(
+            sender_still_attached,
+            "sync_range returning with progress sender state"
+        );
         self.progress_sender = None;
         info!("progress sender cleared before sync_range return");
 
@@ -325,7 +337,10 @@ impl PhaserSyncer {
         loop {
             // Check if job is complete
             if job_complete.load(Ordering::Relaxed) {
-                info!(worker_id, empty_queue_polls, "Worker exiting - job complete");
+                info!(
+                    worker_id,
+                    empty_queue_polls, "Worker exiting - job complete"
+                );
                 break;
             }
 
@@ -338,7 +353,10 @@ impl PhaserSyncer {
             let work = match work {
                 Some(w) => {
                     if empty_queue_polls > 0 {
-                        info!(worker_id, empty_queue_polls, "worker acquired work after empty-queue polling");
+                        info!(
+                            worker_id,
+                            empty_queue_polls, "worker acquired work after empty-queue polling"
+                        );
                     }
                     empty_queue_polls = 0;
                     w
@@ -348,11 +366,20 @@ impl PhaserSyncer {
                     let job_complete_now = job_complete.load(Ordering::Relaxed);
                     let active_workers_now = active_workers.load(Ordering::Relaxed);
                     if job_complete_now {
-                        info!(worker_id, empty_queue_polls, active_workers = active_workers_now, "worker observed empty queue and job_complete=true; exiting");
+                        info!(
+                            worker_id,
+                            empty_queue_polls,
+                            active_workers = active_workers_now,
+                            "worker observed empty queue and job_complete=true; exiting"
+                        );
                         break;
                     }
                     if active_workers_now == 0 {
-                        info!(worker_id, empty_queue_polls, "worker observed empty queue and no active workers remain; exiting");
+                        info!(
+                            worker_id,
+                            empty_queue_polls,
+                            "worker observed empty queue and no active workers remain; exiting"
+                        );
                         break;
                     }
                     if empty_queue_polls == 1 || empty_queue_polls % 50 == 0 {
@@ -364,7 +391,7 @@ impl PhaserSyncer {
                             "worker observed empty queue; sleeping before retry"
                         );
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                     continue;
                 }
             };
@@ -400,7 +427,11 @@ impl PhaserSyncer {
             )
             .await;
             let active_after = active_workers.fetch_sub(1, Ordering::Relaxed) - 1;
-            debug!(worker_id, active_workers = active_after, "worker finished processing segment");
+            debug!(
+                worker_id,
+                active_workers = active_after,
+                "worker finished processing segment"
+            );
 
             match sync_result {
                 Ok((positions, bytes)) => {
@@ -647,7 +678,7 @@ impl PhaserSyncer {
         }
 
         // Finalize the writer
-        writer.finalize().map_err(|e| {
+        writer.finalize().await.map_err(|e| {
             SyncError::from_message(
                 dt.clone(),
                 segment_start,
