@@ -382,7 +382,7 @@ impl PhaserSyncer {
                         );
                         break;
                     }
-                    if empty_queue_polls == 1 || empty_queue_polls % 50 == 0 {
+                    if empty_queue_polls == 1 || empty_queue_polls.is_multiple_of(50) {
                         info!(
                             worker_id,
                             empty_queue_polls,

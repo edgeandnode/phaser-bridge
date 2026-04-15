@@ -324,8 +324,8 @@ async fn compare_data(
     // Fetch from both bridges
     let stream1 = client1.query(query.clone()).await?;
     let stream2 = client2.query(query).await?;
-    let mut stream1 = Box::pin(stream1);
-    let mut stream2 = Box::pin(stream2);
+    let stream1 = Box::pin(stream1);
+    let stream2 = Box::pin(stream2);
 
     let batches1: Vec<_> = stream1
         .collect::<Vec<_>>()
