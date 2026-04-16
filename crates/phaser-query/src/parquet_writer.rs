@@ -275,7 +275,8 @@ impl ParquetWriter {
             builder = builder.set_compression(default_compression);
 
             // Set row group size
-            builder = builder.set_max_row_group_size(config.row_group_size_mb * 1024 * 1024);
+            builder =
+                builder.set_max_row_group_row_count(Some(config.row_group_size_mb * 1024 * 1024));
 
             // Apply per-column options
             for field in schema.fields() {

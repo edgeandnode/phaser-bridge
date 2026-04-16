@@ -203,7 +203,7 @@ mod tests {
 
         // Write data with small row group size to create multiple groups
         let props = WriterProperties::builder()
-            .set_max_row_group_size(100) // Small row groups
+            .set_max_row_group_row_count(Some(100)) // Small row groups
             .build();
 
         let file = std::fs::File::create(path).unwrap();
