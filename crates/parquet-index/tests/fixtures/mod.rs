@@ -121,7 +121,7 @@ pub fn generate_test_parquet(count: usize) -> Result<(TempDir, PathBuf, Vec<Test
     // Write to parquet
     let file = File::create(&parquet_path)?;
     let props = WriterProperties::builder()
-        .set_max_row_group_size(100) // Small row groups for testing
+        .set_max_row_group_row_count(Some(100)) // Small row groups for testing
         .build();
 
     let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;

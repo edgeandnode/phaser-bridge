@@ -66,7 +66,7 @@ pub enum ReaderError {
     FileOpen {
         path: PathBuf,
         #[source]
-        source: fusio::Error,
+        source: std::io::Error,
     },
 
     #[error("Failed to read parquet data: {0}")]

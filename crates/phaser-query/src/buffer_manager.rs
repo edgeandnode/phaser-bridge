@@ -203,7 +203,7 @@ impl CfToParquetBuffer {
 
         let props = WriterProperties::builder()
             .set_compression(parquet::basic::Compression::SNAPPY)
-            .set_max_row_group_size(self.row_group_size)
+            .set_max_row_group_row_count(Some(self.row_group_size))
             .build();
 
         let mut writer = ArrowWriter::try_new(file, self.schema.clone(), Some(props))?;

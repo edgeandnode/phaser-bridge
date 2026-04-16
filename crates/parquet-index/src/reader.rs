@@ -3,14 +3,10 @@
 /// Uses PagePointers from indexes to read specific row groups from parquet files.
 use crate::{FileRegistry, ReaderError};
 use arrow::record_batch::RecordBatch;
-use fusio::disk::LocalFs;
-use fusio::executor::NoopExecutor;
-use fusio::path::Path;
-use fusio::DynFs;
-use fusio_parquet::reader::AsyncReader;
 use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
 use parquet_index_schema::PagePointer;
 use std::sync::Arc;
+use tokio::fs::File;
 
 /// Async reader for fetching specific row groups from parquet files
 ///
@@ -38,30 +34,16 @@ impl<FR: FileRegistry> PageReader<FR> {
             .get_file_path(pointer.file_id)
             .map_err(|_| ReaderError::FileNotFound(pointer.file_id))?;
 
-        // Open the parquet file using fusio
-        let path = Path::from_filesystem_path(
-            file_path
-                .to_str()
-                .ok_or_else(|| ReaderError::InvalidPath(format!("{file_path:?}")))?,
-        )
-        .map_err(|e| ReaderError::InvalidPath(e.to_string()))?;
-        let fs = LocalFs {};
-        let file = fs
-            .open_options(&path, fusio::fs::OpenOptions::default())
+        // Open the parquet file using tokio so it satisfies Parquet 58's AsyncFileReader bounds
+        let file = File::open(&file_path)
             .await
             .map_err(|e| ReaderError::FileOpen {
                 path: file_path.clone(),
                 source: e,
             })?;
 
-        // Get file size for AsyncReader
-        let content_length = file.size().await?;
-
-        // Create async parquet reader (NoopExecutor for tokio runtime)
-        let async_reader = AsyncReader::new(Box::new(file), content_length, NoopExecutor).await?;
-
         // Build the stream reader for the specific row group
-        let builder = ParquetRecordBatchStreamBuilder::new(async_reader).await?;
+        let builder = ParquetRecordBatchStreamBuilder::new(file).await?;
 
         let mut stream = builder
             .with_row_groups(vec![pointer.row_group as usize])
